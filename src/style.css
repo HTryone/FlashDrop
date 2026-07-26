@@ -1,0 +1,83 @@
+:root {
+  --bg: #0b0e16;
+  --bg-soft: #121725;
+  --panel: #161c2c;
+  --panel-2: #1c2436;
+  --border: #273150;
+  --text: #e8edf7;
+  --text-dim: #9aa6c0;
+  --text-faint: #6b768f;
+  --accent: #6d8bff;
+  --accent-2: #38e1c8;
+  --accent-grad: linear-gradient(120deg, #6d8bff 0%, #38e1c8 100%);
+  --danger: #ff6b81;
+  --ok: #4be3a0;
+  --warn: #ffcd6b;
+  --radius: 14px;
+  --radius-sm: 10px;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; }
+body {
+  background:
+    radial-gradient(1200px 600px at 80% -10%, rgba(109, 139, 255, 0.12), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgba(56, 225, 200, 0.10), transparent 55%),
+    var(--bg);
+  color: var(--text);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+button { font-family: inherit; cursor: pointer; }
+input, textarea { font-family: inherit; }
+
+a { color: var(--accent); }
+
+.btn {
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 600;
+  transition: 0.18s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.btn:hover { border-color: var(--accent); transform: translateY(-1px); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+.btn.primary {
+  background: var(--accent-grad);
+  border: none;
+  color: #07101f;
+}
+.btn.primary:hover { filter: brightness(1.06); }
+.btn.ghost { background: transparent; }
+.btn.danger { color: var(--danger); border-color: rgba(255, 107, 129, 0.4); }
+.btn.danger:hover { background: rgba(255, 107, 129, 0.12); }
+.btn.sm { padding: 6px 10px; font-size: 12px; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.muted { color: var(--text-dim); }
+.faint { color: var(--text-faint); }
+.gradient-text {
+  background: var(--accent-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #2a3450; border-radius: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
