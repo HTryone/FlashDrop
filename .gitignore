@@ -1,6 +1,9 @@
 # 依赖
 node_modules/
 
+# Cloudflare Wrangler 本地缓存（含 state/日志，不入库）
+.wrangler/
+
 # 运行时上传数据（由 server.mjs 自动创建）
 uploads/
 
