@@ -13,7 +13,7 @@ export default defineConfig({
   },
   server: {
     host: true, // 暴露到局域网，方便手机/其他电脑测
-    port: 5173,
+    port: 3001,
     proxy: {
       '/files': { target: 'http://localhost:3000', changeOrigin: true },
       '/api': { target: 'http://localhost:3000', changeOrigin: true },
