@@ -288,10 +288,10 @@ watch(message, async (v) => {
       <div class="opt">
         <label>存储位置</label>
         <div class="seg">
-          <button :class="{ on: storagePref === 'local' }" @click="storagePref = 'local'">本地磁盘</button>
+          <button :class="{ on: storagePref === 'local' }" @click="storagePref = 'local'">本地直传</button>
           <button :class="{ on: storagePref === 'r2' }" @click="storagePref = 'r2'">线上 R2</button>
         </div>
-        <small class="faint">实际落盘由服务端配置决定；当前服务：{{ storage === 'r2' ? 'R2' : '本地磁盘' }}</small>
+        <small class="faint">实际落盘由服务端配置决定；当前服务：{{ storage === 'r2' ? 'R2' : '本地直传' }}</small>
       </div>
       <div class="opt">
         <label>有效期</label>

@@ -588,7 +588,7 @@ onUnmounted(() => {
   <div class="local">
     <!-- 发送 -->
     <section class="blk">
-      <h3>① 发送（本地磁盘 · 实时直传）</h3>
+      <h3>① 发送（本地直传）</h3>
       <p class="hint">文件只在内存里经网站流转，不落服务器磁盘；双方需同时在线，关闭即止。</p>
       <input type="file" multiple @change="pick" :disabled="sending" />
       <div v-if="sendFiles.length" class="filelist">

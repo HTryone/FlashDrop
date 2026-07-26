@@ -76,7 +76,7 @@ function doClearCache() {
               </ul>
               <h4>④ 存储位置</h4>
               <ul>
-                <li><strong>本地磁盘</strong>：文件直接存到运行服务的电脑（就是文件本身）。</li>
+                <li><strong>本地直传</strong>：文件直接存到运行服务的电脑（就是文件本身）。</li>
                 <li><strong>线上 R2</strong>：文件落到 Cloudflare R2（需在服务端配置凭据后启用）。</li>
               </ul>
             </div>
