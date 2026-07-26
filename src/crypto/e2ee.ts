@@ -152,3 +152,42 @@ export async function decryptBlob(
   }
   return new Blob(parts);
 }
+
+// ---------- 本地磁盘模式：单块加解密（WebSocket 逐块流转，不落盘）----------
+// 与中转模式不同，这里是"边读边加密边发"，每块独立 IV，解密端逐块还原。
+export const LOCAL_CHUNK_SIZE = 1024 * 1024; // 1MiB 一块，实时反馈友好、背压平滑
+// 本地磁盘口令随机且单次会话使用，固定 salt 足够（避免把 salt 塞进链接）
+export const LOCAL_SALT = 'flashdrop-local-v1';
+
+/** 加密单个明文块 → 帧：[16B IV][ciphertext][32B HMAC] */
+export function encryptChunk(plain: Uint8Array, keyHex: string): Uint8Array {
+  const key = CryptoJS.enc.Hex.parse(keyHex);
+  const iv = CryptoJS.lib.WordArray.random(16);
+  const enc = CryptoJS.AES.encrypt(u8ToWa(plain), key, { iv });
+  const hmac = CryptoJS.HmacSHA256(enc.ciphertext, key);
+  const ivU8 = waToU8(iv);
+  const ctU8 = waToU8(enc.ciphertext);
+  const macU8 = waToU8(hmac);
+  const out = new Uint8Array(ivU8.length + ctU8.length + macU8.length);
+  out.set(ivU8, 0);
+  out.set(ctU8, ivU8.length);
+  out.set(macU8, ivU8.length + ctU8.length);
+  return out;
+}
+
+/** 解密单块帧（含 HMAC 校验）→ 明文 Uint8Array（自动去除 PKCS7 填充） */
+export function decryptChunk(frame: Uint8Array, keyHex: string): Uint8Array {
+  const key = CryptoJS.enc.Hex.parse(keyHex);
+  const ctLen = frame.length - 16 - 32;
+  if (ctLen <= 0) throw new Error('数据帧格式错误');
+  const iv = u8ToWa(frame.slice(0, 16));
+  const ct = u8ToWa(frame.slice(16, 16 + ctLen));
+  const macReceived = u8ToWa(frame.slice(16 + ctLen));
+  const macComputed = CryptoJS.HmacSHA256(CryptoJS.lib.WordArray.create(ct.words, ctLen), key);
+  if (macReceived.toString() !== macComputed.toString()) {
+    throw new Error('完整性校验失败：数据可能被篡改');
+  }
+  const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: ct, iv });
+  const dec = CryptoJS.AES.decrypt(cipherParams, key);
+  return waToU8(dec as CryptoJS.lib.WordArray);
+}

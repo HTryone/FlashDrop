@@ -7,6 +7,8 @@ import path from 'node:path';
 import os from 'node:os';
 import stream from 'node:stream';
 import { fileURLToPath } from 'node:url';
+import http from 'node:http';
+import { attachRelay } from './relay.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
@@ -391,12 +393,16 @@ async function main() {
   const PORT = Number(process.env.PORT || 3000);
   const HOST = process.env.HOST || '0.0.0.0';
 
-  app.listen(PORT, HOST, () => {
+  const server = http.createServer(app);
+  attachRelay(server); // 本地磁盘模式：WebSocket 内存流转中继（不落盘）
+
+  server.listen(PORT, HOST, () => {
     console.log('闪传 FlashDrop 服务已启动');
     console.log(`  本机:   http://localhost:${PORT}`);
     console.log(`  局域网: http://${getLanIp()}:${PORT}`);
     console.log(`  传输默认有效期: ${DEFAULT_TTL_MS / 3600000} 小时`);
     console.log('  E2EE 使用 crypto-js 纯 JS 实现，HTTP/HTTPS 均可用');
+    console.log('  本地磁盘模式: /relay WebSocket 内存流转（不落盘）');
   });
 }
 

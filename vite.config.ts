@@ -18,6 +18,7 @@ export default defineConfig({
       '/files': { target: 'http://localhost:3000', changeOrigin: true },
       '/api': { target: 'http://localhost:3000', changeOrigin: true },
       '/download': { target: 'http://localhost:3000', changeOrigin: true },
+      '/relay': { target: 'ws://localhost:3000', ws: true, changeOrigin: true },
     },
   },
   build: {
