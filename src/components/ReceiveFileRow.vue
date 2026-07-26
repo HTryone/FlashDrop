@@ -7,7 +7,7 @@ import { decryptBlob } from '@/crypto/e2ee';
 const props = defineProps<{
   file: ReceivedFile;
   code: string;
-  e2eeKey: CryptoKey | null;
+  e2eeKey: string | null;
 }>();
 
 const busy = ref(false);

@@ -12,7 +12,7 @@ const detail = ref<TransferDetail | null>(null);
 const loading = ref(false);
 const error = ref('');
 const passphrase = ref('');
-const e2eeKey = ref<CryptoKey | null>(null);
+const e2eeKey = ref<string | null>(null);
 const unlockErr = ref('');
 
 async function load(code?: string) {
