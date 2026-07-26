@@ -54,6 +54,23 @@ function fmt(n: number) {
   return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
 }
 
+function fmtTime(ts: number): string {
+  if (!ts) return '-';
+  return new Date(ts).toLocaleString('zh-CN', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+function remainText(expiresAt: number): string {
+  if (!expiresAt) return '';
+  const ms = expiresAt - Date.now();
+  if (ms <= 0) return '已过期';
+  const h = Math.floor(ms / 3600000);
+  if (h >= 1) return `剩余约 ${h} 小时`;
+  const m = Math.ceil(ms / 60000);
+  return `剩余约 ${m} 分钟`;
+}
+
 onMounted(() => {
   if (props.initialCode) load(props.initialCode);
 });
@@ -76,6 +93,10 @@ onMounted(() => {
 
       <div v-if="detail.message" class="msg">
         <span class="muted">留言：</span>{{ detail.message }}
+      </div>
+
+      <div class="expire-row faint">
+        ⏳ 有效期至 {{ fmtTime(detail.expiresAt) }} · {{ remainText(detail.expiresAt) }}
       </div>
 
       <div v-if="detail.e2ee && !e2eeKey" class="unlock">
@@ -104,6 +125,7 @@ onMounted(() => {
           :file="f"
           :code="codeInput"
           :e2ee-key="e2eeKey"
+          :encrypted="!!detail.e2ee"
         />
       </div>
     </div>
@@ -130,6 +152,7 @@ onMounted(() => {
 .badge.r2 { color: var(--accent); border-color: rgba(109, 139, 255, 0.4); }
 .badge.e2ee { color: var(--warn); border-color: rgba(255, 205, 107, 0.4); }
 .msg { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; font-size: 13.5px; }
+.expire-row { font-size: 12px; padding: 6px 0; }
 .unlock { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 .unlock-row { display: flex; gap: 8px; }
 .unlock-row input { flex: 1; background: var(--bg-soft); border: 1px solid var(--border); color: var(--text); border-radius: var(--radius-sm); padding: 9px 12px; }

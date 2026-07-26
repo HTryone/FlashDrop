@@ -15,6 +15,14 @@ const message = ref('');
 // E2EE 始终开启，不可关闭
 const passphrase = ref(randomPassphrase());
 const storagePref = ref<StorageType>('local');
+// 有效期（小时）：分享码 / 登录码 / 文件统一过期
+const TTL_OPTIONS = [
+  { label: '1 小时', value: 1 },
+  { label: '24 小时', value: 24 },
+  { label: '3 天', value: 72 },
+  { label: '7 天', value: 168 },
+];
+const ttlHours = ref(24);
 
 const transferId = ref('');
 const code = ref('');
@@ -126,7 +134,7 @@ async function start() {
   try {
     if (!transferId.value) transferId.value = generateUUID();
     const e2eeMeta = { salt: newSalt(), chunkSize: E2EE_CHUNK_SIZE };
-    const resp = await createTransfer(transferId.value, message.value, e2eeMeta);
+    const resp = await createTransfer(transferId.value, message.value, e2eeMeta, ttlHours.value);
     code.value = resp.code;
     loginCode.value = resp.loginCode;   // 16 位登录码
     storage.value = resp.storage;
@@ -284,6 +292,18 @@ watch(message, async (v) => {
           <button :class="{ on: storagePref === 'r2' }" @click="storagePref = 'r2'">线上 R2</button>
         </div>
         <small class="faint">实际落盘由服务端配置决定；当前服务：{{ storage === 'r2' ? 'R2' : '本地磁盘' }}</small>
+      </div>
+      <div class="opt">
+        <label>有效期</label>
+        <div class="seg">
+          <button
+            v-for="opt in TTL_OPTIONS"
+            :key="opt.value"
+            :class="{ on: ttlHours === opt.value }"
+            @click="ttlHours = opt.value"
+          >{{ opt.label }}</button>
+        </div>
+        <small class="faint">分享码、登录码、文件同时到期；过期或乱写分享码返回找不到</small>
       </div>
     </div>
 

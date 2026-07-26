@@ -246,6 +246,7 @@ async function main() {
       message: t.message || '',
       storage: t.files[0]?.storage || storageType,
       e2ee: t.e2ee || null,
+      expiresAt: t.expiresAt || 0,
       files: t.files.map((f) => ({ id: f.id, name: f.relativePath, size: f.size })),
     });
   });

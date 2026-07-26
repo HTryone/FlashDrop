@@ -8,6 +8,7 @@ const props = defineProps<{
   file: ReceivedFile;
   code: string;
   e2eeKey: string | null;
+  encrypted: boolean;
 }>();
 
 const busy = ref(false);
@@ -62,7 +63,10 @@ function fmt(n: number) {
       <div class="name" :title="file.name">{{ file.name }}</div>
       <div class="sub muted">{{ fmt(file.size) }}<span v-if="err" class="err"> · {{ err }}</span></div>
     </div>
-    <button class="btn sm primary" :disabled="busy" @click="onDownload">
+    <template v-if="encrypted && !e2eeKey">
+      <span class="lock-hint muted">🔒 输入口令后下载</span>
+    </template>
+    <button v-else class="btn sm primary" :disabled="busy" @click="onDownload">
       {{ e2eeKey ? '解密下载' : (busy ? '下载中…' : '下载') }}
     </button>
   </div>
@@ -78,4 +82,5 @@ function fmt(n: number) {
 .name { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sub { font-size: 12px; margin-top: 3px; }
 .err { color: var(--danger); }
+.lock-hint { font-size: 12px; white-space: nowrap; }
 </style>

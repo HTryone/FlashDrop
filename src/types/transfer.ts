@@ -45,6 +45,7 @@ export interface TransferDetail {
   message: string;
   storage: 'local' | 'r2';
   e2ee: E2EEMeta | null;
+  expiresAt: number;
   files: ReceivedFile[];
 }
 
