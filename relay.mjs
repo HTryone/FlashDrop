@@ -50,10 +50,12 @@ export function attachRelay(server) {
     if (role === 'sender') entry.sender = ws;
     else entry.receiver = ws;
 
-    // 通知已在房间的对端：有人加入
-    const peer = role === 'sender' ? entry.receiver : entry.sender;
-    if (peer && peer.readyState === peer.OPEN) {
-      peer.send(JSON.stringify({ type: role === 'sender' ? 'sender-joined' : 'receiver-joined' }));
+    // 1:1 房间里已在场的对端（最多一个）
+    const existing = role === 'sender' ? entry.receiver : entry.sender;
+    if (existing && existing.readyState === existing.OPEN) {
+      // 双向通知：老一端收到「新端加入」，新一端收到「对端已在线」
+      existing.send(JSON.stringify({ type: 'peer-joined', role }));
+      ws.send(JSON.stringify({ type: 'peer-joined', role: existing.role }));
     }
 
     ws.on('message', (data, isBinary) => {

@@ -26,6 +26,7 @@ const sending = ref(false);
 const sendDone = ref(false);
 const sendProgress = ref(0);
 const sendStatus = ref('');
+const peerOnline = ref(false); // 接收方是否已在线
 let sendWs: WebSocket | null = null;
 
 function pick(e: Event) {
@@ -42,51 +43,63 @@ function genRoom() {
   room.value = s;
   passphrase.value = randomPassphrase();
   sendLink.value = `${location.origin}/?tab=local&room=${s}#k=${passphrase.value}`;
-  sendStatus.value = '房间已生成，把链接发给对方，再点「开始传输」';
+  sendStatus.value = '房间已生成，正在连接中继…';
+  void connectSender();
 }
 
-async function startSend() {
+// 生成房间后即连接中继，提前感知对方是否在线（用于点亮「开始传输」）
+async function connectSender() {
   if (!room.value || !passphrase.value) return;
   keyHex.value = await deriveKey(passphrase.value, LOCAL_SALT);
   const { host: relayHost, proto } = resolveRelay();
   const ws = new WebSocket(`${proto}://${relayHost}/relay?room=${room.value}&role=sender`);
   (ws as any).bufferedAmountLowThreshold = LOW;
   sendWs = ws;
-  sending.value = true;
+  sending.value = false;
+  sendDone.value = false;
   sendProgress.value = 0;
-  sendStatus.value = '等待对方连接…';
+  peerOnline.value = false;
+  sendStatus.value = '已连上中继，等待对方加入…';
 
   const sendOpenTimer = window.setTimeout(() => {
     if (ws.readyState !== WebSocket.OPEN) {
       sendStatus.value = '连接超时：中继不可达，请确认后端已启动或已配置 VITE_RELAY_URL';
       sending.value = false;
-      try { ws.close(); } catch { /* ignore */ }
     }
   }, 8000);
   ws.onopen = () => {
     clearTimeout(sendOpenTimer);
-    sendStatus.value = '已连上中继，等待对方加入…';
+    if (!peerOnline.value) sendStatus.value = '已连上中继，等待对方加入…';
   };
-
   ws.onmessage = (ev) => {
     if (typeof ev.data !== 'string') return;
     const msg = JSON.parse(ev.data);
-    if (msg.type === 'receiver-joined') {
-      // 对端已连，发送文件清单
-      ws.send(JSON.stringify({
-        type: 'offer',
-        files: sendFiles.value.map((f) => ({ name: f.name, size: f.size })),
-      }));
-      sendStatus.value = '对方已连接，开始传输…';
+    if ((msg.type === 'peer-joined' && msg.role === 'receiver') || msg.type === 'receiver-joined') {
+      // 对端已在线，点亮「开始传输」
+      peerOnline.value = true;
+      if (!sending.value) sendStatus.value = '对方已在线，可开始传输';
     } else if (msg.type === 'ready') {
       void sendLoop(ws);
     } else if (msg.type === 'peer-left') {
-      sendStatus.value = '对方已断开';
-      sending.value = false;
+      peerOnline.value = false;
+      sendStatus.value = '对方已断开，等待重新加入…';
     }
   };
-  ws.onclose = () => { clearTimeout(sendOpenTimer); sending.value = false; };
-  ws.onerror = () => { clearTimeout(sendOpenTimer); sendStatus.value = '连接出错（中继不可达或被拦截）'; sending.value = false; };
+  ws.onclose = () => { clearTimeout(sendOpenTimer); peerOnline.value = false; sending.value = false; };
+  ws.onerror = () => { clearTimeout(sendOpenTimer); sendStatus.value = '连接出错（中继不可达或被拦截）'; peerOnline.value = false; sending.value = false; };
+}
+
+// 真正开始传输（需对方已在线）
+function startSend() {
+  if (!sendWs || sendWs.readyState !== WebSocket.OPEN) { sendStatus.value = '未连接到中继'; return; }
+  if (!peerOnline.value) { sendStatus.value = '对方尚未加入，请等待对方连接接收'; return; }
+  sending.value = true;
+  sendProgress.value = 0;
+  sendStatus.value = '对方已连接，开始传输…';
+  sendWs.send(JSON.stringify({
+    type: 'offer',
+    files: sendFiles.value.map((f) => ({ name: f.name, size: f.size })),
+  }));
 }
 
 async function sendLoop(ws: WebSocket) {
@@ -138,6 +151,7 @@ const recvPass = ref(new URLSearchParams(location.hash.slice(1)).get('k') || '')
 const recvLinkInput = ref('');
 const receiving = ref(false);
 const recvReady = ref(false);
+const senderOnline = ref(false); // 发送方是否已在线
 const recvFiles = ref<{ name: string; size: number }[]>([]);
 const recvProgress = ref(0);
 const recvStatus = ref('输入房间码（或粘贴整条链接）后点连接');
@@ -187,7 +201,10 @@ async function startRecv() {
   ws.onmessage = (ev) => {
     if (typeof ev.data === 'string') {
       const msg = JSON.parse(ev.data);
-      if (msg.type === 'offer') {
+      if ((msg.type === 'peer-joined' && msg.role === 'sender') || msg.type === 'sender-joined') {
+        senderOnline.value = true;
+        if (!recvFiles.value.length) recvStatus.value = '对方已在线，等待发送…';
+      } else if (msg.type === 'offer') {
         recvFiles.value = msg.files;
         recvTotal = msg.files.reduce((s: number, f: any) => s + f.size, 0);
         parts = msg.files.map((f: any) => new Array(Math.ceil(f.size / CHUNK)));
@@ -198,6 +215,7 @@ async function startRecv() {
       } else if (msg.type === 'done') {
         finishRecv();
       } else if (msg.type === 'peer-left') {
+        senderOnline.value = false;
         recvStatus.value = '对方已断开';
         receiving.value = false;
       }
@@ -278,9 +296,13 @@ onUnmounted(() => {
           <input :value="sendLink" readonly />
           <button class="btn sm" @click="copyLink">复制链接</button>
         </div>
+        <div class="presence">
+          <span class="dot" :class="{ on: peerOnline }"></span>
+          对方（接收端）：{{ peerOnline ? '已在线 ✓' : '等待加入…' }}
+        </div>
         <div class="actions">
-          <button class="btn primary" :disabled="sending || sendDone" @click="startSend">
-            {{ sending ? '传输中…' : sendDone ? '已完成' : '开始传输' }}
+          <button class="btn primary" :disabled="sending || sendDone || !peerOnline" @click="startSend">
+            {{ sending ? '传输中…' : sendDone ? '已完成' : (peerOnline ? '开始传输' : '等待对方加入…') }}
           </button>
         </div>
         <div v-if="sending || sendDone" class="bar">
@@ -302,6 +324,10 @@ onUnmounted(() => {
       <div class="recv-form">
         <input v-model="recvLinkInput" placeholder="或粘贴整条分享链接自动解析" :disabled="receiving" />
         <button class="btn sm" @click="parsePastedLink">解析</button>
+      </div>
+      <div class="presence">
+        <span class="dot" :class="{ on: senderOnline }"></span>
+        对方（发送端）：{{ senderOnline ? '已在线 ✓' : '等待加入…' }}
       </div>
       <div class="actions">
         <button class="btn primary" :disabled="receiving || recvReady" @click="startRecv">连接接收</button>
@@ -344,5 +370,8 @@ hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
 .btn.primary { background: var(--accent-grad); color: #07101f; border: none; }
 .btn.sm { padding: 8px 12px; font-size: 12px; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.presence { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-dim); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-faint); flex: none; }
+.dot.on { background: #2ecc71; box-shadow: 0 0 6px #2ecc71; }
 input[type=file] { font-size: 13px; color: var(--text-dim); }
 </style>

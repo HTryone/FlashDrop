@@ -18,9 +18,12 @@ export class Relay {
     server.serializeAttachment({ room, role });
     this.state.acceptWebSocket(server);
 
-    // 通知对端本端已加入
+    // 双向通知：老一端收到「新端加入」，新一端收到「对端已在线」
     const peer = this.findPeer(room, role === 'sender' ? 'receiver' : 'sender');
-    if (peer) peer.send(JSON.stringify({ type: `${role}-joined` }));
+    if (peer) {
+      peer.send(JSON.stringify({ type: 'peer-joined', role }));
+      server.send(JSON.stringify({ type: 'peer-joined', role: role === 'sender' ? 'receiver' : 'sender' }));
+    }
 
     return new Response(null, { status: 101, webSocket: client });
   }
