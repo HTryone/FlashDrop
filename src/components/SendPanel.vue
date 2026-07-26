@@ -1,24 +1,23 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onUnmounted } from 'vue';
 import type { QueuedFile, StorageType } from '@/types/transfer';
 import { createTransfer, refreshCode, setMessage, terminateTransfer, fileUrl, zipUrl } from '@/api/transfer';
 import { uploadAll } from '@/composables/useTusUpload';
-import { newSalt, E2EE_CHUNK_SIZE, randomPassphrase } from '@/crypto/e2ee';
+import { newSalt, E2EE_CHUNK_SIZE, randomPassphrase, deriveKey, LOCAL_SALT, LOCAL_CHUNK_SIZE, encryptChunk } from '@/crypto/e2ee';
+import { createWebRTC, fetchIceServers } from '@/composables/useWebRTC';
 import SendFileRow from './SendFileRow.vue';
-import LocalTransfer from './LocalTransfer.vue';
 
 const emit = defineEmits<{
   (e: 'gotLoginCode', code: string): void;
 }>();
 
-// 发送模式：中转发送（带分享码/登录码/有效期/口令）| 本地直传（WebSocket 实时，无有效期/口令）
+// 发送方式：中转发送（带分享码/登录码/有效期/口令）| 本地直传（WebSocket 实时，无有效期/口令）
 const sendMode = ref<'relay' | 'local'>('relay');
 
 const files = ref<QueuedFile[]>([]);
 const message = ref('');
 // E2EE 始终开启，不可关闭
 const passphrase = ref(randomPassphrase());
-const storagePref = ref<StorageType>('local');
 // 有效期（小时）：分享码 / 登录码 / 文件统一过期
 const TTL_OPTIONS = [
   { label: '1 小时', value: 1 },
@@ -39,6 +38,187 @@ const error = ref('');
 
 // 取消分享弹窗
 const showTerminateDialog = ref(false);
+
+// ========== 本地直传（复用 LocalTransfer 逻辑）==========
+const LOCAL_CHUNK = LOCAL_CHUNK_SIZE;
+const FRAME_HDR = 12;
+const LOW = 16 * 1024 * 1024;
+const CONN_TIMEOUT = 10000;
+const DRAIN_TIMEOUT_MS = 30000;
+const RELAY_DEFAULT = 'flashdrop-relay.xianshenghu363.workers.dev';
+function resolveRelay() {
+  const host = (import.meta as any).env?.VITE_RELAY_URL || RELAY_DEFAULT;
+  const proto = (host.includes('workers.dev') || location.protocol === 'https:') ? 'wss' : 'ws';
+  return { host, proto };
+}
+
+const lRoom = ref('');
+const lPassphrase = ref('');
+const lSendLink = ref('');
+const lKeyHex = ref('');
+const lSending = ref(false);
+const lDone = ref(false);
+const lTransferStarted = ref(false);
+let lLoopStarted = false;
+const lProgress = ref(0);
+const lStatus = ref('');
+const lPeerOnline = ref(false);
+let lWs: WebSocket | null = null;
+
+// WebRTC P2P 直连层（叠加在现有 WS 中继之上；失败自动回退 WS）
+let lRtc: ReturnType<typeof createWebRTC> | null = null;
+let lRtcStarted = false;
+const lRtcOpen = ref(false);
+let lIce: RTCIceServer[] = [];
+
+function resetLocalSender() {
+  lSending.value = false; lDone.value = false; lTransferStarted.value = false;
+  lLoopStarted = false; lProgress.value = 0; lPeerOnline.value = false;
+  lRtcOpen.value = false;
+}
+function closeLocalWs() {
+  if (lWs) { try { lWs.close(); } catch {} lWs = null; }
+  if (lRtc) { try { lRtc.destroy(); } catch {} lRtc = null; }
+  lRtcStarted = false; lRtcOpen.value = false;
+}
+
+// 创建 WebRTC 层（若已存在则跳过）。P2P 直连优先，失败由 doLocalSendLoop 回退 WS。
+function ensureLocalRtc(relayHost: string, proto: string) {
+  if (lRtc) return;
+  lRtc = createWebRTC({
+    role: 'sender',
+    iceServers: lIce,
+    sendSignal: (m) => { if (lWs && lWs.readyState === WebSocket.OPEN) lWs.send(JSON.stringify(m)); },
+    onState: (open) => { lRtcOpen.value = open; if (open) lStatus.value = '已建立 P2P 直连，准备传输'; },
+  });
+}
+
+function safeEncryptLocal(plain: Uint8Array, keyHex: string): Uint8Array<ArrayBuffer> {
+  try { return encryptChunk(plain, keyHex); }
+  catch (e: any) { throw new Error(`加密失败: ${e?.message || e}`); }
+}
+
+function genRoom() {
+  closeLocalWs(); resetLocalSender();
+  const cs = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let s = ''; const a = new Uint8Array(6); crypto.getRandomValues(a);
+  for (let i = 0; i < 6; i++) s += cs[a[i] % cs.length];
+  lRoom.value = s; lPassphrase.value = randomPassphrase();
+  lSendLink.value = `${location.origin}/?tab=local&room=${s}#k=${lPassphrase.value}`;
+  lStatus.value = '房间已生成，正在连接中继…'; void connectLocalSender();
+}
+
+async function connectLocalSender() {
+  if (!lRoom.value || !lPassphrase.value) return;
+  try { lKeyHex.value = await deriveKey(lPassphrase.value, LOCAL_SALT); }
+  catch (e: any) { lStatus.value = `密钥派生失败: ${e?.message || e}`; return; }
+  const { host: relayHost, proto } = resolveRelay();
+  let ws: WebSocket;
+  try { ws = new WebSocket(`${proto}://${relayHost}/relay?room=${lRoom.value}&role=sender`); }
+  catch (e: any) { lStatus.value = `无法创建连接: ${e?.message || e}`; return; }
+  (ws as any).bufferedAmountLowThreshold = LOW; lWs = ws; resetLocalSender();
+  // 拉取 ICE 配置并创建 WebRTC 层（协商在对方上线后发起）
+  try { lIce = await fetchIceServers(relayHost, proto); } catch { lIce = []; }
+  ensureLocalRtc(relayHost, proto);
+  lStatus.value = '已连上中继，等待对方加入…';
+  let settled = false;
+  const openTimer = window.setTimeout(() => {
+    if (!settled && ws.readyState !== WebSocket.OPEN) { settled = true; lStatus.value = '连接超时：中继不可达'; resetLocalSender(); try { ws.close(); } catch {} }
+  }, CONN_TIMEOUT);
+  ws.onopen = () => { clearTimeout(openTimer); if (!settled) lStatus.value = '已连上中继，等待对方加入…'; };
+  ws.onmessage = (ev) => {
+    if (typeof ev.data !== 'string') return;
+    const msg = (() => { try { return JSON.parse(ev.data as string); } catch { return null; } })();
+    if (!msg) return;
+    if ((msg.type === 'peer-joined' && msg.role === 'receiver') || msg.type === 'receiver-joined') {
+      const wasOffline = !lPeerOnline.value; lPeerOnline.value = true;
+      // 对方上线即发起 WebRTC 协商（P2P 直连），稍后起传时若 DC 已开则走直连
+      ensureLocalRtc(relayHost, proto);
+      if (!lRtcStarted) { lRtcStarted = true; lRtc?.initiator().catch(() => {}); }
+      if (!lSending.value && !lDone.value) lStatus.value = '对方已在线，可开始传输';
+      if (lTransferStarted.value && !lLoopStarted && ws.readyState === WebSocket.OPEN && wasOffline) {
+        localSendOffer(ws); lStatus.value = '对方已加入，重新发起传输…';
+      }
+    } else if (msg.type === 'ready') { void doLocalSendLoop(ws); }
+    else if (msg.type === 'rtc-signal') { void lRtc?.onSignal(msg.data); }
+    else if (msg.type === 'peer-left') {
+      lPeerOnline.value = false;
+      if (!lDone.value) lStatus.value = '对方已断开，等待重新加入…';
+      // 断开则销毁 P2P，待重新加入时再协商
+      if (lRtc) { try { lRtc.destroy(); } catch {} lRtc = null; }
+      lRtcStarted = false; lRtcOpen.value = false;
+    }
+  };
+  ws.onclose = () => { clearTimeout(openTimer); if (!settled) settled = true; if (!lDone.value) resetLocalSender(); };
+  ws.onerror = () => { clearTimeout(openTimer); if (!settled) settled = true; lStatus.value = '连接出错（中继不可达或被拦截）'; resetLocalSender(); };
+}
+
+function localSendOffer(ws: WebSocket) {
+  try { ws.send(JSON.stringify({ type: 'offer', files: files.value.map(f => ({ name: f.file.name, size: f.file.size })) })); }
+  catch (e: any) { lStatus.value = `发送 offer 失败: ${e?.message || e}`; }
+}
+
+function startLocalSend() {
+  if (!lWs || lWs.readyState !== WebSocket.OPEN) { lStatus.value = '未连接到中继'; return; }
+  if (!lPeerOnline.value) { lStatus.value = '对方尚未加入，请等待对方连接接收'; return; }
+  if (!files.value.length) { lStatus.value = '没有待发送文件'; return; }
+  lSending.value = true; lTransferStarted.value = true; lProgress.value = 0;
+  lStatus.value = '对方已连接，开始传输…'; localSendOffer(lWs);
+}
+
+async function doLocalSendLoop(ws: WebSocket) {
+  lLoopStarted = true;
+  // 一次性决定本次传输走 P2P 直连(DataChannel) 还是回退 WS 中继，
+  // 避免同一文件混用两路导致帧乱序。
+  const useRtc = !!(lRtc && lRtc.isOpen());
+  const ch = (useRtc && lRtc) ? lRtc.getChannel() : null;
+  const mapped = files.value.map(f => ({ file: f.file }));
+  const total = mapped.reduce((s, f) => s + f.file.size, 0);
+  if (total === 0) { ws.send(JSON.stringify({ type: 'done' })); lDone.value = true; lStatus.value = '传输完成（空）'; lSending.value = false; return; }
+  let sent = 0;
+  try {
+    for (let fi = 0; fi < mapped.length; fi++) {
+      const file = mapped[fi].file; let offset = 0; let ci = 0;
+      while (offset < file.size) {
+        if (ws.readyState !== WebSocket.OPEN && !useRtc) throw new Error('连接已断开');
+        const end = Math.min(offset + LOCAL_CHUNK, file.size);
+        const buf = await file.slice(offset, end).arrayBuffer();
+        const plain = new Uint8Array(buf); const enc = safeEncryptLocal(plain, lKeyHex.value);
+        const header = new Uint8Array(FRAME_HDR); const dv = new DataView(header.buffer);
+        dv.setUint16(0, fi); dv.setUint32(2, ci); dv.setUint32(6, buf.byteLength);
+        const frame = new Uint8Array(header.length + enc.length); frame.set(header, 0); frame.set(enc, header.length);
+        if (useRtc && ch) {
+          if (ch.bufferedAmount > LOW) await localSafeDrain(ch);
+          lRtc!.sendFrame(frame);
+        } else {
+          if (ws.bufferedAmount > LOW) await localSafeDrain(ws);
+          ws.send(frame);
+        }
+        offset += buf.byteLength; ci++; sent += buf.byteLength;
+        lProgress.value = total ? sent / total : 1;
+      }
+    }
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'done' }));
+    lDone.value = true; lStatus.value = '传输完成';
+  } catch (e: any) { lStatus.value = `传输出错: ${e?.message || e}`; }
+  finally { lSending.value = false; }
+}
+
+function localSafeDrain(target: any): Promise<void> {
+  if (!target || target.bufferedAmount <= LOW) return Promise.resolve();
+  return new Promise((resolve) => {
+    const onLow = () => { cleanup(); resolve(); };
+    const onClose = () => { cleanup(); resolve(); };
+    const timer = setTimeout(() => { cleanup(); resolve(); }, DRAIN_TIMEOUT_MS);
+    function cleanup() { clearTimeout(timer); target.removeEventListener('bufferedamountlow', onLow as any); target.removeEventListener('close', onClose as any); }
+    target.addEventListener('bufferedamountlow', onLow as any, { once: true });
+    target.addEventListener('close', onClose as any, { once: true });
+  });
+}
+
+function copyLocalLink() { navigator.clipboard?.writeText(lSendLink.value); lStatus.value = '链接已复制'; }
+
+// ========== 中转发送（原有逻辑）==========
 
 const totalSize = computed(() => files.value.reduce((s, f) => s + f.file.size, 0));
 const doneCount = computed(() => files.value.filter((f) => f.status === 'done').length);
@@ -223,18 +403,14 @@ watch(message, async (v) => {
     /* 忽略 */
   }
 });
+
+// 组件卸载时清理本地直传 WebSocket
+onUnmounted(() => { closeLocalWs(); });
 </script>
 
 <template>
   <div class="send">
-    <!-- 模式切换：中转发送 / 本地直传 -->
-    <div class="seg mode-seg">
-      <button :class="{ on: sendMode === 'relay' }" @click="sendMode = 'relay'">中转发送</button>
-      <button :class="{ on: sendMode === 'local' }" @click="sendMode = 'local'">本地直传</button>
-    </div>
-
-    <template v-if="sendMode === 'relay'">
-    <!-- 拖拽 / 选择区 -->
+    <!-- 拖拽 / 选择区（共用） -->
     <div
       class="drop"
       :class="{ over: dragOver }"
@@ -257,12 +433,12 @@ watch(message, async (v) => {
       </div>
     </div>
 
-    <!-- 已选文件 -->
+    <!-- 已选文件（共用） -->
     <div v-if="files.length" class="selected">
       <div class="sel-head">
         <span>已选 {{ files.length }} 个 · {{ fmt(totalSize) }}</span>
         <span class="sel-status" :class="selStatusClass">{{ selStatus }}</span>
-        <button class="btn sm ghost" @click="clearSelected" :disabled="uploading">清空所选</button>
+        <button class="btn sm ghost" @click="clearSelected" :disabled="uploading || lSending">清空所选</button>
       </div>
       <div class="file-list">
         <SendFileRow
@@ -274,6 +450,35 @@ watch(message, async (v) => {
       </div>
     </div>
 
+    <!-- 发送方式选择 -->
+    <div class="opts">
+      <div class="opt">
+        <label>发送方式</label>
+        <div class="seg">
+          <button :class="{ on: sendMode === 'relay' }" @click="sendMode = 'relay'">中转发送</button>
+          <button :class="{ on: sendMode === 'local' }" @click="sendMode = 'local'">本地直传</button>
+        </div>
+      </div>
+
+      <!-- 中转发送专属选项 -->
+      <template v-if="sendMode === 'relay'">
+        <div class="opt">
+          <label>有效期</label>
+          <div class="seg">
+            <button
+              v-for="opt in TTL_OPTIONS"
+              :key="opt.value"
+              :class="{ on: ttlHours === opt.value }"
+              @click="ttlHours = opt.value"
+            >{{ opt.label }}</button>
+          </div>
+          <small class="faint">分享码、登录码、文件同时到期；过期或乱写分享码返回找不到</small>
+        </div>
+      </template>
+    </div>
+
+    <!-- ===== 中转发送模式 ===== -->
+    <template v-if="sendMode === 'relay'">
     <!-- 留言 -->
     <div class="field">
       <label>留言（对方可见）</label>
@@ -291,30 +496,6 @@ watch(message, async (v) => {
         <input v-model="passphrase" type="text" class="pass" placeholder="自动生成的随机口令" />
         <button class="btn sm" @click="refreshPassphrase" title="换一个随机口令">🔄 刷新</button>
         <button class="btn sm ghost" @click="copyPassphrase" title="复制口令">📋 复制</button>
-      </div>
-    </div>
-
-    <!-- 存储 -->
-    <div class="opts">
-      <div class="opt">
-        <label>存储位置</label>
-        <div class="seg">
-          <button :class="{ on: storagePref === 'local' }" @click="storagePref = 'local'">本地直传</button>
-          <button :class="{ on: storagePref === 'r2' }" @click="storagePref = 'r2'">线上 R2</button>
-        </div>
-        <small class="faint">实际落盘由服务端配置决定；当前服务：{{ storage === 'r2' ? 'R2' : '本地直传' }}</small>
-      </div>
-      <div class="opt">
-        <label>有效期</label>
-        <div class="seg">
-          <button
-            v-for="opt in TTL_OPTIONS"
-            :key="opt.value"
-            :class="{ on: ttlHours === opt.value }"
-            @click="ttlHours = opt.value"
-          >{{ opt.label }}</button>
-        </div>
-        <small class="faint">分享码、登录码、文件同时到期；过期或乱写分享码返回找不到</small>
       </div>
     </div>
 
@@ -378,7 +559,37 @@ watch(message, async (v) => {
     </Teleport>
     </template>
 
-    <LocalTransfer v-else side="send" />
+    <!-- ===== 本地直传模式 ===== -->
+    <template v-else>
+    <div class="local-send-panel">
+      <p class="hint">文件只在内存里经网站流转，不落服务器磁盘；双方需同时在线，关闭即止。</p>
+
+      <div v-if="!lRoom" class="actions">
+        <button class="btn primary" :disabled="!files.length" @click="genRoom">生成直传房间</button>
+      </div>
+      <div v-else class="roominfo">
+        <div class="code">房间码：<b>{{ lRoom }}</b></div>
+        <div class="link">
+          <input :value="lSendLink" readonly />
+          <button class="btn sm" @click="copyLocalLink">复制链接</button>
+        </div>
+        <div class="presence">
+          <span class="dot" :class="{ on: lPeerOnline }"></span>
+          对方（接收端）：{{ lPeerOnline ? '已在线 ✓' : '等待加入…' }}
+          <span class="transport" :class="{ p2p: lRtcOpen }">{{ lRtcOpen ? 'P2P 直连' : '经中继转发' }}</span>
+        </div>
+        <div class="actions">
+          <button class="btn primary" :disabled="lSending || lDone || !lPeerOnline" @click="startLocalSend">
+            {{ lSending ? '传输中…' : lDone ? '已完成' : (lPeerOnline ? '开始传输' : '等待对方加入…') }}
+          </button>
+        </div>
+        <div v-if="lSending || lDone" class="bar">
+          <div class="fill" :style="{ width: (lProgress * 100) + '%' }"></div>
+        </div>
+      </div>
+      <div class="status">{{ lStatus }}</div>
+    </div>
+    </template>
   </div>
 </template>
 
@@ -422,7 +633,6 @@ textarea:focus, .pass:focus { outline: none; border-color: var(--accent); }
 .seg { display: flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
 .seg button { flex: 1; background: var(--bg-soft); border: none; color: var(--text-dim); padding: 9px; font-size: 13px; }
 .seg button.on { background: var(--accent-grad); color: #07101f; font-weight: 700; }
-.mode-seg { width: fit-content; margin-bottom: 4px; }
 .err-box { color: var(--danger); font-size: 13px; background: rgba(255, 107, 129, 0.1); padding: 8px 12px; border-radius: var(--radius-sm); }
 .actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .ok-tag { color: var(--ok); font-weight: 600; }
@@ -459,4 +669,21 @@ textarea:focus, .pass:focus { outline: none; border-color: var(--accent); }
 .btn.danger:hover { opacity: 0.9; }
 
 @media (max-width: 640px) { .opts { grid-template-columns: 1fr; } .pass-row { flex-wrap: wrap; } }
+
+/* 本地直传面板 */
+.local-send-panel { display: flex; flex-direction: column; gap: 12px; }
+.local-send-panel .hint { font-size: 12.5px; color: var(--text-dim); margin: 0; }
+.local-send-panel .roominfo { display: flex; flex-direction: column; gap: 10px; }
+.local-send-panel .code { font-size: 14px; }
+.local-send-panel .code b { font-size: 18px; letter-spacing: 2px; color: var(--accent); }
+.local-send-panel .link { display: flex; gap: 8px; }
+.local-send-panel .link input { flex: 1; background: var(--bg-soft); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px; font-size: 12px; }
+.local-send-panel .bar { height: 8px; background: var(--bg-soft); border-radius: 999px; overflow: hidden; }
+.local-send-panel .fill { height: 100%; background: var(--accent-grad); transition: width 0.15s; }
+.local-send-panel .status { font-size: 12.5px; color: var(--text-dim); min-height: 16px; word-break: break-all; }
+.presence { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-dim); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-faint); flex: none; }
+.dot.on { background: #2ecc71; box-shadow: 0 0 6px #2ecc71; }
+.local-send-panel .transport { margin-left: 8px; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-dim); }
+.local-send-panel .transport.p2p { color: #2ecc71; border-color: rgba(46, 204, 113, 0.4); }
 </style>

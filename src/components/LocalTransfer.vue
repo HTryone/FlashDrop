@@ -4,6 +4,7 @@ import {
   encryptChunk, decryptChunk, deriveKey, randomPassphrase,
   LOCAL_SALT, LOCAL_CHUNK_SIZE,
 } from '@/crypto/e2ee';
+import { createWebRTC, fetchIceServers } from '@/composables/useWebRTC';
 
 // 由父组件（发送/接收面板）指定渲染哪一侧；不传则两侧都渲染
 const props = defineProps<{ side?: 'send' | 'receive' }>();
@@ -390,6 +391,10 @@ const recvFiles = ref<{ name: string; size: number }[]>([]);
 const recvProgress = ref(0);
 const recvStatus = ref('输入房间码（或粘贴整条链接）后点连接');
 let recvWs: WebSocket | null = null;
+// WebRTC P2P 直连层（叠加在 WS 中继之上；失败自动回退 WS）
+let recvRtc: ReturnType<typeof createWebRTC> | null = null;
+const recvRtcOpen = ref(false);
+let rIce: RTCIceServer[] = [];
 let writers: any[] = [];                 // 每个文件一个 WritableStream writer，流式写盘
 let recvBytes = 0;
 let recvTotal = 0;
@@ -407,10 +412,14 @@ function resetReceiver() {
   for (const w of writers) { try { w.abort(); } catch { /* ignore */ } }
   writers = [];
   recvKey = '';
+  if (recvRtc) { try { recvRtc.destroy(); } catch { /* ignore */ } recvRtc = null; }
+  recvRtcOpen.value = false;
 }
 /** 安全关闭接收端 WS */
 function closeReceiverWs() {
   if (recvWs) { try { recvWs.close(); } catch { /* ignore */ } recvWs = null; }
+  if (recvRtc) { try { recvRtc.destroy(); } catch { /* ignore */ } recvRtc = null; }
+  recvRtcOpen.value = false;
 }
 
 function parsePastedLink() {
@@ -451,6 +460,15 @@ async function startRecv() {
   recvWs = ws;
   receiving.value = true;
   recvStatus.value = '连接中…';
+  // 拉取 ICE 并创建 WebRTC 层（接收端为 answerer，收到 offer 即应答）
+  try { rIce = await fetchIceServers(relayHost, proto); } catch { rIce = []; }
+  recvRtc = createWebRTC({
+    role: 'receiver',
+    iceServers: rIce,
+    sendSignal: (m) => { if (recvWs && recvWs.readyState === WebSocket.OPEN) recvWs.send(JSON.stringify(m)); },
+    onDataChannel: (dc) => { dc.onmessage = (ev) => handleRecvFrame(ev.data as ArrayBuffer); },
+    onState: (open) => { recvRtcOpen.value = open; },
+  });
 
   let settled = false;
   const openTimer = window.setTimeout(() => {
@@ -508,39 +526,14 @@ async function startRecv() {
         senderOnline.value = false;
         recvStatus.value = '对方已断开';
         receiving.value = false;
+      } else if (msg.type === 'rtc-signal') {
+        void recvRtc?.onSignal(msg.data);
       }
       return;
     }
 
-    // ---- 二进制数据帧 ----
-    try {
-      const frame = new Uint8Array(ev.data as ArrayBuffer);
-      if (frame.length < FRAME_HDR) { recvStatus.value = '收到过短的数据帧'; return; }
-
-      const dv = new DataView(frame.buffer);
-      const fi = dv.getUint16(0);
-      const ci = dv.getUint32(2);
-      const plainLen = dv.getUint32(6);
-      const body = frame.slice(FRAME_HDR);
-
-      // 边界检查（writer 数组已按文件数预建，只需校验文件索引）
-      if (fi >= writers.length) {
-        console.warn(`[recv] 文件索引越界: fi=${fi}, max=${writers.length - 1}`);
-        return;
-      }
-
-      const plain = safeDecrypt(body, recvKey, plainLen);
-      const w = writers[fi];
-      if (w) {
-        w.write(plain).catch((we: any) => console.error('[recv] 写入失败:', we));
-      }
-      recvBytes += plain.length;
-      recvProgress.value = recvTotal ? recvBytes / recvTotal : 1;
-    } catch (e: any) {
-      console.error('[recv] 数据帧处理失败:', e);
-      recvStatus.value = `数据帧错误: ${e?.message || e}`;
-      // 不中断接收，继续尝试后续帧（单个坏块不应终止整个传输）
-    }
+    // ---- 二进制数据帧（WS 兜底通道；P2P 直连时由 dc.onmessage 调用同一处理函数）----
+    handleRecvFrame(ev.data as ArrayBuffer);
   };
 
   ws.onclose = () => {
@@ -576,6 +569,35 @@ async function finishRecv() {
   receiving.value = false;
   recvReady.value = false;
   writers = [];
+}
+
+// 二进制数据帧处理：WS 兜底通道与 P2P DataChannel 共用同一函数，避免逻辑分叉。
+function handleRecvFrame(data: ArrayBuffer) {
+  try {
+    const frame = new Uint8Array(data);
+    if (frame.length < FRAME_HDR) { recvStatus.value = '收到过短的数据帧'; return; }
+    const dv = new DataView(frame.buffer);
+    const fi = dv.getUint16(0);
+    const ci = dv.getUint32(2);
+    const plainLen = dv.getUint32(6);
+    const body = frame.slice(FRAME_HDR);
+    // 边界检查（writer 数组已按文件数预建，只需校验文件索引）
+    if (fi >= writers.length) {
+      console.warn(`[recv] 文件索引越界: fi=${fi}, max=${writers.length - 1}`);
+      return;
+    }
+    const plain = safeDecrypt(body, recvKey, plainLen);
+    const w = writers[fi];
+    if (w) {
+      w.write(plain).catch((we: any) => console.error('[recv] 写入失败:', we));
+    }
+    recvBytes += plain.length;
+    recvProgress.value = recvTotal ? recvBytes / recvTotal : 1;
+  } catch (e: any) {
+    console.error('[recv] 数据帧处理失败:', e);
+    recvStatus.value = `数据帧错误: ${e?.message || e}`;
+    // 不中断接收，继续尝试后续帧（单个坏块不应终止整个传输）
+  }
 }
 
 // ================================================================
@@ -635,12 +657,16 @@ onUnmounted(() => {
         <input v-model="recvRoom" placeholder="房间码（链接打开时自动填入）" :disabled="receiving" />
       </div>
       <div class="recv-form">
+        <input v-model="recvPass" type="text" placeholder="密钥（链接打开时自动填入，或手动输入）" :disabled="receiving" />
+      </div>
+      <div class="recv-form">
         <input v-model="recvLinkInput" placeholder="或粘贴整条分享链接自动解析" :disabled="receiving" />
         <button class="btn sm" @click="parsePastedLink">解析</button>
       </div>
       <div class="presence">
         <span class="dot" :class="{ on: senderOnline }"></span>
         对方（发送端）：{{ senderOnline ? '已在线 ✓' : '等待加入…' }}
+        <span class="transport" :class="{ p2p: recvRtcOpen }">{{ recvRtcOpen ? 'P2P 直连' : '经中继转发' }}</span>
       </div>
       <div class="actions">
         <button class="btn primary" :disabled="receiving || recvReady" @click="startRecv">连接接收</button>
@@ -686,5 +712,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
 .presence { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-dim); }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-faint); flex: none; }
 .dot.on { background: #2ecc71; box-shadow: 0 0 6px #2ecc71; }
+.transport { margin-left: 8px; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-dim); }
+.transport.p2p { color: #2ecc71; border-color: rgba(46, 204, 113, 0.4); }
 input[type=file] { font-size: 13px; color: var(--text-dim); }
 </style>

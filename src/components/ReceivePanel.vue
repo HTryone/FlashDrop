@@ -8,9 +8,7 @@ import LocalTransfer from './LocalTransfer.vue';
 
 const props = defineProps<{ initialCode?: string }>();
 
-// 接收模式：中转接收（分享码/口令）| 本地直传（房间码，无口令）
-const recvMode = ref<'relay' | 'local'>('relay');
-
+// 接收模式：中转接收（分享码/口令）| 本地直传（房间码，无口令）—— 两块均常驻展示，不再用 tab 切换
 const codeInput = ref('');
 const detail = ref<TransferDetail | null>(null);
 const loading = ref(false);
@@ -76,86 +74,86 @@ function remainText(expiresAt: number): string {
 }
 
 onMounted(() => {
-  if (new URLSearchParams(location.search).get('tab') === 'local') recvMode.value = 'local';
   if (props.initialCode) load(props.initialCode);
 });
 </script>
 
 <template>
   <div class="recv">
-    <!-- 模式切换：中转接收 / 本地直传 -->
-    <div class="seg mode-seg">
-      <button :class="{ on: recvMode === 'relay' }" @click="recvMode = 'relay'">中转接收</button>
-      <button :class="{ on: recvMode === 'local' }" @click="recvMode = 'local'">本地直传</button>
-    </div>
-
-    <template v-if="recvMode === 'relay'">
-    <div class="code-input">
-      <input v-model="codeInput" placeholder="输入 6 位分享码" maxlength="6" @keyup.enter="load()" />
-      <button class="btn primary" :disabled="loading" @click="load()">{{ loading ? '查询中…' : '获取文件' }}</button>
-    </div>
-
-    <div v-if="error" class="err-box">{{ error }}</div>
-
-    <div v-if="detail" class="result">
-      <div class="meta">
-        <span class="badge" :class="detail.storage">{{ detail.storage === 'r2' ? 'R2 存储' : '本地存储' }}</span>
-        <span v-if="detail.e2ee" class="badge e2ee">🔒 端到端加密</span>
+    <!-- ① 中转接收（常驻展示） -->
+    <section class="panel-block">
+      <h3 class="block-title">① 中转接收（分享码）</h3>
+      <div class="code-input">
+        <input v-model="codeInput" placeholder="输入 6 位分享码" maxlength="6" @keyup.enter="load()" />
+        <button class="btn primary" :disabled="loading" @click="load()">{{ loading ? '查询中…' : '获取文件' }}</button>
       </div>
 
-      <div v-if="detail.message" class="msg">
-        <span class="muted">留言：</span>{{ detail.message }}
-      </div>
+      <div v-if="error" class="err-box">{{ error }}</div>
 
-      <div class="expire-row faint">
-        ⏳ 有效期至 {{ fmtTime(detail.expiresAt) }} · {{ remainText(detail.expiresAt) }}
-      </div>
-
-      <div v-if="detail.e2ee && !e2eeKey" class="unlock">
-        <p class="muted">该传输已加密，输入发送方给的口令以解密：</p>
-        <div class="unlock-row">
-          <input v-model="passphrase" type="password" placeholder="口令" @keyup.enter="unlock()" />
-          <button class="btn primary sm" @click="unlock()">解锁</button>
+      <div v-if="detail" class="result">
+        <div class="meta">
+          <span class="badge" :class="detail.storage">{{ detail.storage === 'r2' ? 'R2 存储' : '本地存储' }}</span>
+          <span v-if="detail.e2ee" class="badge e2ee">🔒 端到端加密</span>
         </div>
-        <div v-if="unlockErr" class="err-box sm">{{ unlockErr }}</div>
+
+        <div v-if="detail.message" class="msg">
+          <span class="muted">留言：</span>{{ detail.message }}
+        </div>
+
+        <div class="expire-row faint">
+          ⏳ 有效期至 {{ fmtTime(detail.expiresAt) }} · {{ remainText(detail.expiresAt) }}
+        </div>
+
+        <div v-if="detail.e2ee && !e2eeKey" class="unlock">
+          <p class="muted">该传输已加密，输入发送方给的口令以解密：</p>
+          <div class="unlock-row">
+            <input v-model="passphrase" type="password" placeholder="口令" @keyup.enter="unlock()" />
+            <button class="btn primary sm" @click="unlock()">解锁</button>
+          </div>
+          <div v-if="unlockErr" class="err-box sm">{{ unlockErr }}</div>
+        </div>
+
+        <div class="files-head">
+          <span>共 {{ detail.files.length }} 个文件</span>
+          <a
+            v-if="detail.storage !== 'r2' && !detail.e2ee"
+            class="btn sm"
+            :href="zipUrl(codeInput)"
+          >打包下载全部 (zip)</a>
+          <span v-else-if="detail.e2ee" class="faint">加密传输请逐文件解密下载</span>
+        </div>
+
+        <div class="file-list">
+          <ReceiveFileRow
+            v-for="f in detail.files"
+            :key="f.id"
+            :file="f"
+            :code="codeInput"
+            :e2ee-key="e2eeKey"
+            :encrypted="!!detail.e2ee"
+          />
+        </div>
       </div>
 
-      <div class="files-head">
-        <span>共 {{ detail.files.length }} 个文件</span>
-        <a
-          v-if="detail.storage !== 'r2' && !detail.e2ee"
-          class="btn sm"
-          :href="zipUrl(codeInput)"
-        >打包下载全部 (zip)</a>
-        <span v-else-if="detail.e2ee" class="faint">加密传输请逐文件解密下载</span>
+      <div v-if="!detail && !loading" class="empty muted">
+        粘贴对方发来的分享码，或打开对方发来的带码链接，即可看到文件列表。
       </div>
+    </section>
 
-      <div class="file-list">
-        <ReceiveFileRow
-          v-for="f in detail.files"
-          :key="f.id"
-          :file="f"
-          :code="codeInput"
-          :e2ee-key="e2eeKey"
-          :encrypted="!!detail.e2ee"
-        />
-      </div>
-    </div>
+    <hr class="block-sep" />
 
-    <div v-if="!detail && !loading" class="empty muted">
-      粘贴对方发来的分享码，或打开对方发来的带码链接，即可看到文件列表。
-    </div>
-    </template>
-
-    <LocalTransfer v-else side="receive" />
+    <!-- ② 本地直传（常驻展示） -->
+    <section class="panel-block">
+      <LocalTransfer side="receive" />
+    </section>
   </div>
 </template>
 
 <style scoped>
 .recv { display: flex; flex-direction: column; gap: 16px; }
-.mode-seg { display: flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; width: fit-content; margin-bottom: 4px; }
-.mode-seg button { background: var(--bg-soft); border: none; color: var(--text-dim); padding: 9px 16px; font-size: 13px; }
-.mode-seg button.on { background: var(--accent-grad); color: #07101f; font-weight: 700; }
+.panel-block { display: flex; flex-direction: column; gap: 14px; }
+.block-title { margin: 0; font-size: 15px; color: var(--text); }
+.block-sep { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
 .code-input { display: flex; gap: 10px; }
 .code-input input {
   flex: 1; background: var(--bg-soft); border: 1px solid var(--border); color: var(--text);
