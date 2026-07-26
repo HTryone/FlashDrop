@@ -7,7 +7,8 @@ import {
 
 // ---------- 常量 ----------
 const CHUNK = LOCAL_CHUNK_SIZE;          // 加密前分片大小（明文）
-// 加密后单帧 ≈ CHUNK + 16(IV) + ≤16(PKCS7) + 32(HMAC) + 6(帧头)
+// 加密后单帧 ≈ 512KB + 16(IV) + ≤16(PKCS7) + 32(HMAC) + 12(帧头) ≈ 524.4KB，远低于 1MB 上限
+const FRAME_HDR = 12;                    // 帧头：fi(u16) + ci(u32) + plainLen(u32)
 // Cloudflare DO WebSocket 消息上限 1 MB（≈1,000,000 字节），需留余量
 // 当前 CHUNK=1MiB→加密后≈1.05MB⚠️超标；若走线上 Worker 请在 e2ee.ts 中将 LOCAL_CHUNK_SIZE 改为 512*1024
 const LOW = 8 * 1024 * 1024;            // 背压阈值 8MiB
@@ -41,8 +42,8 @@ function safeEncrypt(plain: Uint8Array, keyHex: string): Uint8Array<ArrayBuffer>
 }
 
 /** 安全执行解密，失败抛出带上下文的 Error */
-function safeDecrypt(frame: Uint8Array, keyHex: string): Uint8Array<ArrayBuffer> {
-  try { return decryptChunk(frame, keyHex); }
+function safeDecrypt(frame: Uint8Array, keyHex: string, plainLen?: number): Uint8Array<ArrayBuffer> {
+  try { return decryptChunk(frame, keyHex, plainLen); }
   catch (e: any) { throw new Error(`解密失败: ${e?.message || e}`); }
 }
 
@@ -56,6 +57,8 @@ const sendLink = ref('');
 const keyHex = ref('');
 const sending = ref(false);
 const sendDone = ref(false);
+const transferStarted = ref(false);     // 用户已点「开始传输」（offer 已发出）
+let loopStarted = false;                // doSendLoop 是否已启动（防止接收端晚加入重发 offer 导致重复发送）
 const sendProgress = ref(0);
 const sendStatus = ref('');
 const peerOnline = ref(false);
@@ -71,6 +74,8 @@ const sendTotal = computed(() => sendFiles.value.reduce((s, f) => s + f.size, 0)
 function resetSender() {
   sending.value = false;
   sendDone.value = false;
+  transferStarted.value = false;
+  loopStarted = false;
   sendProgress.value = 0;
   peerOnline.value = false;
 }
@@ -141,8 +146,18 @@ async function connectSender() {
     if (!msg) return;
 
     if ((msg.type === 'peer-joined' && msg.role === 'receiver') || msg.type === 'receiver-joined') {
+      const wasOffline = !peerOnline.value;
       peerOnline.value = true;
-      if (!sending.value) sendStatus.value = '对方已在线，可开始传输';
+      if (!sending.value && !sendDone.value) {
+        sendStatus.value = '对方已在线，可开始传输';
+      }
+      // 接收端晚加入：用户已点「开始传输」但 offer 在对方连接前发出（已丢失），
+      // 此时重发一次 offer，让新加入的接收端拿到文件清单并回 ready，从而启动传输。
+      // 仅在传输尚未真正开始（loopStarted=false）时重发，避免重复发送数据帧。
+      if (transferStarted.value && !loopStarted && ws.readyState === WebSocket.OPEN && wasOffline) {
+        sendOffer(ws);
+        sendStatus.value = '对方已加入，重新发起传输…';
+      }
     } else if (msg.type === 'ready') {
       void doSendLoop(ws);
     } else if (msg.type === 'peer-left') {
@@ -165,6 +180,18 @@ async function connectSender() {
   };
 }
 
+/** 发送 offer（文件清单）。供「开始传输」与「接收端晚加入重发」复用 */
+function sendOffer(ws: WebSocket) {
+  try {
+    ws.send(JSON.stringify({
+      type: 'offer',
+      files: sendFiles.value.map((f) => ({ name: f.name, size: f.size })),
+    }));
+  } catch (e: any) {
+    sendStatus.value = `发送 offer 失败: ${e?.message || e}`;
+  }
+}
+
 /** 真正开始传输（门控：必须对方在线 + WS 就绪） */
 function startSend() {
   if (!sendWs || sendWs.readyState !== WebSocket.OPEN) {
@@ -177,20 +204,14 @@ function startSend() {
     sendStatus.value = '没有待发送文件'; return;
   }
   sending.value = true;
+  transferStarted.value = true;
   sendProgress.value = 0;
   sendStatus.value = '对方已连接，开始传输…';
-  try {
-    sendWs.send(JSON.stringify({
-      type: 'offer',
-      files: sendFiles.value.map((f) => ({ name: f.name, size: f.size })),
-    }));
-  } catch (e: any) {
-    sendStatus.value = `发送 offer 失败: ${e?.message || e}`;
-    sending.value = false;
-  }
+  sendOffer(sendWs);
 }
 
 async function doSendLoop(ws: WebSocket) {
+  loopStarted = true;
   const files = sendFiles.value;
   const total = files.reduce((s, f) => s + f.size, 0);
   if (total === 0) {
@@ -217,11 +238,12 @@ async function doSendLoop(ws: WebSocket) {
         const plain = new Uint8Array(buf);
         const enc = safeEncrypt(plain, keyHex.value);
 
-        // 组装帧：[fi:u16][ci:u32][encrypted_chunk]
-        const header = new Uint8Array(6);
+        // 组装帧：[fi:u16][ci:u32][plainLen:u32][encrypted_chunk]
+        const header = new Uint8Array(FRAME_HDR);
         const dv = new DataView(header.buffer);
         dv.setUint16(0, fi);
         dv.setUint32(2, ci);
+        dv.setUint32(6, buf.byteLength); // 真实明文长度（用于接收端去除 PKCS7 填充）
         const frame = new Uint8Array(header.length + enc.length);
         frame.set(header, 0);
         frame.set(enc, header.length);
@@ -357,7 +379,9 @@ async function startRecv() {
 
   ws.onopen = () => {
     clearTimeout(openTimer);
-    if (!settled) recvStatus.value = '已连接，等待对方发送…';
+    if (!settled) recvStatus.value = senderOnline.value
+      ? '已连接，对方已在线，等待发送…'
+      : '已连接，等待发送端上线…（发送端未连接时无法接收）';
   };
 
   ws.onmessage = (ev) => {
@@ -399,12 +423,13 @@ async function startRecv() {
     // ---- 二进制数据帧 ----
     try {
       const frame = new Uint8Array(ev.data as ArrayBuffer);
-      if (frame.length < 6) { recvStatus.value = '收到过短的数据帧'; return; }
+      if (frame.length < FRAME_HDR) { recvStatus.value = '收到过短的数据帧'; return; }
 
       const dv = new DataView(frame.buffer);
       const fi = dv.getUint16(0);
       const ci = dv.getUint32(2);
-      const body = frame.slice(6);
+      const plainLen = dv.getUint32(6);
+      const body = frame.slice(FRAME_HDR);
 
       // 边界检查
       if (fi >= parts.length) {
@@ -416,7 +441,7 @@ async function startRecv() {
         return;
       }
 
-      const plain = safeDecrypt(body, recvKey);
+      const plain = safeDecrypt(body, recvKey, plainLen);
       parts[fi][ci] = new Blob([plain]);
       recvBytes += plain.length;
       recvProgress.value = recvTotal ? recvBytes / recvTotal : 1;

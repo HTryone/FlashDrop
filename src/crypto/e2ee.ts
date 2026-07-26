@@ -178,8 +178,11 @@ export function encryptChunk(plain: Uint8Array, keyHex: string): Uint8Array<Arra
   return out;
 }
 
-/** 解密单块帧（含 HMAC 校验）→ 明文 Uint8Array（自动去除 PKCS7 填充） */
-export function decryptChunk(frame: Uint8Array, keyHex: string): Uint8Array<ArrayBuffer> {
+/** 解密单块帧（含 HMAC 校验）→ 明文 Uint8Array（自动去除 PKCS7 填充）
+ * @param plainLen 可选，传入则按真实明文长度裁剪（去掉 PKCS7 填充），避免拼出的文件末尾多出填充字节。
+ *                 不传则返回含填充的完整解密结果。
+ */
+export function decryptChunk(frame: Uint8Array, keyHex: string, plainLen?: number): Uint8Array<ArrayBuffer> {
   const key = CryptoJS.enc.Hex.parse(keyHex);
   const ctLen = frame.length - 16 - 32;
   if (ctLen <= 0) throw new Error('数据帧格式错误');
@@ -190,7 +193,10 @@ export function decryptChunk(frame: Uint8Array, keyHex: string): Uint8Array<Arra
   if (macReceived.toString() !== macComputed.toString()) {
     throw new Error('完整性校验失败：数据可能被篡改');
   }
-  const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: ct, iv });
-  const dec = CryptoJS.AES.decrypt(cipherParams, key);
-  return waToU8(dec as CryptoJS.lib.WordArray);
+  // ⚠️ 关键修复：iv 必须作为 options 传入 AES.decrypt，不能塞进 CipherParams.create。
+  // 放进 create 对象会导致解密时密文 words 解析为 undefined → xorBlock 读 M[0] 崩溃。
+  const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: ct });
+  const dec = CryptoJS.AES.decrypt(cipherParams, key, { iv });
+  const full = waToU8(dec as CryptoJS.lib.WordArray);
+  return plainLen == null ? full : full.slice(0, plainLen);
 }
