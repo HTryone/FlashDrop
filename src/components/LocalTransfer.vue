@@ -161,6 +161,7 @@ async function startRecv() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const relayHost = (import.meta as any).env?.VITE_RELAY_URL || location.host;
   const ws = new WebSocket(`${proto}://${relayHost}/relay?room=${recvRoom.value}&role=receiver`);
+  ws.binaryType = 'arraybuffer';
   recvWs = ws;
   receiving.value = true;
   recvStatus.value = '连接中…';
@@ -213,11 +214,20 @@ async function startRecv() {
 
 function finishRecv() {
   for (let fi = 0; fi < recvFiles.value.length; fi++) {
-    const blob = new Blob(parts[fi]);
+    const chunks = parts[fi].filter((c): c is Blob => !!c);
+    if (chunks.length !== parts[fi].length) {
+      recvStatus.value = `第 ${fi + 1} 个文件分片缺失，接收不完整`;
+      receiving.value = false;
+      recvReady.value = false;
+      return;
+    }
+    const blob = new Blob(chunks);
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = recvFiles.value[fi].name;
+    document.body.appendChild(a);
     a.click();
+    document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
   recvStatus.value = '接收完成，文件已下载';
