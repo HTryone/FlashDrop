@@ -629,8 +629,7 @@ onUnmounted(() => {
     <section class="blk">
       <h3>② 接收（输入房间码）</h3>
       <div class="recv-form">
-        <input v-model="recvRoom" placeholder="房间码（如 K7P2QX）" :disabled="receiving" />
-        <input v-model="recvPass" placeholder="口令（链接 #k 后自动填入）" :disabled="receiving" />
+        <input v-model="recvRoom" placeholder="房间码（链接打开时自动填入）" :disabled="receiving" />
       </div>
       <div class="recv-form">
         <input v-model="recvLinkInput" placeholder="或粘贴整条分享链接自动解析" :disabled="receiving" />
