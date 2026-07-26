@@ -32,6 +32,19 @@ const totalSize = computed(() => files.value.reduce((s, f) => s + f.file.size, 0
 const doneCount = computed(() => files.value.filter((f) => f.status === 'done').length);
 const allDone = computed(() => files.value.length > 0 && doneCount.value === files.value.length);
 
+// 选中区状态：待传输 / 传输中 / 已完成
+const selStatus = computed(() => {
+  if (!files.value.length) return '';
+  if (allDone.value) return '已完成';
+  if (uploading.value) return '传输中…';
+  return '待传输';
+});
+const selStatusClass = computed(() => {
+  if (selStatus.value === '已完成') return 'done';
+  if (selStatus.value === '传输中…') return 'busy';
+  return 'idle';
+});
+
 const shareLink = computed(() => (code.value ? `${location.origin}/?code=${code.value}` : ''));
 
 function addFiles(list: FileList | File[], basePath = '') {
@@ -40,7 +53,6 @@ function addFiles(list: FileList | File[], basePath = '') {
     if (files.value.some((x) => x.relativePath === rel && x.file.size === f.size)) continue;
     files.value.push({ file: f, relativePath: rel, status: 'pending', uploaded: 0 });
   }
-  maybeAutoStart();
 }
 
 // 递归读取拖入的目录结构
@@ -79,7 +91,6 @@ async function onDrop(e: DragEvent) {
       const entry = (it as any).webkitGetAsEntry();
       if (entry) await traverse(entry);
     }
-    maybeAutoStart();
   } else if (dt.files.length) {
     addFiles(dt.files);
   }
@@ -102,14 +113,6 @@ function clearSelected() {
 /** 刷新加密口令（随机生成新口令） */
 function refreshPassphrase() {
   passphrase.value = randomPassphrase();
-}
-
-// 选完文件自动开始传输
-function maybeAutoStart() {
-  if (uploading.value) return;
-  if (!files.value.some((f) => f.status === 'pending')) return;
-  // E2EE 始终开，不再检查口令长度
-  start();
 }
 
 async function start() {
@@ -239,6 +242,7 @@ watch(message, async (v) => {
     <div v-if="files.length" class="selected">
       <div class="sel-head">
         <span>已选 {{ files.length }} 个 · {{ fmt(totalSize) }}</span>
+        <span class="sel-status" :class="selStatusClass">{{ selStatus }}</span>
         <button class="btn sm ghost" @click="clearSelected" :disabled="uploading">清空所选</button>
       </div>
       <div class="file-list">
@@ -286,10 +290,11 @@ watch(message, async (v) => {
     <div v-if="error" class="err-box">{{ error }}</div>
 
     <div class="actions">
-      <button class="btn primary" :disabled="uploading || allDone" @click="start">
+      <button class="btn primary" :disabled="uploading || allDone || !files.length" @click="start">
         {{ uploading ? '传输中…' : started ? '继续传输' : '开始传输' }}
       </button>
       <span v-if="allDone" class="ok-tag">✓ 全部完成</span>
+      <span v-else-if="files.length && !started" class="hint-start faint">已选中文件，点「开始传输」生成分享码</span>
     </div>
 
     <!-- 分享码 + 登录码 -->
@@ -355,7 +360,11 @@ watch(message, async (v) => {
 .drop-sub { font-size: 12px; margin: 8px 0; }
 .drop-btns { display: flex; gap: 10px; justify-content: center; }
 .selected { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; }
-.sel-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; margin-bottom: 10px; }
+.sel-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; margin-bottom: 10px; gap: 8px; flex-wrap: wrap; }
+.sel-status { font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); }
+.sel-status.idle { color: var(--accent-2); border-color: rgba(56, 225, 200, 0.4); }
+.sel-status.busy { color: var(--warn); border-color: rgba(255, 205, 107, 0.4); }
+.sel-status.done { color: var(--ok); border-color: rgba(86, 217, 130, 0.4); }
 .file-list { display: flex; flex-direction: column; gap: 8px; max-height: 260px; overflow: auto; }
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field label { font-size: 13px; color: var(--text-dim); }
@@ -380,8 +389,9 @@ textarea:focus, .pass:focus { outline: none; border-color: var(--accent); }
 .seg button { flex: 1; background: var(--bg-soft); border: none; color: var(--text-dim); padding: 9px; font-size: 13px; }
 .seg button.on { background: var(--accent-grad); color: #07101f; font-weight: 700; }
 .err-box { color: var(--danger); font-size: 13px; background: rgba(255, 107, 129, 0.1); padding: 8px 12px; border-radius: var(--radius-sm); }
-.actions { display: flex; align-items: center; gap: 12px; }
+.actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .ok-tag { color: var(--ok); font-weight: 600; }
+.hint-start { font-size: 12px; }
 
 /* 分享码卡片 */
 .code-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
