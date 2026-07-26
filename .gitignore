@@ -1,0 +1,19 @@
+# 依赖
+node_modules/
+
+# 运行时上传数据（由 server.mjs 自动创建）
+uploads/
+
+# 日志
+server.log
+*.log
+
+# 构建产物（Vite 将输出 dist/）
+dist/
+
+# AI 工作区数据，不进仓库
+.workbuddy/
+
+# 系统文件
+.DS_Store
+Thumbs.db

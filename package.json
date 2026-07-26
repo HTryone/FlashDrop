@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "@tus/file-store": "^2.1.0",
+    "@tus/server": "^2.4.2",
+    "archiver": "^6.0.2",
+    "express": "^5.2.1",
+    "tus-js-client": "^4.3.1"
+  }
+}
