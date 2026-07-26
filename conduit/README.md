@@ -11,14 +11,14 @@
 
 ## 本地调试
 ```bash
-cd cloudflare
+cd conduit
 npm install
 npm run dev        # wrangler dev，本地 http://localhost:8787/relay
 ```
 
 ## 部署方式一：命令行
 ```bash
-cd cloudflare
+cd conduit
 npm install
 npm run deploy     # wrangler deploy，需要已登录 Cloudflare
 ```
@@ -26,8 +26,8 @@ npm run deploy     # wrangler deploy，需要已登录 Cloudflare
 
 ## 部署方式二：Cloudflare 控制台连 Git
 1. 控制台 → Workers & Pages → 创建 → 连接到 Git
-2. 选本仓库，构建目录/根目录填 `cloudflare`
-3. 框架预设选“无 / 其他”，它会读取 `cloudflare/wrangler.toml` 部署
+2. 选本仓库，构建目录/根目录填 `conduit`
+3. 框架预设选“无 / 其他”，它会读取 `conduit/wrangler.toml` 部署
 
 ## 前端对接
 前端“本地直传”默认连**同源** `/relay`。线上若前端与 Worker 不同域，构建前端时设：
