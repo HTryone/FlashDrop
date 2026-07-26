@@ -43,11 +43,23 @@ async function startSend() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const relayHost = (import.meta as any).env?.VITE_RELAY_URL || location.host;
   const ws = new WebSocket(`${proto}://${relayHost}/relay?room=${room.value}&role=sender`);
-  ws.bufferedAmountLowThreshold = LOW;
+  (ws as any).bufferedAmountLowThreshold = LOW;
   sendWs = ws;
   sending.value = true;
   sendProgress.value = 0;
   sendStatus.value = '等待对方连接…';
+
+  const sendOpenTimer = window.setTimeout(() => {
+    if (ws.readyState !== WebSocket.OPEN) {
+      sendStatus.value = '连接超时：中继不可达，请确认后端已启动或已配置 VITE_RELAY_URL';
+      sending.value = false;
+      try { ws.close(); } catch { /* ignore */ }
+    }
+  }, 8000);
+  ws.onopen = () => {
+    clearTimeout(sendOpenTimer);
+    sendStatus.value = '已连上中继，等待对方加入…';
+  };
 
   ws.onmessage = (ev) => {
     if (typeof ev.data !== 'string') return;
@@ -66,8 +78,8 @@ async function startSend() {
       sending.value = false;
     }
   };
-  ws.onclose = () => { sending.value = false; };
-  ws.onerror = () => { sendStatus.value = '连接出错'; sending.value = false; };
+  ws.onclose = () => { clearTimeout(sendOpenTimer); sending.value = false; };
+  ws.onerror = () => { clearTimeout(sendOpenTimer); sendStatus.value = '连接出错（中继不可达或被拦截）'; sending.value = false; };
 }
 
 async function sendLoop(ws: WebSocket) {
@@ -153,6 +165,18 @@ async function startRecv() {
   receiving.value = true;
   recvStatus.value = '连接中…';
 
+  const openTimer = window.setTimeout(() => {
+    if (ws.readyState !== WebSocket.OPEN) {
+      recvStatus.value = '连接超时：中继不可达，请确认后端已启动或已配置 VITE_RELAY_URL';
+      receiving.value = false;
+      try { ws.close(); } catch { /* ignore */ }
+    }
+  }, 8000);
+  ws.onopen = () => {
+    clearTimeout(openTimer);
+    recvStatus.value = '已连接，等待对方发送…';
+  };
+
   ws.onmessage = (ev) => {
     if (typeof ev.data === 'string') {
       const msg = JSON.parse(ev.data);
@@ -183,8 +207,8 @@ async function startRecv() {
     recvBytes += plain.length;
     recvProgress.value = recvTotal ? recvBytes / recvTotal : 1;
   };
-  ws.onclose = () => { receiving.value = false; };
-  ws.onerror = () => { recvStatus.value = '连接出错'; receiving.value = false; };
+  ws.onclose = () => { clearTimeout(openTimer); receiving.value = false; };
+  ws.onerror = () => { clearTimeout(openTimer); recvStatus.value = '连接出错（中继不可达或被拦截）'; receiving.value = false; };
 }
 
 function finishRecv() {

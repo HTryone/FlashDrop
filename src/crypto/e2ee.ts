@@ -13,7 +13,7 @@ const TAG_LEN = 32; // HMAC-SHA256 输出长度
 const HEADER_LEN = 4;
 
 /** WordArray → Uint8Array */
-function waToU8(wa: CryptoJS.lib.WordArray): Uint8Array {
+function waToU8(wa: CryptoJS.lib.WordArray): Uint8Array<ArrayBuffer> {
   const words = wa.words;
   const sigBytes = wa.sigBytes;
   const out = new Uint8Array(sigBytes);
@@ -160,7 +160,7 @@ export const LOCAL_CHUNK_SIZE = 1024 * 1024; // 1MiB 一块，实时反馈友好
 export const LOCAL_SALT = 'flashdrop-local-v1';
 
 /** 加密单个明文块 → 帧：[16B IV][ciphertext][32B HMAC] */
-export function encryptChunk(plain: Uint8Array, keyHex: string): Uint8Array {
+export function encryptChunk(plain: Uint8Array, keyHex: string): Uint8Array<ArrayBuffer> {
   const key = CryptoJS.enc.Hex.parse(keyHex);
   const iv = CryptoJS.lib.WordArray.random(16);
   const enc = CryptoJS.AES.encrypt(u8ToWa(plain), key, { iv });
@@ -176,7 +176,7 @@ export function encryptChunk(plain: Uint8Array, keyHex: string): Uint8Array {
 }
 
 /** 解密单块帧（含 HMAC 校验）→ 明文 Uint8Array（自动去除 PKCS7 填充） */
-export function decryptChunk(frame: Uint8Array, keyHex: string): Uint8Array {
+export function decryptChunk(frame: Uint8Array, keyHex: string): Uint8Array<ArrayBuffer> {
   const key = CryptoJS.enc.Hex.parse(keyHex);
   const ctLen = frame.length - 16 - 32;
   if (ctLen <= 0) throw new Error('数据帧格式错误');
