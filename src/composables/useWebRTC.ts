@@ -82,13 +82,57 @@ export function createWebRTC(opts: RtcOptions) {
     }
   }
 
-  // 经 DataChannel 发一帧；成功返回 true（调用方无需再走 WS）
-  function sendFrame(frame: Uint8Array<ArrayBuffer>): boolean {
-    if (dc && dc.readyState === 'open') {
-      dc.send(frame as unknown as ArrayBufferView<ArrayBuffer>);
-      return true;
+  // DataChannel 分片参数：SCTP 单次 send 不能超过 dc.maxMessageSize（通常 256KB），
+  // 而我们本地直传的单帧可达 ~786KB，故发送端必须分片。分片头：[totalLen u32][offset u32]。
+  const RTC_LOW = 1 * 1024 * 1024; // 背压阈值 1MiB（bufferedAmountMax 约 16MiB，留足余量）
+  const DRAIN_TIMEOUT_MS = 30000;
+
+  function drainDc(): Promise<void> {
+    const d = dc;
+    if (!d || d.bufferedAmount <= RTC_LOW) return Promise.resolve();
+    const channel: RTCDataChannel = d;
+    return new Promise((resolve) => {
+      const onLow = () => cleanup();
+      const onClose = () => cleanup();
+      const timer = setTimeout(() => cleanup(), DRAIN_TIMEOUT_MS);
+      function cleanup() {
+        clearTimeout(timer);
+        channel.removeEventListener('bufferedamountlow', onLow as any);
+        channel.removeEventListener('close', onClose as any);
+        resolve();
+      }
+      channel.addEventListener('bufferedamountlow', onLow as any, { once: true });
+      channel.addEventListener('close', onClose as any, { once: true });
+    });
+  }
+
+  // 经 DataChannel 发一帧（自动分片以避免超过 maxMessageSize）；全部发出返回 true。
+  async function sendFrame(frame: Uint8Array): Promise<boolean> {
+    const d = dc;
+    if (!d || d.readyState !== 'open') return false;
+    const channel: RTCDataChannel = d;
+    const max = ((channel as any).maxMessageSize && (channel as any).maxMessageSize > 16) ? (channel as any).maxMessageSize : 65536;
+    const HDR = 8;
+    const step = max - HDR;
+    if (step <= 0) return false;
+    channel.bufferedAmountLowThreshold = RTC_LOW;
+    try {
+      for (let off = 0; off < frame.length; off += step) {
+        if (channel.bufferedAmount > RTC_LOW) await drainDc();
+        const end = Math.min(off + step, frame.length);
+        const piece = frame.subarray(off, end);
+        const out = new Uint8Array(HDR + piece.length);
+        const dv = new DataView(out.buffer);
+        dv.setUint32(0, frame.length);
+        dv.setUint32(4, off);
+        out.set(piece, HDR);
+        channel.send(out as unknown as ArrayBufferView<ArrayBuffer>);
+      }
+    } catch (e) {
+      console.warn('[rtc] sendFrame 分片发送失败:', e);
+      return false;
     }
-    return false;
+    return true;
   }
 
   function isOpen() { return !!(dc && dc.readyState === 'open'); }

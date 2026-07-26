@@ -189,7 +189,8 @@ async function doLocalSendLoop(ws: WebSocket) {
         const frame = new Uint8Array(header.length + enc.length); frame.set(header, 0); frame.set(enc, header.length);
         if (useRtc && ch) {
           if (ch.bufferedAmount > LOW) await localSafeDrain(ch);
-          lRtc!.sendFrame(frame);
+          const ok = await lRtc!.sendFrame(frame);
+          if (!ok) throw new Error('P2P 通道发送失败，请重试');
         } else {
           if (ws.bufferedAmount > LOW) await localSafeDrain(ws);
           ws.send(frame);

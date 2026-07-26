@@ -412,6 +412,7 @@ function resetReceiver() {
   for (const w of writers) { try { w.abort(); } catch { /* ignore */ } }
   writers = [];
   recvKey = '';
+  dcReasm = null;
   if (recvRtc) { try { recvRtc.destroy(); } catch { /* ignore */ } recvRtc = null; }
   recvRtcOpen.value = false;
 }
@@ -466,7 +467,7 @@ async function startRecv() {
     role: 'receiver',
     iceServers: rIce,
     sendSignal: (m) => { if (recvWs && recvWs.readyState === WebSocket.OPEN) recvWs.send(JSON.stringify(m)); },
-    onDataChannel: (dc) => { dc.onmessage = (ev) => handleRecvFrame(ev.data as ArrayBuffer); },
+    onDataChannel: (dc) => { dc.onmessage = onDcMessage; },
     onState: (open) => { recvRtcOpen.value = open; },
   });
 
@@ -569,6 +570,39 @@ async function finishRecv() {
   receiving.value = false;
   recvReady.value = false;
   writers = [];
+}
+
+// P2P DataChannel 收到的分片帧重组：分片头 [totalLen u32][offset u32][payload]，凑齐后交给 handleRecvFrame。
+let dcReasm: { total: number; parts: Map<number, Uint8Array>; received: number } | null = null;
+function onDcMessage(ev: any) {
+  if (typeof ev.data === 'string') return; // DC 只传二进制帧，文本不应出现
+  try {
+    const buf = ev.data as ArrayBuffer;
+    if (buf.byteLength < 8) return;
+    const dv = new DataView(buf);
+    const total = dv.getUint32(0);
+    const off = dv.getUint32(4);
+    const payload = new Uint8Array(buf, 8); // 子视图，需复制避免 buf 被回收
+    const copy = new Uint8Array(payload.length);
+    copy.set(payload);
+    if (!dcReasm || dcReasm.total !== total) {
+      // 新帧开始（若上一帧异常未收完则丢弃旧片段）
+      dcReasm = { total, parts: new Map(), received: 0 };
+    }
+    dcReasm.parts.set(off, copy);
+    dcReasm.received += copy.length;
+    if (dcReasm.received >= total) {
+      const full = new Uint8Array(total);
+      let pos = 0;
+      const keys = Array.from(dcReasm.parts.keys()).sort((a, b) => a - b);
+      for (const k of keys) { const p = dcReasm.parts.get(k)!; full.set(p, pos); pos += p.length; }
+      dcReasm = null;
+      handleRecvFrame(full.buffer);
+    }
+  } catch (e: any) {
+    console.error('[recv] DC 分片重组失败:', e);
+    dcReasm = null;
+  }
 }
 
 // 二进制数据帧处理：WS 兜底通道与 P2P DataChannel 共用同一函数，避免逻辑分叉。
