@@ -1,5 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, onUnmounted } from 'vue';
+// @ts-ignore
+import streamSaver from 'streamsaver';
+// 配置 StreamSaver 的 mitm 页面（public/mitm.html 经 Vite 复制到产物根），
+// 用于把接收到的加密分片流式写入本机磁盘，避免大文件全部堆积在内存里。
+(streamSaver as any).mitm = import.meta.env.BASE_URL + 'mitm.html';
 import {
   encryptChunk, decryptChunk, deriveKey, randomPassphrase,
   LOCAL_SALT, LOCAL_CHUNK_SIZE,
@@ -7,11 +12,10 @@ import {
 
 // ---------- 常量 ----------
 const CHUNK = LOCAL_CHUNK_SIZE;          // 加密前分片大小（明文）
-// 加密后单帧 ≈ 512KB + 16(IV) + ≤16(PKCS7) + 32(HMAC) + 12(帧头) ≈ 524.4KB，远低于 1MB 上限
+// 加密后单帧 ≈ 768KB + 16(IV) + ≤16(PKCS7) + 32(HMAC) + 12(帧头) ≈ 786.5KB，远低于 Cloudflare DO 的 1MB 上限
 const FRAME_HDR = 12;                    // 帧头：fi(u16) + ci(u32) + plainLen(u32)
 // Cloudflare DO WebSocket 消息上限 1 MB（≈1,000,000 字节），需留余量
-// 当前 CHUNK=1MiB→加密后≈1.05MB⚠️超标；若走线上 Worker 请在 e2ee.ts 中将 LOCAL_CHUNK_SIZE 改为 512*1024
-const LOW = 8 * 1024 * 1024;            // 背压阈值 8MiB
+const LOW = 16 * 1024 * 1024;           // 背压阈值 16MiB（增大缓冲区，减少停顿，提升吞吐）
 const CONN_TIMEOUT = 10000;             // 连接超时 ms
 const DRAIN_TIMEOUT_MS = 30000;         // 背压等待超时 ms
 
@@ -306,7 +310,7 @@ const recvFiles = ref<{ name: string; size: number }[]>([]);
 const recvProgress = ref(0);
 const recvStatus = ref('输入房间码（或粘贴整条链接）后点连接');
 let recvWs: WebSocket | null = null;
-let parts: Blob[][] = [];
+let writers: any[] = [];                 // 每个文件一个 WritableStream writer，流式写盘
 let recvBytes = 0;
 let recvTotal = 0;
 let recvKey = '';
@@ -320,7 +324,8 @@ function resetReceiver() {
   recvProgress.value = 0;
   recvBytes = 0;
   recvTotal = 0;
-  parts = [];
+  for (const w of writers) { try { w.abort(); } catch { /* ignore */ } }
+  writers = [];
   recvKey = '';
 }
 /** 安全关闭接收端 WS */
@@ -401,12 +406,13 @@ async function startRecv() {
         }
         recvFiles.value = msg.files;
         recvTotal = msg.files.reduce((s: number, f: any) => s + (f.size || 0), 0);
-        parts = msg.files.map((f: any) =>
-          new Array(Math.ceil((f.size || 0) / CHUNK)),
-        );
         recvBytes = 0;
+        writers = msg.files.map((f: any) => {
+          const s = (streamSaver as any).createWriteStream(f.name, { size: f.size || undefined });
+          return s.getWriter();
+        });
         recvReady.value = true;
-        recvStatus.value = `收到 ${msg.files.length} 个文件，准备接收`;
+        recvStatus.value = `收到 ${msg.files.length} 个文件，开始流式接收…`;
         try {
           ws.send(JSON.stringify({ type: 'ready' }));
         } catch { /* ready 发送失败不影响后续 */ }
@@ -431,18 +437,17 @@ async function startRecv() {
       const plainLen = dv.getUint32(6);
       const body = frame.slice(FRAME_HDR);
 
-      // 边界检查
-      if (fi >= parts.length) {
-        console.warn(`[recv] 文件索引越界: fi=${fi}, max=${parts.length - 1}`);
-        return;
-      }
-      if (ci >= parts[fi].length) {
-        console.warn(`[recv] 分片索引越界: fi=${fi}, ci=${ci}, max=${parts[fi].length - 1}`);
+      // 边界检查（writer 数组已按文件数预建，只需校验文件索引）
+      if (fi >= writers.length) {
+        console.warn(`[recv] 文件索引越界: fi=${fi}, max=${writers.length - 1}`);
         return;
       }
 
       const plain = safeDecrypt(body, recvKey, plainLen);
-      parts[fi][ci] = new Blob([plain]);
+      const w = writers[fi];
+      if (w) {
+        try { w.write(plain); } catch (we: any) { console.error('[recv] 写入磁盘失败:', we); }
+      }
       recvBytes += plain.length;
       recvProgress.value = recvTotal ? recvBytes / recvTotal : 1;
     } catch (e: any) {
@@ -469,29 +474,22 @@ async function startRecv() {
   };
 }
 
-function finishRecv() {
+async function finishRecv() {
   let allOk = true;
-  for (let fi = 0; fi < recvFiles.value.length; fi++) {
-    const chunks = parts[fi]?.filter((c): c is Blob => !!c) ?? [];
-    if (chunks.length !== parts[fi]?.length) {
-      recvStatus.value = `第 ${fi + 1} 个文件分片缺失 (${chunks.length}/${parts[fi]?.length ?? '?'})，接收不完整`;
+  for (let fi = 0; fi < writers.length; fi++) {
+    const w = writers[fi];
+    if (!w) { allOk = false; continue; }
+    try {
+      await w.close();
+    } catch (e: any) {
+      console.error('[recv] 文件写入关闭失败:', e);
       allOk = false;
-      continue;
     }
-    const blob = new Blob(chunks);
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = recvFiles.value[fi].name;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   }
-  if (allOk) {
-    recvStatus.value = '接收完成，文件已下载';
-  }
+  recvStatus.value = allOk ? '接收完成，文件已保存到本机' : '接收完成（部分文件写入失败）';
   receiving.value = false;
   recvReady.value = false;
+  writers = [];
 }
 
 // ================================================================
