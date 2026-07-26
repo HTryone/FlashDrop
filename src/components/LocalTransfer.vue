@@ -119,7 +119,9 @@ async function makeSinks(files: any[]) {
       ss = null;
     }
   }
-  if (ss) {
+  // ss.supported 为 false 表示 Service Worker 不可用（如非安全上下文/被禁用）：
+  // 即使 sw.js 存在也无法注册，此时必须降级 Blob，否则数据会静默丢失。
+  if (ss && ss.supported !== false) {
     try {
       writers = files.map((f: any) => new StreamSink(ss.createWriteStream(f.name, { size: f.size || undefined }).getWriter()));
       return;
@@ -573,7 +575,15 @@ async function finishRecv() {
       allOk = false;
     }
   }
-  recvStatus.value = allOk ? '接收完成，文件已保存到本机' : '接收完成（部分文件写入失败）';
+  if (recvFallback) {
+    recvStatus.value = allOk
+      ? '接收完成，浏览器已触发下载（当前为不安全连接，已降级为整文件下载；大文件建议用 localhost/https 访问以获得流式写入）'
+      : '接收完成（部分文件写入失败）';
+  } else {
+    recvStatus.value = allOk
+      ? '接收完成，文件已流式保存到浏览器下载目录（如未自动弹出，请查看下载管理器）'
+      : '接收完成（部分文件写入失败）';
+  }
   receiving.value = false;
   recvReady.value = false;
   writers = [];
