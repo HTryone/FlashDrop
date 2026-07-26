@@ -1,10 +1,5 @@
 <script setup lang="ts">
 import { ref, computed, onUnmounted } from 'vue';
-// @ts-ignore
-import streamSaver from 'streamsaver';
-// 配置 StreamSaver 的 mitm 页面（public/mitm.html 经 Vite 复制到产物根），
-// 用于把接收到的加密分片流式写入本机磁盘，避免大文件全部堆积在内存里。
-(streamSaver as any).mitm = import.meta.env.BASE_URL + 'mitm.html';
 import {
   encryptChunk, decryptChunk, deriveKey, randomPassphrase,
   LOCAL_SALT, LOCAL_CHUNK_SIZE,
@@ -49,6 +44,88 @@ function safeEncrypt(plain: Uint8Array, keyHex: string): Uint8Array<ArrayBuffer>
 function safeDecrypt(frame: Uint8Array, keyHex: string, plainLen?: number): Uint8Array<ArrayBuffer> {
   try { return decryptChunk(frame, keyHex, plainLen); }
   catch (e: any) { throw new Error(`解密失败: ${e?.message || e}`); }
+}
+
+// ================================================================
+//  接收端「写入落盘」抽象：安全上下文用 StreamSaver 流式写盘（不爆内存），
+//  非安全上下文（手机经 http 局域网访问）Service Worker 不可用 → 降级为浏览器 Blob 下载。
+//  关键点：streamsaver 动态 import + 全程 try/catch，任何异常都不会拖垮页面（白屏）。
+// ================================================================
+/** StreamSaver 模块懒加载（带缓存），失败抛错由调用方降级处理 */
+let _ssPromise: Promise<any> | null = null;
+function ensureStreamSaver(): Promise<any> {
+  if (!_ssPromise) {
+    // @ts-ignore  streamsaver 类型声明可能缺失，运行时以 any 处理
+    _ssPromise = import('streamsaver').then((m: any) => {
+      const mod = m.default || m;
+      try { mod.mitm = `${location.origin}/mitm.html`; } catch { /* ignore */ }
+      return mod;
+    });
+  }
+  return _ssPromise;
+}
+
+/** 只有 localhost / https 才允许注册 Service Worker（StreamSaver 前置条件） */
+function isSecureContextForSW(): boolean {
+  return typeof navigator !== 'undefined' && 'serviceWorker' in navigator &&
+    (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1');
+}
+
+function triggerDownload(blob: Blob, name: string) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+/** 流式写入 sink（安全上下文） */
+class StreamSink {
+  private w: any;
+  constructor(w: any) { this.w = w; }
+  write(p: Uint8Array) { return this.w.write(p); }
+  async close() { await this.w.close(); }
+  abort() { try { this.w.abort(); } catch { /* ignore */ } }
+}
+/** 降级 sink：攒进内存数组，close 时触发浏览器下载（非安全上下文兜底，小文件可用） */
+class BlobSink {
+  private chunks: Uint8Array[] = [];
+  private name: string;
+  constructor(name: string) { this.name = name; }
+  write(p: Uint8Array) { this.chunks.push(p); return Promise.resolve(); }
+  async close() {
+    const blob = new Blob(this.chunks as any);
+    triggerDownload(blob, this.name);
+    this.chunks = [];
+  }
+  abort() { this.chunks = []; }
+}
+
+/** 为所有文件创建写入 sink；优先 StreamSaver，失败/不可用则降级 Blob。设置 recvFallback 标志供 UI 提示 */
+let recvFallback = false;
+async function makeSinks(files: any[]) {
+  writers = [];
+  recvFallback = false;
+  let ss: any = null;
+  if (isSecureContextForSW()) {
+    try { ss = await ensureStreamSaver(); } catch (e: any) {
+      console.warn('[recv] streamsaver 加载失败，降级 Blob 下载:', e);
+      ss = null;
+    }
+  }
+  if (ss) {
+    try {
+      writers = files.map((f: any) => new StreamSink(ss.createWriteStream(f.name, { size: f.size || undefined }).getWriter()));
+      return;
+    } catch (e: any) {
+      console.warn('[recv] 创建流式写入失败，降级 Blob 下载:', e);
+    }
+  }
+  // 降级路径：非安全上下文或 streamsaver 不可用
+  recvFallback = true;
+  writers = files.map((f: any) => new BlobSink(f.name));
 }
 
 // ================================================================
@@ -389,7 +466,7 @@ async function startRecv() {
       : '已连接，等待发送端上线…（发送端未连接时无法接收）';
   };
 
-  ws.onmessage = (ev) => {
+  ws.onmessage = async (ev) => {
     // ---- 文本控制消息 ----
     if (typeof ev.data === 'string') {
       const msg = safeParse(ev.data as string);
@@ -407,12 +484,18 @@ async function startRecv() {
         recvFiles.value = msg.files;
         recvTotal = msg.files.reduce((s: number, f: any) => s + (f.size || 0), 0);
         recvBytes = 0;
-        writers = msg.files.map((f: any) => {
-          const s = (streamSaver as any).createWriteStream(f.name, { size: f.size || undefined });
-          return s.getWriter();
-        });
+        // 创建写入 sink（自动选 StreamSaver / Blob 降级），任何异常都被 makeSinks 内部兜住
+        try {
+          await makeSinks(msg.files);
+        } catch (e: any) {
+          console.error('[recv] 创建写入通道失败:', e);
+          recvStatus.value = `初始化接收失败: ${e?.message || e}`;
+          return;
+        }
         recvReady.value = true;
-        recvStatus.value = `收到 ${msg.files.length} 个文件，开始流式接收…`;
+        recvStatus.value = recvFallback
+          ? `收到 ${msg.files.length} 个文件，开始接收（当前为不安全连接，已切换为浏览器下载模式；大文件建议用 https 访问以获得流式写入）`
+          : `收到 ${msg.files.length} 个文件，开始流式接收…`;
         try {
           ws.send(JSON.stringify({ type: 'ready' }));
         } catch { /* ready 发送失败不影响后续 */ }
@@ -446,7 +529,7 @@ async function startRecv() {
       const plain = safeDecrypt(body, recvKey, plainLen);
       const w = writers[fi];
       if (w) {
-        try { w.write(plain); } catch (we: any) { console.error('[recv] 写入磁盘失败:', we); }
+        w.write(plain).catch((we: any) => console.error('[recv] 写入失败:', we));
       }
       recvBytes += plain.length;
       recvProgress.value = recvTotal ? recvBytes / recvTotal : 1;
