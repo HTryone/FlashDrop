@@ -77,8 +77,8 @@ export async function encryptFile(
     // AES-256-CBC 加密（自动 PKCS7 填充）
     const encrypted = CryptoJS.AES.encrypt(plainWA, key, { iv });
 
-    // HMAC-SHA256 对密文做完整性校验
-    const hmac = CryptoJS.HmacSHA256(encrypted, key);
+    // HMAC-SHA256 对密文做完整性校验（只对原始密文，与解密端一致）
+    const hmac = CryptoJS.HmacSHA256(encrypted.ciphertext, key);
 
     // 组装：[4B 明文长度][16B IV][密文][32B HMAC]
     const plainLen = end - offset;
