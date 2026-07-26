@@ -398,6 +398,8 @@ let rIce: RTCIceServer[] = [];
 let writers: any[] = [];                 // 每个文件一个 WritableStream writer，流式写盘
 let recvBytes = 0;
 let recvTotal = 0;
+let recvChunks = 0;                      // 已收到的数据块数（用于收齐自动完成）
+let recvTotalChunks = 0;                 // 期望总块数（由 offer 文件清单推算）
 let recvKey = '';
 
 /** 清理接收端状态 */
@@ -409,6 +411,8 @@ function resetReceiver() {
   recvProgress.value = 0;
   recvBytes = 0;
   recvTotal = 0;
+  recvChunks = 0;
+  recvTotalChunks = 0;
   for (const w of writers) { try { w.abort(); } catch { /* ignore */ } }
   writers = [];
   recvKey = '';
@@ -506,6 +510,9 @@ async function startRecv() {
         recvFiles.value = msg.files;
         recvTotal = msg.files.reduce((s: number, f: any) => s + (f.size || 0), 0);
         recvBytes = 0;
+        // 推算总块数（每块 LOCAL_CHUNK 字节），用于收齐最后一帧自动完成，不再依赖外部 done 信号
+        recvTotalChunks = msg.files.reduce((s: number, f: any) => s + Math.max(1, Math.ceil((f.size || 0) / CHUNK)), 0);
+        recvChunks = 0;
         // 创建写入 sink（自动选 StreamSaver / Blob 降级），任何异常都被 makeSinks 内部兜住
         try {
           await makeSinks(msg.files);
@@ -612,6 +619,7 @@ function handleRecvFrame(data: ArrayBuffer) {
     if (frame.length < FRAME_HDR) { recvStatus.value = '收到过短的数据帧'; return; }
     const dv = new DataView(frame.buffer);
     const fi = dv.getUint16(0);
+    if (fi === 0xFFFF) { finishRecv(); return; } // 发送端经 DataChannel 发的结束标记
     const ci = dv.getUint32(2);
     const plainLen = dv.getUint32(6);
     const body = frame.slice(FRAME_HDR);
@@ -627,6 +635,9 @@ function handleRecvFrame(data: ArrayBuffer) {
     }
     recvBytes += plain.length;
     recvProgress.value = recvTotal ? recvBytes / recvTotal : 1;
+    // 自愈：收齐最后一帧即自动完成（覆盖 done/EOF 信号丢失的情况）
+    recvChunks++;
+    if (recvTotalChunks > 0 && recvChunks >= recvTotalChunks) finishRecv();
   } catch (e: any) {
     console.error('[recv] 数据帧处理失败:', e);
     recvStatus.value = `数据帧错误: ${e?.message || e}`;

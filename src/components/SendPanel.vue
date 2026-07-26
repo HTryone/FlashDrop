@@ -199,6 +199,14 @@ async function doLocalSendLoop(ws: WebSocket) {
         lProgress.value = total ? sent / total : 1;
       }
     }
+    // 双通道发「完成」信号：P2P 下若 WS 的 done 因通道差异未达，DC 上的 EOF 帧可兜底完成
+    if (useRtc && ch && lRtc && lRtc.isOpen()) {
+      try {
+        const eof = new Uint8Array(FRAME_HDR);
+        new DataView(eof.buffer).setUint16(0, 0xFFFF); // 0xFFFF = 结束标记
+        await lRtc.sendFrame(eof);
+      } catch { /* 忽略，下面 WS 兜底 */ }
+    }
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'done' }));
     lDone.value = true; lStatus.value = '传输完成';
   } catch (e: any) { lStatus.value = `传输出错: ${e?.message || e}`; }
