@@ -118,6 +118,11 @@ async function start() {
     error.value = '请先选择要发送的文件';
     return;
   }
+  // 端到端加密依赖 WebCrypto（crypto.subtle），仅安全上下文可用
+  if (!globalThis.crypto?.subtle) {
+    error.value = '当前连接非安全（非 HTTPS），端到端加密无法使用。请用 https:// 开头的地址访问（直接输 http 会自动跳转）。';
+    return;
+  }
   uploading.value = true;
   try {
     if (!transferId.value) transferId.value = generateUUID();

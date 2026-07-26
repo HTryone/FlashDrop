@@ -6,6 +6,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import stream from 'node:stream';
+import https from 'node:https';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -128,6 +130,7 @@ async function main() {
     path: '/files',
     datastore: store,
     respectForwardedHeaders: true,
+    relativeLocation: true, // 返回相对路径 Location，由前端基于 https endpoint 拼接，避免协议/主机错配
     maxSize: MAX_SIZE,
     onUploadFinish: async (req, upload) => {
       const meta = upload.metadata || {};
@@ -386,14 +389,31 @@ async function main() {
     else res.status(404).end('未构建前端');
   });
 
-  const PORT = process.env.PORT || 3000;
+  const HTTPS_PORT = Number(process.env.HTTPS_PORT || 3443);
+  const HTTP_PORT = Number(process.env.PORT || 3000);
   const HOST = process.env.HOST || '0.0.0.0';
-  app.listen(PORT, HOST, () => {
-    console.log('闪传 FlashDrop 服务已启动');
-    console.log('  本机:   http://localhost:' + PORT);
-    console.log('  局域网: http://' + getLanIp() + ':' + PORT);
+
+  // HTTPS：真正的业务端口（安全上下文，端到端加密可用）
+  const { cert, key } = ensureCert();
+  https.createServer({ cert, key }, app).listen(HTTPS_PORT, HOST, () => {
+    console.log('闪传 FlashDrop 服务已启动（HTTPS）');
+    console.log('  本机:   https://localhost:' + HTTPS_PORT);
+    console.log('  局域网: https://' + getLanIp() + ':' + HTTPS_PORT);
     console.log(`  传输默认有效期: ${DEFAULT_TTL_MS / 3600000} 小时`);
+    console.log('  注意：自签名证书，浏览器首次访问会提示"不安全"，点"高级→继续访问"即可');
   });
+
+  // HTTP：仅做 301 跳转到 HTTPS（防止用户记着旧 http 地址打不开）
+  if (HTTP_PORT !== HTTPS_PORT) {
+    const httpApp = express();
+    httpApp.use((req, res) => {
+      const host = (req.headers.host || '').split(':')[0] || 'localhost';
+      res.redirect(301, `https://${host}:${HTTPS_PORT}${req.url}`);
+    });
+    httpApp.listen(HTTP_PORT, HOST, () => {
+      console.log('  HTTP 跳转: http://' + getLanIp() + ':' + HTTP_PORT + ' → https:' + HTTPS_PORT);
+    });
+  }
 }
 
 function cryptoRandom() {
@@ -404,6 +424,38 @@ function cryptoRandom() {
 function formatLoginCode(raw) {
   if (!raw || raw.length !== 16) return raw;
   return raw.slice(0, 4) + ' ' + raw.slice(4, 8) + ' ' + raw.slice(8, 12) + ' ' + raw.slice(12, 16);
+}
+
+// ---------- HTTPS 自签名证书（让局域网 IP 访问也成为安全上下文，WebCrypto 可用）----------
+const CERT_DIR = path.join(__dirname, 'certs');
+const CERT_FILE = path.join(CERT_DIR, 'server.crt');
+const KEY_FILE = path.join(CERT_DIR, 'server.key');
+const CERT_IP_FILE = path.join(CERT_DIR, 'ip.txt');
+
+function ensureCert() {
+  const ip = getLanIp();
+  // 证书已存在且生成时的 IP 与当前一致，则复用（避免每次启动都换指纹，用户只需信任一次）
+  if (fs.existsSync(CERT_FILE) && fs.existsSync(KEY_FILE) && fs.existsSync(CERT_IP_FILE)) {
+    if (fs.readFileSync(CERT_IP_FILE, 'utf8').trim() === ip) {
+      return { cert: fs.readFileSync(CERT_FILE), key: fs.readFileSync(KEY_FILE) };
+    }
+  }
+  fs.mkdirSync(CERT_DIR, { recursive: true });
+  const subj = `/CN=${ip}`;
+  const san = `subjectAltName=DNS:localhost,IP:127.0.0.1,IP:${ip}`;
+  try {
+    execFileSync('openssl', [
+      'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+      '-keyout', KEY_FILE, '-out', CERT_FILE,
+      '-days', '365', '-subj', subj, '-addext', san,
+    ], { timeout: 30000 });
+    fs.writeFileSync(CERT_IP_FILE, ip);
+    console.log('[HTTPS] 已生成自签名证书（SAN 含当前局域网 IP，浏览器首次访问需点"继续"）');
+  } catch (e) {
+    console.error('[HTTPS] 证书生成失败：', e.message);
+    throw e;
+  }
+  return { cert: fs.readFileSync(CERT_FILE), key: fs.readFileSync(KEY_FILE) };
 }
 
 function getLanIp() {

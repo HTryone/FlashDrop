@@ -4,6 +4,9 @@ node_modules/
 # 运行时上传数据（由 server.mjs 自动创建）
 uploads/
 
+# 自签名 HTTPS 证书（含私钥，不入库）
+certs/
+
 # 日志
 server.log
 *.log
