@@ -8,6 +8,14 @@ import {
 const CHUNK = LOCAL_CHUNK_SIZE;
 const LOW = 8 * 1024 * 1024; // 背压阈值 8MiB
 
+// 默认线上中转（Cloudflare Worker，WSS）。可用构建时 VITE_RELAY_URL=xxx 覆盖。
+const RELAY_DEFAULT = 'flashdrop-relay.xianshenghu363.workers.dev';
+function resolveRelay() {
+  const host = (import.meta as any).env?.VITE_RELAY_URL || RELAY_DEFAULT;
+  const proto = (host.includes('workers.dev') || location.protocol === 'https:') ? 'wss' : 'ws';
+  return { host, proto };
+}
+
 // ---------- 发送方 ----------
 const sendFiles = ref<File[]>([]);
 const room = ref('');
@@ -40,8 +48,7 @@ function genRoom() {
 async function startSend() {
   if (!room.value || !passphrase.value) return;
   keyHex.value = await deriveKey(passphrase.value, LOCAL_SALT);
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const relayHost = (import.meta as any).env?.VITE_RELAY_URL || location.host;
+  const { host: relayHost, proto } = resolveRelay();
   const ws = new WebSocket(`${proto}://${relayHost}/relay?room=${room.value}&role=sender`);
   (ws as any).bufferedAmountLowThreshold = LOW;
   sendWs = ws;
@@ -158,8 +165,7 @@ async function startRecv() {
     return;
   }
   recvKey = await deriveKey(recvPass.value, LOCAL_SALT);
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const relayHost = (import.meta as any).env?.VITE_RELAY_URL || location.host;
+  const { host: relayHost, proto } = resolveRelay();
   const ws = new WebSocket(`${proto}://${relayHost}/relay?room=${recvRoom.value}&role=receiver`);
   ws.binaryType = 'arraybuffer';
   recvWs = ws;
