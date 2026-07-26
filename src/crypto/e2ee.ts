@@ -27,6 +27,13 @@ export function newSalt(): string {
   return bufToB64(crypto.getRandomValues(new Uint8Array(16)).buffer);
 }
 
+/** 生成随机加密口令（12 位，大小写字母+数字，易读易输） */
+export function randomPassphrase(): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+  const arr = crypto.getRandomValues(new Uint8Array(12));
+  return Array.from(arr, (b) => alphabet[b % alphabet.length]).join('');
+}
+
 /** 由口令 + salt 派生 AES-GCM 256 密钥 */
 export async function deriveKey(passphrase: string, saltB64: string): Promise<CryptoKey> {
   const salt = b64ToBuf(saltB64);

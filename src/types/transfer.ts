@@ -27,6 +27,8 @@ export interface ReceivedFile {
 export interface CreateTransferResp {
   transferId: string;
   code: string;
+  loginCode: string;        // 16 位发送者登录码（带空格：XXXX XXXX XXXX XXXX）
+  expiresAt: number;         // 过期时间戳
   storage: 'local' | 'r2';
   e2ee: { salt: string; chunkSize: number } | null;
 }
@@ -44,6 +46,22 @@ export interface TransferDetail {
   storage: 'local' | 'r2';
   e2ee: E2EEMeta | null;
   files: ReceivedFile[];
+}
+
+/** 登录码查看的完整传输信息（含管理权限） */
+export interface LoginTransferDetail {
+  transferId: string;
+  message: string;
+  code: string;
+  loginCode: string;
+  expired: boolean;
+  terminated: boolean;
+  expiresAt: number;
+  createdAt: number;
+  storage: 'local' | 'r2';
+  e2ee: E2EEMeta | null;
+  files: ReceivedFile[];
+  totalSize: number;
 }
 
 /** 存储类型（本地磁盘 / 线上 R2） */

@@ -15,6 +15,7 @@ fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const STORAGE_TYPE = (process.env.STORAGE_TYPE || 'local').toLowerCase();
 const MAX_SIZE = Number(process.env.MAX_SIZE || 30 * 1024 * 1024 * 1024); // 默认 30GB
+const DEFAULT_TTL_MS = Number(process.env.DEFAULT_TTL_HOURS || 24) * 3600 * 1000; // 默认 24 小时
 
 // R2 / S3 兼容配置（仅当 STORAGE_TYPE=r2 时启用）
 const R2 = {
@@ -27,7 +28,7 @@ const R2 = {
     : undefined),
 };
 
-// ---------- 索引：transfers + codes ----------
+// ---------- 索引：transfers + codes + loginCodes ----------
 function readIndex() {
   let data;
   try {
@@ -38,18 +39,33 @@ function readIndex() {
   if (!data || typeof data !== 'object') data = {};
   if (!data.transfers) data.transfers = {};
   if (!data.codes) data.codes = {};
+  if (!data.loginCodes) data.loginCodes = {}; // 登录码 → transferId
   return data;
 }
 function writeIndex(idx) {
   fs.writeFileSync(INDEX_FILE, JSON.stringify(idx, null, 2));
 }
 
+/** 6 位分享码（排除易混淆字符） */
 function genCode() {
-  // 排除易混淆字符 0/O/1/I/L
   const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
   let s = '';
   for (let i = 0; i < 6; i++) s += alphabet[Math.floor(Math.random() * alphabet.length)];
   return s;
+}
+
+/** 16 位发送者登录码（大小写字母+数字，易输入） */
+function genLoginCode() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789abcdefghjkmnpqrstuvwxyz'; // 排除 0/O/1/I/l/o
+  let s = '';
+  for (let i = 0; i < 16; i++) s += alphabet[Math.floor(Math.random() * alphabet.length)];
+  // 每 4 位加空格便于阅读：XXXX XXXX XXXX XXXX
+  return s.slice(0, 4) + ' ' + s.slice(4, 8) + ' ' + s.slice(8, 12) + ' ' + s.slice(12, 16);
+}
+
+/** 检查传输是否已过期 */
+function isExpired(t) {
+  return t.expiresAt && Date.now() > t.expiresAt;
 }
 
 // ---------- 存储抽象：local 磁盘 / r2 对象存储 ----------
@@ -92,7 +108,7 @@ async function streamR2File(fileId, rangeHeader, res) {
     ...(rangeHeader ? { Range: rangeHeader } : {}),
   });
   const resp = await client.send(cmd);
-  const body = resp.Body; // web ReadableStream
+  const body = resp.Body;
   const nodeStream = stream.Readable.fromWeb(body);
   if (resp.ContentRange) {
     res.status(206);
@@ -116,12 +132,12 @@ async function main() {
     onUploadFinish: async (req, upload) => {
       const meta = upload.metadata || {};
       const transferId = meta.transferId;
-      if (!transferId) return {}; // 缺少 transferId 不登记
+      if (!transferId) return {};
       const name = meta.filename || upload.id;
       const rel = meta.relativePath || name;
       const idx = readIndex();
       if (!idx.transfers[transferId]) {
-        idx.transfers[transferId] = { id: transferId, message: '', createdAt: Date.now(), code: '', files: [] };
+        idx.transfers[transferId] = { id: transferId, message: '', createdAt: Date.now(), code: '', files: [], e2ee: null, expiresAt: 0, terminated: false };
       }
       const t = idx.transfers[transferId];
       if (!t.files.find((f) => f.id === upload.id)) {
@@ -145,13 +161,18 @@ async function main() {
   app.all('/files', (req, res) => tusServer.handle(req, res));
   app.all('/files/:id', (req, res) => tusServer.handle(req, res));
 
-  // 创建传输并分配分享码（可带初始留言 / E2EE 元数据）
+  // 创建传输并分配分享码 + 登录码（可带初始留言 / E2EE 元数据）
   app.post('/api/transfers', (req, res) => {
     const idx = readIndex();
     const transferId = (req.body && req.body.transferId) || cryptoRandom();
     const message = (req.body && req.body.message) || '';
+    const ttlMs = Number(req.body?.ttlHours || 0) * 3600 * 1000 || DEFAULT_TTL_MS;
     if (!idx.transfers[transferId]) {
-      idx.transfers[transferId] = { id: transferId, message: '', createdAt: Date.now(), code: '', files: [], e2ee: null };
+      idx.transfers[transferId] = {
+        id: transferId, message: '', createdAt: Date.now(),
+        code: '', files: [], e2ee: null,
+        expiresAt: Date.now() + ttlMs, terminated: false,
+      };
     }
     const t = idx.transfers[transferId];
     if (message) t.message = message;
@@ -161,15 +182,26 @@ async function main() {
         chunkSize: Number(req.body.e2ee.chunkSize) || 0,
       };
     }
-    // 分配一个未占用的分享码
+
+    // 分享码
     let code = genCode();
     while (idx.codes[code]) code = genCode();
     t.code = code;
     idx.codes[code] = transferId;
+
+    // 登录码（16 位，换电脑回看用）
+    let loginCode = genLoginCode();
+    const loginRaw = loginCode.replace(/\s/g, ''); // 去空格存索引
+    while (idx.loginCodes[loginRaw]) { loginCode = genLoginCode(); loginRaw = loginCode.replace(/\s/g, ''); }
+    t.loginCode = loginRaw;
+    idx.loginCodes[loginRaw] = transferId;
+
     writeIndex(idx);
     res.json({
       transferId,
       code,
+      loginCode,       // 带空格的展示版：XXXX XXXX XXXX XXXX
+      expiresAt: t.expiresAt,
       storage: storageType,
       e2ee: t.e2ee,
     });
@@ -180,6 +212,7 @@ async function main() {
     const idx = readIndex();
     const t = idx.transfers[req.params.id];
     if (!t) return res.status(404).json({ error: '传输不存在' });
+    if (isExpired(t) || t.terminated) return res.status(410).json({ error: '传输已过期或已终止' });
     if (t.code) delete idx.codes[t.code];
     let code = genCode();
     while (idx.codes[code]) code = genCode();
@@ -194,6 +227,7 @@ async function main() {
     const idx = readIndex();
     const t = idx.transfers[req.params.id];
     if (!t) return res.status(404).json({ error: '传输不存在' });
+    if (isExpired(t) || t.terminated) return res.status(410).json({ error: '传输已过期或已终止' });
     if (req.body && typeof req.body.message === 'string') t.message = req.body.message;
     writeIndex(idx);
     res.json({ message: t.message });
@@ -205,6 +239,7 @@ async function main() {
     const tid = idx.codes[req.params.code];
     const t = tid && idx.transfers[tid];
     if (!t) return res.status(404).json({ error: '未找到，可能还在上传或链接有误' });
+    if (isExpired(t) || t.terminated) return res.status(410).json({ error: '传输已过期或已终止' });
     res.json({
       transferId: t.id,
       message: t.message || '',
@@ -214,12 +249,53 @@ async function main() {
     });
   });
 
-  // 清空缓存：删除某传输（文件 + 索引 + 分享码）
+  // ---------- 发送者登录码相关 ----------
+
+  /** 用登录码查看自己的传输详情（含管理权限） */
+  app.get('/api/login/:code', (req, res) => {
+    const idx = readIndex();
+    const raw = req.params.code.replace(/\s/g, '');
+    const tid = idx.loginCodes[raw];
+    const t = tid && idx.transfers[tid];
+    if (!t) return res.status(404).json({ error: '登录码无效或已失效' });
+    const expired = isExpired(t) || t.terminated;
+    res.json({
+      transferId: t.id,
+      message: t.message || '',
+      code: t.code || '',
+      loginCode: t.loginCode ? formatLoginCode(t.loginCode) : '',
+      expired: !!expired,
+      terminated: !!t.terminated,
+      expiresAt: t.expiresAt || 0,
+      createdAt: t.createdAt || 0,
+      storage: t.files[0]?.storage || storageType,
+      e2ee: t.e2ee || null,
+      files: t.files.map((f) => ({ id: f.id, name: f.relativePath, size: f.size })),
+      totalSize: t.files.reduce((s, f) => s + (f.size || 0), 0),
+    });
+  });
+
+  /** 提前终止传输（作废分享码 + 登录码，保留文件可选删除） */
+  app.post('/api/transfers/:id/terminate', (req, res) => {
+    const idx = readIndex();
+    const t = idx.transfers[req.params.id];
+    if (!t) return res.status(404).json({ error: '传输不存在' });
+    t.terminated = true;
+    // 作废分享码
+    if (t.code) { delete idx.codes[t.code]; t.code = ''; }
+    // 作废登录码
+    if (t.loginCode) { delete idx.loginCodes[t.loginCode]; t.loginCode = ''; }
+    writeIndex(idx);
+    res.json({ ok: true, message: '传输已终止，分享码和登录码均已失效' });
+  });
+
+  // 清空缓存：删除某传输（文件 + 索引 + 分享码 + 登录码）
   app.delete('/api/transfers/:id', (req, res) => {
     const idx = readIndex();
     const t = idx.transfers[req.params.id];
     if (!t) return res.status(404).json({ error: '传输不存在' });
     if (t.code) delete idx.codes[t.code];
+    if (t.loginCode) delete idx.loginCodes[t.loginCode];
     for (const f of t.files) {
       if (f.storage === 'local') {
         const p = path.join(UPLOAD_DIR, f.id);
@@ -238,6 +314,7 @@ async function main() {
     const tid = idx.codes[req.params.code];
     const t = tid && idx.transfers[tid];
     if (!t) return res.status(404).end('未找到');
+    if (isExpired(t) || t.terminated) return res.status(410).end('传输已过期或已终止');
     if (t.files[0]?.storage === 'r2') {
       return res.status(501).end('R2 存储不支持服务端打包，请逐文件下载');
     }
@@ -261,6 +338,7 @@ async function main() {
     const t = tid && idx.transfers[tid];
     const f = t && t.files.find((x) => x.id === req.params.fileId);
     if (!f) return res.status(404).end('文件不存在');
+    if (isExpired(t) || t.terminated) return res.status(410).end('传输已过期或已终止');
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(f.relativePath)}`);
     res.setHeader('Accept-Ranges', 'bytes');
     if (f.storage === 'r2') {
@@ -314,11 +392,18 @@ async function main() {
     console.log('闪传 FlashDrop 服务已启动');
     console.log('  本机:   http://localhost:' + PORT);
     console.log('  局域网: http://' + getLanIp() + ':' + PORT);
+    console.log(`  传输默认有效期: ${DEFAULT_TTL_MS / 3600000} 小时`);
   });
 }
 
 function cryptoRandom() {
   return 't_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+/** 将无空格登录码转为带空格的展示格式 */
+function formatLoginCode(raw) {
+  if (!raw || raw.length !== 16) return raw;
+  return raw.slice(0, 4) + ' ' + raw.slice(4, 8) + ' ' + raw.slice(8, 12) + ' ' + raw.slice(12, 16);
 }
 
 function getLanIp() {
