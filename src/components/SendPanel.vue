@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import type { QueuedFile, StorageType } from '@/types/transfer';
-import { createTransfer, refreshCode, fileUrl, zipUrl } from '@/api/transfer';
+import { createTransfer, refreshCode, setMessage, fileUrl, zipUrl } from '@/api/transfer';
 import { uploadAll } from '@/composables/useTusUpload';
 import { newSalt, E2EE_CHUNK_SIZE } from '@/crypto/e2ee';
 import SendFileRow from './SendFileRow.vue';
@@ -32,6 +32,7 @@ function addFiles(list: FileList | File[], basePath = '') {
     if (files.value.some((x) => x.relativePath === rel && x.file.size === f.size)) continue;
     files.value.push({ file: f, relativePath: rel, status: 'pending', uploaded: 0 });
   }
+  maybeAutoStart();
 }
 
 // 递归读取拖入的目录结构
@@ -70,6 +71,7 @@ async function onDrop(e: DragEvent) {
       const entry = (it as any).webkitGetAsEntry();
       if (entry) await traverse(entry);
     }
+    maybeAutoStart();
   } else if (dt.files.length) {
     addFiles(dt.files);
   }
@@ -87,6 +89,17 @@ function removeFile(i: number) {
 
 function clearSelected() {
   files.value = [];
+}
+
+// 选完文件自动开始传输：只要还有“待发送”的文件且未在传，就触发
+function maybeAutoStart() {
+  if (uploading.value) return;
+  if (!files.value.some((f) => f.status === 'pending')) return;
+  if (e2eeEnabled.value && passphrase.value.length < 4) {
+    error.value = '已开启端到端加密，请先填写口令再选择文件';
+    return;
+  }
+  start();
 }
 
 async function start() {
@@ -142,6 +155,26 @@ function fmt(n: number) {
   if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
   return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
 }
+
+// 留言实时同步到服务端（自动开传后修改留言也生效）
+watch(message, async (v) => {
+  if (!transferId.value) return;
+  try {
+    await setMessage(transferId.value, v);
+  } catch {
+    /* 忽略：传输结束再改无意义 */
+  }
+});
+
+// 开启端到端加密但先选了文件：等口令填好再自动开传
+watch([e2eeEnabled, passphrase], () => {
+  if (e2eeEnabled.value && passphrase.value.length >= 4 && !uploading.value) {
+    if (files.value.some((f) => f.status === 'pending')) {
+      error.value = '';
+      start();
+    }
+  }
+});
 </script>
 
 <template>

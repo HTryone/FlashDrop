@@ -16,7 +16,7 @@ const label = computed(() => {
     case 'uploading': return '传输中';
     case 'error': return '失败';
     case 'paused': return '已暂停';
-    default: return '等待';
+    default: return '待发送';
   }
 });
 
