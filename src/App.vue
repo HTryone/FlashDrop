@@ -34,7 +34,7 @@ function onGotLoginCode(rawCode: string) {
       <nav class="tabs">
         <button :class="{ on: tab === 'send' }" @click="tab = 'send'">发送</button>
         <button :class="{ on: tab === 'receive' }" @click="tab = 'receive'">接收</button>
-        <button :class="{ on: tab === 'manage' }" @click="tab = 'manage'">我的传输</button>
+        <button :class="{ on: tab === 'local' }" @click="tab = 'local'">本地直传</button>
       </nav>
       <button class="ext-btn" @click="drawerOpen = true" title="扩展模块">⚙ 扩展</button>
     </header>
