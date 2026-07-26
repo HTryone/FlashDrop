@@ -4,8 +4,12 @@ import type { TransferDetail } from '@/types/transfer';
 import { getTransfer, zipUrl } from '@/api/transfer';
 import { deriveKey } from '@/crypto/e2ee';
 import ReceiveFileRow from './ReceiveFileRow.vue';
+import LocalTransfer from './LocalTransfer.vue';
 
 const props = defineProps<{ initialCode?: string }>();
+
+// 接收模式：中转接收（分享码/口令）| 本地直传（房间码，无口令）
+const recvMode = ref<'relay' | 'local'>('relay');
 
 const codeInput = ref('');
 const detail = ref<TransferDetail | null>(null);
@@ -72,12 +76,20 @@ function remainText(expiresAt: number): string {
 }
 
 onMounted(() => {
+  if (new URLSearchParams(location.search).get('tab') === 'local') recvMode.value = 'local';
   if (props.initialCode) load(props.initialCode);
 });
 </script>
 
 <template>
   <div class="recv">
+    <!-- 模式切换：中转接收 / 本地直传 -->
+    <div class="seg mode-seg">
+      <button :class="{ on: recvMode === 'relay' }" @click="recvMode = 'relay'">中转接收</button>
+      <button :class="{ on: recvMode === 'local' }" @click="recvMode = 'local'">本地直传</button>
+    </div>
+
+    <template v-if="recvMode === 'relay'">
     <div class="code-input">
       <input v-model="codeInput" placeholder="输入 6 位分享码" maxlength="6" @keyup.enter="load()" />
       <button class="btn primary" :disabled="loading" @click="load()">{{ loading ? '查询中…' : '获取文件' }}</button>
@@ -133,11 +145,17 @@ onMounted(() => {
     <div v-if="!detail && !loading" class="empty muted">
       粘贴对方发来的分享码，或打开对方发来的带码链接，即可看到文件列表。
     </div>
+    </template>
+
+    <LocalTransfer v-else side="receive" />
   </div>
 </template>
 
 <style scoped>
 .recv { display: flex; flex-direction: column; gap: 16px; }
+.mode-seg { display: flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; width: fit-content; margin-bottom: 4px; }
+.mode-seg button { background: var(--bg-soft); border: none; color: var(--text-dim); padding: 9px 16px; font-size: 13px; }
+.mode-seg button.on { background: var(--accent-grad); color: #07101f; font-weight: 700; }
 .code-input { display: flex; gap: 10px; }
 .code-input input {
   flex: 1; background: var(--bg-soft); border: 1px solid var(--border); color: var(--text);

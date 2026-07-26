@@ -5,6 +5,9 @@ import {
   LOCAL_SALT, LOCAL_CHUNK_SIZE,
 } from '@/crypto/e2ee';
 
+// 由父组件（发送/接收面板）指定渲染哪一侧；不传则两侧都渲染
+const props = defineProps<{ side?: 'send' | 'receive' }>();
+
 // ---------- 常量 ----------
 const CHUNK = LOCAL_CHUNK_SIZE;          // 加密前分片大小（明文）
 // 加密后单帧 ≈ 768KB + 16(IV) + ≤16(PKCS7) + 32(HMAC) + 12(帧头) ≈ 786.5KB，远低于 Cloudflare DO 的 1MB 上限
@@ -587,7 +590,7 @@ onUnmounted(() => {
 <template>
   <div class="local">
     <!-- 发送 -->
-    <section class="blk">
+    <section class="blk" v-if="!props.side || props.side === 'send'">
       <h3>① 发送（本地直传）</h3>
       <p class="hint">文件只在内存里经网站流转，不落服务器磁盘；双方需同时在线，关闭即止。</p>
       <input type="file" multiple @change="pick" :disabled="sending" />
@@ -623,10 +626,10 @@ onUnmounted(() => {
       <div class="status">{{ sendStatus }}</div>
     </section>
 
-    <hr />
+    <hr v-if="!props.side" />
 
     <!-- 接收 -->
-    <section class="blk">
+    <section class="blk" v-if="!props.side || props.side === 'receive'">
       <h3>② 接收（输入房间码）</h3>
       <div class="recv-form">
         <input v-model="recvRoom" placeholder="房间码（链接打开时自动填入）" :disabled="receiving" />

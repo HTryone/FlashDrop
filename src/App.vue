@@ -3,7 +3,6 @@ import { ref, computed } from 'vue';
 import SendPanel from './components/SendPanel.vue';
 import ReceivePanel from './components/ReceivePanel.vue';
 import ManagePanel from './components/ManagePanel.vue';
-import LocalTransfer from './components/LocalTransfer.vue';
 import ExtensionsDrawer from './components/ExtensionsDrawer.vue';
 
 type TabType = 'send' | 'receive' | 'manage' | 'local';
@@ -14,7 +13,7 @@ const params = new URLSearchParams(location.search);
 const codeParam = params.get('code');
 const tabParam = params.get('tab');
 if (codeParam) tab.value = 'receive';
-else if (tabParam === 'local') tab.value = 'local';
+else if (tabParam === 'local') tab.value = 'receive';
 
 const initialCode = computed(() => codeParam || '');
 
@@ -34,7 +33,7 @@ function onGotLoginCode(rawCode: string) {
       <nav class="tabs">
         <button :class="{ on: tab === 'send' }" @click="tab = 'send'">发送</button>
         <button :class="{ on: tab === 'receive' }" @click="tab = 'receive'">接收</button>
-        <button :class="{ on: tab === 'local' }" @click="tab = 'local'">本地直传</button>
+        <button :class="{ on: tab === 'manage' }" @click="tab = 'manage'">我的传输</button>
       </nav>
       <button class="ext-btn" @click="drawerOpen = true" title="扩展模块">⚙ 扩展</button>
     </header>
@@ -43,7 +42,6 @@ function onGotLoginCode(rawCode: string) {
       <div class="panel card">
         <SendPanel v-show="tab === 'send'" @got-login-code="onGotLoginCode" />
         <ReceivePanel v-if="tab === 'receive'" :initial-code="initialCode" />
-        <LocalTransfer v-if="tab === 'local'" />
         <ManagePanel v-if="tab === 'manage'" />
       </div>
       <footer class="foot faint">

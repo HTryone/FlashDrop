@@ -5,10 +5,14 @@ import { createTransfer, refreshCode, setMessage, terminateTransfer, fileUrl, zi
 import { uploadAll } from '@/composables/useTusUpload';
 import { newSalt, E2EE_CHUNK_SIZE, randomPassphrase } from '@/crypto/e2ee';
 import SendFileRow from './SendFileRow.vue';
+import LocalTransfer from './LocalTransfer.vue';
 
 const emit = defineEmits<{
   (e: 'gotLoginCode', code: string): void;
 }>();
+
+// 发送模式：中转发送（带分享码/登录码/有效期/口令）| 本地直传（WebSocket 实时，无有效期/口令）
+const sendMode = ref<'relay' | 'local'>('relay');
 
 const files = ref<QueuedFile[]>([]);
 const message = ref('');
@@ -223,6 +227,13 @@ watch(message, async (v) => {
 
 <template>
   <div class="send">
+    <!-- 模式切换：中转发送 / 本地直传 -->
+    <div class="seg mode-seg">
+      <button :class="{ on: sendMode === 'relay' }" @click="sendMode = 'relay'">中转发送</button>
+      <button :class="{ on: sendMode === 'local' }" @click="sendMode = 'local'">本地直传</button>
+    </div>
+
+    <template v-if="sendMode === 'relay'">
     <!-- 拖拽 / 选择区 -->
     <div
       class="drop"
@@ -365,6 +376,9 @@ watch(message, async (v) => {
         </div>
       </div>
     </Teleport>
+    </template>
+
+    <LocalTransfer v-else side="send" />
   </div>
 </template>
 
@@ -408,6 +422,7 @@ textarea:focus, .pass:focus { outline: none; border-color: var(--accent); }
 .seg { display: flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
 .seg button { flex: 1; background: var(--bg-soft); border: none; color: var(--text-dim); padding: 9px; font-size: 13px; }
 .seg button.on { background: var(--accent-grad); color: #07101f; font-weight: 700; }
+.mode-seg { width: fit-content; margin-bottom: 4px; }
 .err-box { color: var(--danger); font-size: 13px; background: rgba(255, 107, 129, 0.1); padding: 8px 12px; border-radius: var(--radius-sm); }
 .actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .ok-tag { color: var(--ok); font-weight: 600; }
