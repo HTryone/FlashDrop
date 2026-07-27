@@ -102,12 +102,14 @@ export class Relay {
     // GET /stream/:room — 接收端下载流
     if (request.method === 'GET') {
       let entry = this.rooms.get(room);
+      console.log(`[stream] GET ${room}, entry exists=${!!entry}, locked=${entry?.readable.locked}`);
       if (!entry || entry.readable.locked) {
         // 如果已有房间但 readable 被占用（接收端重连/重复 GET），
         // 必须重建房间，否则 new Response(entry.readable) 会抛
         // "ReadableStream is disturbed (has already been read from)"
         if (entry && entry.readable.locked) this.rooms.delete(room);
         entry = this.createRoom(room);
+        console.log(`[stream] GET ${room}, created new room`);
       }
       return new Response(entry.readable, {
         headers: this.cors({
@@ -120,9 +122,12 @@ export class Relay {
     // POST /stream/:room — 发送端分片上传（复用 GET 创建的同一个 room）
     if (request.method === 'POST') {
       let entry = this.rooms.get(room);
+      console.log(`[stream] POST ${room}, entry exists=${!!entry}`);
       if (!entry) entry = this.createRoom(room);
       try {
+        console.log(`[stream] POST ${room}, starting pipeTo`);
         await request.body.pipeTo(entry.writable, { preventClose: true });
+        console.log(`[stream] POST ${room}, pipeTo completed`);
       } catch (e) {
         console.error('[stream] pipe error:', e?.message || e);
         return new Response('error', { status: 500, headers: this.cors() });
@@ -141,6 +146,7 @@ export class Relay {
 
     let entry = this.rooms.get(room);
     if (!entry) entry = this.createRoom(room);
+    console.log(`[ws] ${room} role=${new URL(request.url).searchParams.get('role') || 'sender'}, room exists=${!!entry}`);
 
     const url = new URL(request.url);
     const role = url.searchParams.get('role') || 'sender';
@@ -202,6 +208,7 @@ export class Relay {
       wsSender: null, wsReceiver: null,
     };
     this.rooms.set(room, entry);
+    console.log(`[room] created ${room}, total rooms=${this.rooms.size}`);
     return entry;
   }
 }

@@ -197,6 +197,13 @@ async function startLocalSend() {
       // @ts-ignore duplex 在 TS DOM lib 类型中可能缺失，Chrome 105+ 已支持
       duplex: 'half',
     } as any);
+    // 早期捕获 POST 错误，避免静默失败
+    postPromise.catch((e: any) => {
+      console.error('[send] POST fetch error:', e);
+      if (!lAbort?.signal.aborted) {
+        lStatus.value = `上传连接失败: ${e?.message || e}`;
+      }
+    });
     postBytes = 0;
   }
 
