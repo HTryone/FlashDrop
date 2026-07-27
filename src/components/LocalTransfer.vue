@@ -527,6 +527,7 @@ onUnmounted(() => {
         <div class="fill" :style="{ width: (recvProgress * 100) + '%' }"></div>
       </div>
       <div class="status">{{ recvStatus }}</div>
+      <p class="hint e2ee-hint">🔒 已端到端加密：密钥仅在本机从链接 <code>#k=</code> 派生，服务器只转发密文、无法解密。</p>
     </section>
   </div>
 </template>
@@ -535,6 +536,20 @@ onUnmounted(() => {
 .local { display: flex; flex-direction: column; gap: 8px; }
 .blk { display: flex; flex-direction: column; gap: 10px; }
 .hint { font-size: 12.5px; color: var(--text-dim); margin: 0; }
+.e2ee-hint {
+  color: #3ecf8e;
+  border-left: 2px solid #3ecf8e;
+  padding: 6px 8px;
+  margin: 4px 0 0 !important;
+  background: rgba(62, 207, 142, 0.08);
+  border-radius: 0 6px 6px 0;
+}
+.e2ee-hint code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: rgba(62, 207, 142, 0.16);
+  padding: 0 4px;
+  border-radius: 3px;
+}
 h3 { margin: 0; font-size: 15px; }
 hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
 .filelist { display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow: auto; }

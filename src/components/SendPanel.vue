@@ -633,6 +633,7 @@ onUnmounted(() => { closeLocalWs(); });
     <template v-else>
     <div class="local-send-panel">
       <p class="hint">文件只在内存里经网站流转，不落服务器磁盘；双方需同时在线，关闭即止。</p>
+      <p class="hint e2ee-hint">🔒 已端到端加密：密钥仅在你的浏览器本地派生，服务器只转发密文、无法解密。</p>
 
       <div v-if="!lRoom" class="actions">
         <button class="btn primary" :disabled="!files.length" @click="genRoom">生成直传房间</button>
