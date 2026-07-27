@@ -193,10 +193,19 @@ async function readExact(reader: ReadableStreamDefaultReader<Uint8Array>, n: num
 /** 读一条长度前缀消息 [4B u32 长度][payload] */
 async function readMsg(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<Uint8Array | null> {
   const hdr = await readExact(reader, 4);
-  if (!hdr) return null;
+  if (!hdr) {
+    console.log('[recv] readMsg EOF at header');
+    return null;
+  }
   const len = new DataView(hdr.buffer, hdr.byteOffset, 4).getUint32(0, false);
-  if (len === 0) return null;
-  return readExact(reader, len);
+  if (len === 0) {
+    console.log('[recv] readMsg zero length');
+    return null;
+  }
+  console.log(`[recv] readMsg expecting ${len} bytes`);
+  const payload = await readExact(reader, len);
+  console.log(`[recv] readMsg got ${payload?.length ?? 0} bytes`);
+  return payload;
 }
 
 /** WebSocket 控制通道：保持 DO 活跃，避免 Cloudflare DO 在 HTTP 请求间 hibernate 丢失 room */

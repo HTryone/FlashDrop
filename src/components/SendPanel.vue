@@ -187,8 +187,12 @@ async function startLocalSend() {
   function startNewPost() {
     postCtrl = null;
     const stream = new ReadableStream<Uint8Array>({
-      start(c) { postCtrl = c; }
+      start(c) {
+        postCtrl = c;
+        console.log(`[send] ReadableStream started, controller=${!!c}`);
+      }
     }, new ByteLengthQueuingStrategy({ highWaterMark: 2 * 1024 * 1024 }));
+    console.log(`[send] starting fetch POST to ${base}/stream/${lRoom.value}`);
     postPromise = fetch(`${base}/stream/${lRoom.value}`, {
       method: 'POST',
       body: stream,
@@ -198,7 +202,9 @@ async function startLocalSend() {
       duplex: 'half',
     } as any);
     // 早期捕获 POST 错误，避免静默失败
-    postPromise.catch((e: any) => {
+    postPromise.then(r => {
+      console.log(`[send] POST response: ${r.status}`);
+    }).catch((e: any) => {
       console.error('[send] POST fetch error:', e);
       if (!lAbort?.signal.aborted) {
         lStatus.value = `上传连接失败: ${e?.message || e}`;
@@ -211,6 +217,7 @@ async function startLocalSend() {
     const msg = encodeMsg(bytes);
     // 当前片放不下 → 关闭当前 POST，开新片
     if (postBytes > 0 && postBytes + msg.byteLength > POST_LIMIT) {
+      console.log(`[send] POST limit reached, closing current post at ${postBytes} bytes`);
       postCtrl!.close();
       try { await postPromise; } catch (e: any) {
         throw new Error(`上传片失败: ${e?.message || e}`);
@@ -219,11 +226,18 @@ async function startLocalSend() {
     }
     // 背压：队列满时让出事件循环，让 fetch 消费数据
     const ctrl = postCtrl!;
+    let waitCount = 0;
     while ((ctrl.desiredSize ?? 1) <= 0) {
+      waitCount++;
+      if (waitCount > 1000) {
+        console.error(`[send] backpressure stuck, desiredSize=${ctrl.desiredSize}`);
+        throw new Error('背压卡死：fetch 可能未在消费流');
+      }
       await new Promise(r => setTimeout(r, 0));
     }
     ctrl.enqueue(msg);
     postBytes += msg.byteLength;
+    console.log(`[send] enqueued ${msg.byteLength} bytes, postBytes=${postBytes}, desiredSize=${ctrl.desiredSize}`);
   }
 
   try {
