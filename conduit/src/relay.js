@@ -2,17 +2,17 @@
 // 不落盘：文件数据只在两端 WebSocket 间流过内存。
 // 使用 Hibernatable WebSocket API（state.acceptWebSocket），生产环境稳定可靠。
 //
-// v3: 取消端到端 ACK 流控，依赖 TCP/WS 原生背压。DO 只做简单缓冲。
-// 思路：TCP 已经有拥塞控制，我们在上面再加一层 ACK 反而制造振荡。
-// DO 队列只作为"临时缓冲"，让两端不因瞬时速度差而丢包。
+// v2: 加入背压保护。接收端处理慢时，DO 内存不会无限堆积导致被 Cloudflare 杀掉。
 export class Relay {
   constructor(state, env) {
     this.state = state;
     this.env = env;
     // 每对 peer 一个发送队列；key 为 "room:sender" / "room:receiver"
     this.queues = new Map();
-    // 单个队列最大积压字节数（CF DO 内存 128MB，留余量给运行时/堆/其他房间）
-    this.MAX_QUEUE_BYTES = 96 * 1024 * 1024; // 96MB（4MB/帧下可缓存 ~23 帧）
+    // 单个队列最大积压字节数（超过后丢弃最旧帧，防止 DO 内存爆）
+    this.MAX_QUEUE_BYTES = 32 * 1024 * 1024; // 32MB（2MB/帧下可缓存 ~15 帧）
+    // 单个队列最大积压帧数
+    this.MAX_QUEUE_FRAMES = 100;              // 2MB/帧 × 100 = 200MB 上限（字节优先触发）
   }
 
   async fetch(request) {
@@ -91,7 +91,7 @@ export class Relay {
     const msgSize = message.byteLength || 0;
 
     // 队列满了 → 丢弃最旧帧（优于让 DO 内存爆炸被杀）
-    while (queue.bytes + msgSize > this.MAX_QUEUE_BYTES && queue.frames.length > 0) {
+    if (queue.bytes + msgSize > this.MAX_QUEUE_BYTES || queue.frames.length >= this.MAX_QUEUE_FRAMES) {
       const dropped = queue.frames.shift();
       if (dropped) {
         queue.bytes -= dropped.byteLength || 0;
