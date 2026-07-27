@@ -59,6 +59,9 @@ const lStatus = ref('');
 const lPeerOnline = ref(false);
 let lAbort: AbortController | null = null;
 let lPollTimer: ReturnType<typeof setTimeout> | null = null;
+let lWs: WebSocket | null = null;
+let lWsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let lWsReadyNotified = false;
 
 function resetLocalSender() {
   lSending.value = false; lDone.value = false;
@@ -75,6 +78,9 @@ function cancelLocalSend() {
 function closeLocalConn() {
   if (lAbort) { try { lAbort.abort(); } catch {} lAbort = null; }
   if (lPollTimer) { clearTimeout(lPollTimer); lPollTimer = null; }
+  if (lWsReconnectTimer) { clearTimeout(lWsReconnectTimer); lWsReconnectTimer = null; }
+  if (lWs) { try { lWs.close(); } catch {} lWs = null; }
+  lWsReadyNotified = false;
 }
 
 /** 长度前缀编码：[4B u32 长度][payload] */
@@ -94,17 +100,60 @@ function genRoom() {
   for (let i = 0; i < 6; i++) s += cs[a[i] % cs.length];
   lRoom.value = s; lPassphrase.value = randomPassphrase();
   lSendLink.value = `${location.origin}/?tab=local&room=${s}#k=${lPassphrase.value}`;
-  lStatus.value = '房间已生成，等待对方加入…';
-  void pollReceiverReady();
+  lStatus.value = '房间已生成，正在建立控制通道…';
+  void connectControl();
 }
 
-/** HTTP 长轮询 GET /stream/:room/ready，等接收端连上 */
+/** WebSocket 控制通道：保持 DO 活跃，避免 HTTP 请求间 hibernate 丢失 room */
+function connectControl() {
+  if (!lRoom.value || lWs) return;
+  const wsUrl = resolveRelayBase().replace(/^https:/, 'wss:') + `/ws/${lRoom.value}?role=sender`;
+  try {
+    const ws = new WebSocket(wsUrl);
+    lWs = ws;
+    let opened = false;
+    ws.onopen = () => {
+      opened = true;
+      lStatus.value = '控制通道已连接，等待对方加入…';
+    };
+    ws.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (data.type === 'ready' && !lWsReadyNotified) {
+          lWsReadyNotified = true;
+          lPeerOnline.value = true;
+          lStatus.value = '对方已在线，可开始传输';
+        }
+      } catch {}
+    };
+    ws.onerror = () => {
+      if (!lWsReadyNotified) {
+        lStatus.value = '控制通道出错，尝试 HTTP 兼容通道…';
+        void pollReceiverReady();
+      }
+    };
+    ws.onclose = () => {
+      if (lWs === ws) lWs = null;
+      // 只有曾经成功打开过的连接才自动重连，避免初始失败时死循环
+      if (opened && !lWsReadyNotified && !lSending.value) {
+        lStatus.value = '控制通道断开，3秒后重连…';
+        lWsReconnectTimer = setTimeout(() => void connectControl(), 3000);
+      }
+    };
+  } catch (e: any) {
+    lStatus.value = `控制通道失败: ${e?.message || e}`;
+    void pollReceiverReady();
+  }
+}
+
+/** HTTP 长轮询兜底（本地开发用，Cloudflare 上需要 WebSocket 保活） */
 async function pollReceiverReady() {
-  if (!lRoom.value) return;
+  if (!lRoom.value || lWsReadyNotified) return;
   const base = resolveRelayBase();
   try {
     const resp = await fetch(`${base}/stream/${lRoom.value}/ready?t=${Date.now()}`, { mode: 'cors' });
-    if (resp.ok) {
+    if (resp.ok && !lWsReadyNotified) {
+      lWsReadyNotified = true;
       lPeerOnline.value = true;
       lStatus.value = '对方已在线，可开始传输';
       return;

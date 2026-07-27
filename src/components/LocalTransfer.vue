@@ -120,6 +120,8 @@ let recvKey = '';
 let finishing = false;
 let recvAborted = false;
 let recvAbort: AbortController | null = null;
+let recvWs: WebSocket | null = null;
+let recvWsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 // 并发解密 + 保序写盘
 let perFileChunks: number[] = [];
 let nextWriteSeq = 0;
@@ -146,10 +148,13 @@ function resetReceiver() {
   recvReceived = 0;
   perFileChunks = []; nextWriteSeq = 0; readyBuf.clear(); drainRunning = false;
   pendingDone = false;
+  if (recvWs) { try { recvWs.close(); } catch {} recvWs = null; }
 }
 
 function closeReceiverConn() {
   if (recvAbort) { try { recvAbort.abort(); } catch {} recvAbort = null; }
+  if (recvWsReconnectTimer) { clearTimeout(recvWsReconnectTimer); recvWsReconnectTimer = null; }
+  if (recvWs) { try { recvWs.close(); } catch {} recvWs = null; }
   finishing = false;
 }
 
@@ -194,6 +199,40 @@ async function readMsg(reader: ReadableStreamDefaultReader<Uint8Array>): Promise
   return readExact(reader, len);
 }
 
+/** WebSocket 控制通道：保持 DO 活跃，避免 Cloudflare DO 在 HTTP 请求间 hibernate 丢失 room */
+function connectRecvControl(base: string): Promise<void> {
+  return new Promise((resolve) => {
+    const wsUrl = base.replace(/^https:/, 'wss:') + `/ws/${recvRoom.value}?role=receiver`;
+    try {
+      const ws = new WebSocket(wsUrl);
+      recvWs = ws;
+      let opened = false;
+      ws.onopen = () => {
+        opened = true;
+        try { ws.send(JSON.stringify({ type: 'ready' })); } catch {}
+        resolve();
+      };
+      ws.onerror = () => {
+        if (!opened) {
+          // WebSocket 不可用（本地开发或网络限制），回退 HTTP POST /ready
+          void fetch(`${base}/stream/${recvRoom.value}/ready`, { method: 'POST' }).catch(() => {});
+          resolve();
+        }
+      };
+      ws.onclose = () => {
+        if (recvWs === ws) recvWs = null;
+        // 只有曾经成功打开过的连接才自动重连，避免初始失败时死循环
+        if (opened && receiving.value && !recvWs) {
+          recvWsReconnectTimer = setTimeout(() => void connectRecvControl(base), 3000);
+        }
+      };
+    } catch (e: any) {
+      recvStatus.value = `控制通道失败: ${e?.message || e}`;
+      resolve();
+    }
+  });
+}
+
 async function startRecv() {
   if (!recvRoom.value || !recvPass.value) {
     recvStatus.value = '需要房间码和口令'; return;
@@ -209,9 +248,12 @@ async function startRecv() {
   }
 
   receiving.value = true;
-  recvStatus.value = '正在连接 HTTP 流式中继…';
+  recvStatus.value = '正在建立控制通道…';
   recvAbort = new AbortController();
   const base = resolveRelayBase();
+
+  // 1. 先连 WebSocket 控制通道，保持 DO 活跃并通知发送端 ready
+  await connectRecvControl(base);
 
   let resp: Response;
   try {
@@ -235,10 +277,7 @@ async function startRecv() {
   const reader = resp.body.getReader();
 
   try {
-    // 通知发送端已就绪（HTTP POST，不需要 WebSocket）
-    try { await fetch(`${base}/stream/${recvRoom.value}/ready`, { method: 'POST' }); } catch {}
-
-    // 1. 读 offer（第一条消息）
+    // 2. 读 offer（第一条消息）
     const offerPayload = await readMsg(reader);
     if (!offerPayload) {
       recvStatus.value = '未收到文件清单，对方可能已断开';
@@ -263,7 +302,7 @@ async function startRecv() {
       ? `收到 ${offer.files.length} 个文件，开始接收（当前为不安全连接，已切换为浏览器下载模式；大文件建议用 https 访问以获得流式写入）`
       : `收到 ${offer.files.length} 个文件，开始流式接收…`;
 
-    // 2. 读数据帧直到 EOF
+    // 3. 读数据帧直到 EOF
     let frameCount = 0;
     while (true) {
       if (recvAborted) break;
@@ -280,7 +319,7 @@ async function startRecv() {
       handleDataFrame(frameBuf);
       frameCount++;
     }
-    // 3. 流结束 → 等 drainWrites 收尾
+    // 4. 流结束 → 等 drainWrites 收尾
     pendingDone = true;
     void drainWrites();
   } catch (e: any) {
