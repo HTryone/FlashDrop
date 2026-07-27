@@ -1,4 +1,5 @@
 // HTTP 流式中继 Durable Object + WebSocket 控制通道（标准 API，不 hibernation）。
+// 构建触发标记：2026-07-27 确保前端+Worker 同步部署
 //
 // 数据平面（HTTP 流式，快）：
 //   发送端 POST /stream/:room（body = ReadableStream，分片 <100MB）
