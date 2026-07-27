@@ -43,7 +43,9 @@ const showTerminateDialog = ref(false);
 // ========== 本地直传（复用 LocalTransfer 逻辑）==========
 const LOCAL_CHUNK = LOCAL_CHUNK_SIZE;
 const FRAME_HDR = 12;
-const LOW = 16 * 1024 * 1024;
+// 本地直传 WS 缓冲高水位：发送端 bufferedAmount 超过此值就等 bufferedamountlow 事件。
+// 896KB 分片下 4MB 约等于 4~5 个分片在途，既不让开局冲太快，也保持管道饱满。
+const LOW = 4 * 1024 * 1024;
 const CONN_TIMEOUT = 10000;
 const DRAIN_TIMEOUT_MS = 30000;
 // 端到端流量控制：接收端驱动（PAUSE/RESUME）。

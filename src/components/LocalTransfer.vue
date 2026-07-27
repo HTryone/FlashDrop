@@ -12,7 +12,7 @@ const props = defineProps<{ side?: 'send' | 'receive' }>();
 
 // ---------- 常量 ----------
 const CHUNK = LOCAL_CHUNK_SIZE;          // 加密前分片大小（明文）
-// 加密后单帧 ≈ 768KB + 16(IV) + ≤16(PKCS7) + 32(HMAC) + 12(帧头) ≈ 786.5KB，远低于 Cloudflare DO 的 1MB 上限
+// 加密后单帧 ≈ 896KB + 16(IV) + ≤16(PKCS7) + 32(HMAC) + 12(帧头) ≈ 897KB，低于 Cloudflare DO 的 1MB WebSocket 上限
 const FRAME_HDR = 12;                    // 帧头：fi(u16) + ci(u32) + plainLen(u32)
 // Cloudflare DO WebSocket 消息上限 1 MB（≈1,000,000 字节），需留余量
 const CONN_TIMEOUT = 10000;             // 连接超时 ms
@@ -422,14 +422,17 @@ function handleDataFrame(data: ArrayBuffer) {
   if (fi === 0xFFFF) { onRecvEof(); return; } // 发送端经 DataChannel 发的结束标记
   const ci = dv.getUint32(2);
   const plainLen = dv.getUint32(6);
-  const body = frame.slice(FRAME_HDR);
+  const body = frame.subarray(FRAME_HDR);
+  // ⚠️ body.buffer 可能是整个底层 ArrayBuffer（含帧头），必须按 byteOffset/length 切出只属于 body 的 ArrayBuffer，
+  // 否则 Worker 端会把 12B 帧头也当密文解密 → HMAC 校验失败或文件损坏。
+  const bodyBuf = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength);
   if (fi >= writers.length) {
     console.warn(`[recv] 文件索引越界: fi=${fi}, max=${writers.length - 1}`);
     return;
   }
   const seq = frameSeq(fi, ci);
   // 并发解密（Worker 池自动负载均衡），不 await —— 让后续帧也能立刻开始解密
-  decryptChunkAsync(body.buffer, recvKey, plainLen)
+  decryptChunkAsync(bodyBuf, recvKey, plainLen)
     .then((plainBuf) => {
       if (recvAborted) return;             // 已取消则丢弃此块
       recvReceived += (plainBuf as ArrayBuffer).byteLength;
