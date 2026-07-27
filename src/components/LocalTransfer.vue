@@ -283,11 +283,31 @@ async function startRecv() {
 
   senderOnline.value = true;
   recvStatus.value = '已连接，等待文件清单…';
-  const reader = resp.body.getReader();
+  let reader = resp.body.getReader();
 
   try {
-    // 2. 读 offer（第一条消息）
-    const offerPayload = await readMsg(reader);
+    // 2. 读 offer（第一条消息）；如果立刻 EOF 说明 DO 可能 hibernate 导致房间丢失，
+    // 或者发送端 POST 还没到达——重试几次再放弃
+    let offerPayload = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) {
+        reader.cancel();
+        resp = await fetch(`${base}/stream/${recvRoom.value}`, {
+          signal: recvAbort.signal,
+          headers: { 'Accept': 'application/octet-stream' },
+        });
+        if (!resp.ok || !resp.body) {
+          recvStatus.value = `连接失败(重试${attempt}): HTTP ${resp.status}`;
+          receiving.value = false; return;
+        }
+        reader = resp.body.getReader();
+        console.log(`[recv] retry GET #${attempt}, waiting for data...`);
+        await new Promise(r => setTimeout(r, 1000 * attempt));
+      }
+      offerPayload = await readMsg(reader);
+      if (offerPayload) break;
+      console.log(`[recv] offer EOF on attempt ${attempt}, will retry`);
+    }
     if (!offerPayload) {
       recvStatus.value = '未收到文件清单，对方可能已断开';
       receiving.value = false;

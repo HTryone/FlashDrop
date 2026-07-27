@@ -172,8 +172,23 @@ async function startLocalSend() {
   catch (e: any) { lStatus.value = `密钥派生失败: ${e?.message || e}`; return; }
 
   lSending.value = true; lProgress.value = 0;
-  lStatus.value = '正在建立 HTTP 流式连接…';
+  lStatus.value = '正在确认控制通道…';
   lAbort = new AbortController();
+
+  // 关键：确保 WebSocket 控制通道还活着（DO 靠 WS 保活，否则 hibernate 会丢 rooms 状态，
+  // 导致 POST 和 GET 连到不同的 TransformStream 实例 → 接收端 EOF at header）
+  if (!lWs || lWs.readyState !== WebSocket.OPEN) {
+    lStatus.value = '控制通道已断开，正在重连…';
+    connectControl();
+    // 等待 WS 重连 + 对端 ready
+    await new Promise<void>((resolve) => {
+      const check = () => {
+        if (lWs && lWs.readyState === WebSocket.OPEN && lWsReadyNotified) resolve();
+        else setTimeout(check, 200);
+      };
+      setTimeout(check, 200);
+    });
+  }
 
   const base = resolveRelayBase();
   // Cloudflare POST 请求体限制 100MB，每片留余量用 80MB
