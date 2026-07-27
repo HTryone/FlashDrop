@@ -235,6 +235,9 @@ async function startRecv() {
   const reader = resp.body.getReader();
 
   try {
+    // 先通知发送端已就绪，对方才开始发 offer+数据
+    try { await fetch(`${base}/stream/${recvRoom.value}/ready`, { method: 'POST' }); } catch {}
+
     // 1. 读 offer（第一条消息）
     const offerPayload = await readMsg(reader);
     if (!offerPayload) {
@@ -259,9 +262,6 @@ async function startRecv() {
     recvStatus.value = recvFallback
       ? `收到 ${offer.files.length} 个文件，开始接收（当前为不安全连接，已切换为浏览器下载模式；大文件建议用 https 访问以获得流式写入）`
       : `收到 ${offer.files.length} 个文件，开始流式接收…`;
-
-    // 通知发送端已就绪
-    try { await fetch(`${base}/stream/${recvRoom.value}/ready`, { method: 'POST' }); } catch {}
 
     // 2. 读数据帧直到 EOF
     let frameCount = 0;
