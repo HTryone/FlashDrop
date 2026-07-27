@@ -1,28 +1,21 @@
 <script setup lang="ts">
-import { ref, computed, onUnmounted } from 'vue';
+import { ref, onUnmounted } from 'vue';
 import {
-  deriveKey, randomPassphrase,
+  deriveKey,
   LOCAL_SALT, LOCAL_CHUNK_SIZE,
 } from '@/crypto/e2ee';
-import { createWebRTC, fetchIceServers } from '@/composables/useWebRTC';
 import { decryptChunkAsync } from '@/composables/useLocalCrypto';
 
 // 由父组件（发送/接收面板）指定渲染哪一侧；不传则两侧都渲染
 const props = defineProps<{ side?: 'send' | 'receive' }>();
 
 // ---------- 常量 ----------
-const CHUNK = LOCAL_CHUNK_SIZE;          // 加密前分片大小（明文）
-// 加密后单帧 ≈ 896KB + 16(IV) + ≤16(PKCS7) + 32(HMAC) + 12(帧头) ≈ 897KB，低于 Cloudflare DO 的 1MB WebSocket 上限
-const FRAME_HDR = 12;                    // 帧头：fi(u16) + ci(u32) + plainLen(u32)
-// Cloudflare DO WebSocket 消息上限 1 MB（≈1,000,000 字节），需留余量
-const CONN_TIMEOUT = 10000;             // 连接超时 ms
-
-// 默认线上中转（Cloudflare Worker，WSS）。可用构建时 VITE_RELAY_URL=xxx 覆盖。
+const CHUNK = LOCAL_CHUNK_SIZE;
+const FRAME_HDR = 12;
 const RELAY_DEFAULT = 'flashdrop-relay.315461.xyz';
-function resolveRelay() {
+function resolveRelayBase() {
   const host = (import.meta as any).env?.VITE_RELAY_URL || RELAY_DEFAULT;
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  return { host, proto };
+  return `https://${host}`;
 }
 
 // ---------- 工具 ----------
@@ -32,21 +25,14 @@ function fmt(n: number) {
   return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
 }
 
-/** 安全解析 JSON，失败返回 null */
-function safeParse(text: string): any {
-  try { return JSON.parse(text); } catch { return null; }
-}
-
 // ================================================================
 //  接收端「写入落盘」抽象：安全上下文用 StreamSaver 流式写盘（不爆内存），
 //  非安全上下文（手机经 http 局域网访问）Service Worker 不可用 → 降级为浏览器 Blob 下载。
-//  关键点：streamsaver 动态 import + 全程 try/catch，任何异常都不会拖垮页面（白屏）。
 // ================================================================
-/** StreamSaver 模块懒加载（带缓存），失败抛错由调用方降级处理 */
 let _ssPromise: Promise<any> | null = null;
 function ensureStreamSaver(): Promise<any> {
   if (!_ssPromise) {
-    // @ts-ignore  streamsaver 类型声明可能缺失，运行时以 any 处理
+    // @ts-ignore
     _ssPromise = import('streamsaver').then((m: any) => {
       const mod = m.default || m;
       try { mod.mitm = `${location.origin}/mitm.html`; } catch { /* ignore */ }
@@ -56,7 +42,6 @@ function ensureStreamSaver(): Promise<any> {
   return _ssPromise;
 }
 
-/** 只有 localhost / https 才允许注册 Service Worker（StreamSaver 前置条件） */
 function isSecureContextForSW(): boolean {
   return typeof navigator !== 'undefined' && 'serviceWorker' in navigator &&
     (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1');
@@ -72,7 +57,6 @@ function triggerDownload(blob: Blob, name: string) {
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
-/** 流式写入 sink（安全上下文） */
 class StreamSink {
   private w: any;
   constructor(w: any) { this.w = w; }
@@ -80,7 +64,6 @@ class StreamSink {
   async close() { await this.w.close(); }
   abort() { try { this.w.abort(); } catch { /* ignore */ } }
 }
-/** 降级 sink：攒进内存数组，close 时触发浏览器下载（非安全上下文兜底，小文件可用） */
 class BlobSink {
   private chunks: Uint8Array[] = [];
   private name: string;
@@ -94,7 +77,6 @@ class BlobSink {
   abort() { this.chunks = []; }
 }
 
-/** 为所有文件创建写入 sink；优先 StreamSaver，失败/不可用则降级 Blob。设置 recvFallback 标志供 UI 提示 */
 let recvFallback = false;
 async function makeSinks(files: any[]) {
   writers = [];
@@ -102,31 +84,23 @@ async function makeSinks(files: any[]) {
   let ss: any = null;
   if (isSecureContextForSW()) {
     try { ss = await ensureStreamSaver(); } catch (e: any) {
-      console.warn('[recv] streamsaver 加载失败，降级 Blob 下载:', e);
       ss = null;
     }
   }
-  // ss.supported 为 false 表示 Service Worker 不可用（如非安全上下文/被禁用）：
-  // 即使 sw.js 存在也无法注册，此时必须降级 Blob，否则数据会静默丢失。
   if (ss && ss.supported !== false) {
     try {
       writers = files.map((f: any) => new StreamSink(ss.createWriteStream(f.name, { size: f.size || undefined }).getWriter()));
       return;
     } catch (e: any) {
-      console.warn('[recv] 创建流式写入失败，降级 Blob 下载:', e);
+      // fallthrough to Blob
     }
   }
-  // 降级路径：非安全上下文或 streamsaver 不可用
   recvFallback = true;
   writers = files.map((f: any) => new BlobSink(f.name));
 }
 
 // ================================================================
-//  接收方
-// ================================================================
-
-// ================================================================
-//  接收方
+//  接收方状态
 // ================================================================
 const recvRoom = ref(new URLSearchParams(location.search).get('room') || '');
 const recvPass = ref(new URLSearchParams(location.hash.slice(1)).get('k') || '');
@@ -137,40 +111,25 @@ const senderOnline = ref(false);
 const recvFiles = ref<{ name: string; size: number }[]>([]);
 const recvProgress = ref(0);
 const recvStatus = ref('输入房间码（或粘贴整条链接）后点连接');
-let recvWs: WebSocket | null = null;
-// WebRTC P2P 直连层（叠加在 WS 中继之上；失败自动回退 WS）
-let recvRtc: ReturnType<typeof createWebRTC> | null = null;
-const recvRtcOpen = ref(false);
-let rIce: RTCIceServer[] = [];
-let writers: any[] = [];                 // 每个文件一个 WritableStream writer，流式写盘
+let writers: any[] = [];
 let recvBytes = 0;
 let recvTotal = 0;
-let recvChunks = 0;                      // 已收到的数据块数（用于收齐自动完成）
-let recvTotalChunks = 0;                 // 期望总块数（由 offer 文件清单推算）
+let recvChunks = 0;
+let recvTotalChunks = 0;
 let recvKey = '';
-let finishing = false;            // 防止 done/EOF/收齐 多处触发重复关流
-// 端到端流量控制：接收端监视自身「已解密未写盘」的积压字节，
-// 超过高水位发 pause、回落低水位发 resume，驱动发送端减速/恢复。
-// 这样写盘速度直接决定整体吞吐，全程平滑、不震荡、不归零、不丢帧。
-const RECV_PAUSE_BYTES = 16 * 1024 * 1024; // 高水位：积压 >16MB 即通知发送端暂停
-const RECV_RESUME_BYTES = 4 * 1024 * 1024;  // 低水位：积压 <4MB 才恢复（迟滞避免抖动）
-let recvPaused = false;            // 当前是否已通知发送端暂停
-let recvReceived = 0;             // 已解密、进入流水线的字节数（含已写盘）
-let recvAborted = false;          // 收到发送端 cancel 后置位，正在跑的 processFrame 会中途退出
-// —— 并发解密 + 保序写盘（接收端流水线，根治「接收端慢拖垮整体」）——
-let perFileChunks: number[] = [];   // 每文件帧数（offer 时推算），用于把 (fi,ci) 映射成全局序号
-let nextWriteSeq = 0;               // 下一个待写盘的全局帧序号（严格递增，保证文件不乱序）
-const readyBuf = new Map<number, { fi: number; plain: Uint8Array }>(); // 解密完成、等待落盘的帧（按序号）
-let drainRunning = false;           // 写盘协程是否运行中（防止并发 write 导致 WritableStream 报错）
-let eofReceived = false;            // 收到发送端经 DataChannel 发的结束标记
-let pendingDone = false;            // 收到 done 控制消息
-// 防御性缓冲：writers 尚未建好（setup 进行中 / 中继把数据帧先于 offer 送达）时，
-// 把二进制数据帧暂存，等 setup 完成后再回放，避免命中「文件索引越界」直接丢帧（之前 max=-1 卡死的根因）。
-let preSetupFrames: ArrayBuffer[] = [];
-let preSetupBytes = 0;
-const PRE_SETUP_CAP = 256 * 1024 * 1024; // 暂存上限 256MB，超出则丢弃最早期帧（防内存爆）
+let finishing = false;
+let recvAborted = false;
+let recvAbort: AbortController | null = null;
+// 并发解密 + 保序写盘
+let perFileChunks: number[] = [];
+let nextWriteSeq = 0;
+const readyBuf = new Map<number, { fi: number; plain: Uint8Array }>();
+let drainRunning = false;
+let pendingDone = false;
+// 本地背压：已收未写盘积压超阈值时暂停读流，等写盘追上（替代 WS 的 PAUSE/RESUME 信令）
+const RECV_PAUSE_BYTES = 16 * 1024 * 1024;
+let recvReceived = 0;
 
-/** 清理接收端状态 */
 function resetReceiver() {
   receiving.value = false;
   recvReady.value = false;
@@ -184,19 +143,13 @@ function resetReceiver() {
   for (const w of writers) { try { w.abort(); } catch { /* ignore */ } }
   writers = [];
   recvKey = '';
-  recvReceived = 0; recvPaused = false;
+  recvReceived = 0;
   perFileChunks = []; nextWriteSeq = 0; readyBuf.clear(); drainRunning = false;
-  eofReceived = false; pendingDone = false;
-  preSetupFrames = []; preSetupBytes = 0;
-  dcReasm = null;
-  if (recvRtc) { try { recvRtc.destroy(); } catch { /* ignore */ } recvRtc = null; }
-  recvRtcOpen.value = false;
+  pendingDone = false;
 }
-/** 安全关闭接收端 WS */
-function closeReceiverWs() {
-  if (recvWs) { try { recvWs.close(); } catch { /* ignore */ } recvWs = null; }
-  if (recvRtc) { try { recvRtc.destroy(); } catch { /* ignore */ } recvRtc = null; }
-  recvRtcOpen.value = false;
+
+function closeReceiverConn() {
+  if (recvAbort) { try { recvAbort.abort(); } catch {} recvAbort = null; }
   finishing = false;
 }
 
@@ -212,14 +165,42 @@ function parsePastedLink() {
   } catch { /* 不是合法 URL 则忽略 */ }
 }
 
+// ================================================================
+//  HTTP 流式读取：长度前缀分帧
+// ================================================================
+let recvBuf = new Uint8Array(0);
+
+/** 从 reader 累积读取恰好 n 字节，返回切出的 Uint8Array，不足返回 null（EOF） */
+async function readExact(reader: ReadableStreamDefaultReader<Uint8Array>, n: number): Promise<Uint8Array | null> {
+  while (recvBuf.length < n) {
+    const { done, value } = await reader.read();
+    if (done) return null;
+    const tmp = new Uint8Array(recvBuf.length + value.length);
+    tmp.set(recvBuf, 0);
+    tmp.set(value, recvBuf.length);
+    recvBuf = tmp;
+  }
+  const out = recvBuf.slice(0, n);
+  recvBuf = recvBuf.slice(n);
+  return out;
+}
+
+/** 读一条长度前缀消息 [4B u32 长度][payload] */
+async function readMsg(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<Uint8Array | null> {
+  const hdr = await readExact(reader, 4);
+  if (!hdr) return null;
+  const len = new DataView(hdr.buffer, hdr.byteOffset, 4).getUint32(0, false);
+  if (len === 0) return null;
+  return readExact(reader, len);
+}
+
 async function startRecv() {
   if (!recvRoom.value || !recvPass.value) {
     recvStatus.value = '需要房间码和口令'; return;
   }
-
-  // 防止重复连接
-  closeReceiverWs();
+  closeReceiverConn();
   resetReceiver();
+  recvBuf = new Uint8Array(0);
 
   try {
     recvKey = await deriveKey(recvPass.value, LOCAL_SALT);
@@ -227,127 +208,97 @@ async function startRecv() {
     recvStatus.value = `密钥派生失败: ${e?.message || e}`; return;
   }
 
-  const { host: relayHost, proto } = resolveRelay();
-  let ws: WebSocket;
-  try {
-    ws = new WebSocket(`${proto}://${relayHost}/relay?room=${recvRoom.value}&role=receiver`);
-  } catch (e: any) {
-    recvStatus.value = `无法创建连接: ${e?.message || e}`; return;
-  }
-  ws.binaryType = 'arraybuffer';
-  recvWs = ws;
   receiving.value = true;
-  recvStatus.value = '连接中…';
-  // 拉取 ICE 并创建 WebRTC 层（接收端为 answerer，收到 offer 即应答）
-  // 诊断开关：URL 带 ?force=relay 时跳过 P2P，强制只走中继（与发送端保持一致）
-  try { rIce = await fetchIceServers(relayHost, proto); } catch { rIce = []; }
-  if (new URLSearchParams(location.search).get('force') === 'relay') {
-    recvStatus.value = '诊断模式：已禁用 P2P，强制走中继';
-  } else {
-  recvRtc = createWebRTC({
-    role: 'receiver',
-    iceServers: rIce,
-    sendSignal: (m) => { if (recvWs && recvWs.readyState === WebSocket.OPEN) recvWs.send(JSON.stringify(m)); },
-    onDataChannel: (dc) => { dc.onmessage = onDcMessage; },
-    onState: (open) => { recvRtcOpen.value = open; },
-  });
+  recvStatus.value = '正在连接 HTTP 流式中继…';
+  recvAbort = new AbortController();
+  const base = resolveRelayBase();
+
+  let resp: Response;
+  try {
+    resp = await fetch(`${base}/stream/${recvRoom.value}`, {
+      signal: recvAbort.signal,
+      headers: { 'Accept': 'application/octet-stream' },
+    });
+  } catch (e: any) {
+    recvStatus.value = `连接失败: ${e?.message || e}`;
+    receiving.value = false;
+    return;
+  }
+  if (!resp.ok || !resp.body) {
+    recvStatus.value = `连接失败: HTTP ${resp.status}`;
+    receiving.value = false;
+    return;
   }
 
-  let settled = false;
-  const openTimer = window.setTimeout(() => {
-    if (!settled && ws.readyState !== WebSocket.OPEN) {
-      settled = true;
-      recvStatus.value = '连接超时：中继不可达';
-      resetReceiver();
-      try { ws.close(); } catch { /* ignore */ }
-    }
-  }, CONN_TIMEOUT);
+  senderOnline.value = true;
+  recvStatus.value = '已连接，等待文件清单…';
+  const reader = resp.body.getReader();
 
-  ws.onopen = () => {
-    clearTimeout(openTimer);
-    if (!settled) recvStatus.value = senderOnline.value
-      ? '已连接，对方已在线，等待发送…'
-      : '已连接，等待发送端上线…（发送端未连接时无法接收）';
-  };
-
-  ws.onmessage = async (ev) => {
-    // ---- 文本控制消息 ----
-    if (typeof ev.data === 'string') {
-      const msg = safeParse(ev.data as string);
-      if (!msg) return;
-
-      if ((msg.type === 'peer-joined' && msg.role === 'sender') || msg.type === 'sender-joined') {
-        senderOnline.value = true;
-        if (!recvFiles.value.length) recvStatus.value = '对方已在线，等待发送…';
-      } else if (msg.type === 'offer') {
-        // 收到 offer → 对方肯定在线（兜底：即使没收到 peer-joined 也标记在线）
-        senderOnline.value = true;
-        if (!Array.isArray(msg.files) || msg.files.length === 0) {
-          recvStatus.value = '收到无效的文件清单'; return;
-        }
-        recvFiles.value = msg.files;
-        recvTotal = msg.files.reduce((s: number, f: any) => s + (f.size || 0), 0);
-        recvBytes = 0;
-        // 推算总块数（每块 LOCAL_CHUNK 字节），用于收齐最后一帧自动完成，不再依赖外部 done 信号
-        recvTotalChunks = msg.files.reduce((s: number, f: any) => s + Math.max(1, Math.ceil((f.size || 0) / CHUNK)), 0);
-        // 每文件帧数（用于把 (fi,ci) 映射成全局写盘序号，保证多文件不乱序）
-        perFileChunks = msg.files.map((f: any) => Math.max(1, Math.ceil((f.size || 0) / CHUNK)));
-        recvChunks = 0;
-        // 创建写入 sink（自动选 StreamSaver / Blob 降级），任何异常都被 makeSinks 内部兜住
-        try {
-          await makeSinks(msg.files);
-        } catch (e: any) {
-          console.error('[recv] 创建写入通道失败:', e);
-          recvStatus.value = `初始化接收失败: ${e?.message || e}`;
-          return;
-        }
-        recvReady.value = true;
-        // 回放 setup 前暂存的早期数据帧（中继乱序场景），避免丢帧
-        if (preSetupFrames.length) {
-          const buf = preSetupFrames; preSetupFrames = []; preSetupBytes = 0;
-          for (const f of buf) handleDataFrame(f);
-        }
-        recvStatus.value = recvFallback
-          ? `收到 ${msg.files.length} 个文件，开始接收（当前为不安全连接，已切换为浏览器下载模式；大文件建议用 https 访问以获得流式写入）`
-          : `收到 ${msg.files.length} 个文件，开始流式接收…`;
-        try {
-          ws.send(JSON.stringify({ type: 'ready' }));
-        } catch { /* ready 发送失败不影响后续 */ }
-      } else if (msg.type === 'done') {
-        pendingDone = true;
-        void drainWrites();   // 排空后若已收齐全部帧则完成
-      } else if (msg.type === 'peer-left') {
-        senderOnline.value = false;
-        recvStatus.value = '对方已断开';
-        receiving.value = false;
-      } else if (msg.type === 'cancel') {
-        // 发送端主动取消：中断接收、丢弃已落盘的部分数据、回到初始等待状态
-        onCancelRecv();
-      } else if (msg.type === 'rtc-signal') {
-        void recvRtc?.onSignal(msg.data);
-      }
+  try {
+    // 1. 读 offer（第一条消息）
+    const offerPayload = await readMsg(reader);
+    if (!offerPayload) {
+      recvStatus.value = '未收到文件清单，对方可能已断开';
+      receiving.value = false;
       return;
     }
+    const offer = JSON.parse(new TextDecoder().decode(offerPayload));
+    if (!Array.isArray(offer.files) || offer.files.length === 0) {
+      recvStatus.value = '收到无效的文件清单'; return;
+    }
+    recvFiles.value = offer.files;
+    recvTotal = offer.files.reduce((s: number, f: any) => s + (f.size || 0), 0);
+    recvTotalChunks = offer.files.reduce((s: number, f: any) => s + Math.max(1, Math.ceil((f.size || 0) / CHUNK)), 0);
+    perFileChunks = offer.files.map((f: any) => Math.max(1, Math.ceil((f.size || 0) / CHUNK)));
+    recvChunks = 0;
 
-    // ---- 二进制数据帧（WS 兜底通道；P2P 直连时由 dc.onmessage 调用同一处理函数）----
-    handleDataFrame(ev.data as ArrayBuffer);
-  };
+    try { await makeSinks(offer.files); } catch (e: any) {
+      recvStatus.value = `初始化接收失败: ${e?.message || e}`; return;
+    }
+    recvReady.value = true;
+    recvStatus.value = recvFallback
+      ? `收到 ${offer.files.length} 个文件，开始接收（当前为不安全连接，已切换为浏览器下载模式；大文件建议用 https 访问以获得流式写入）`
+      : `收到 ${offer.files.length} 个文件，开始流式接收…`;
 
-  ws.onclose = () => {
-    clearTimeout(openTimer);
-    if (!settled) { settled = true; }
-    if (!recvReady.value || recvBytes < recvTotal) {
-      // 非正常结束（未完成接收）
+    // 通知发送端已就绪
+    try { await fetch(`${base}/stream/${recvRoom.value}/ready`, { method: 'POST' }); } catch {}
+
+    // 2. 读数据帧直到 EOF
+    let frameCount = 0;
+    while (true) {
+      if (recvAborted) break;
+      // 本地背压：已收未写盘积压过多时暂停读流（TCP 流控自动反压到发送端）
+      while (recvReceived - recvBytes > RECV_PAUSE_BYTES) {
+        if (recvAborted) break;
+        await new Promise(r => setTimeout(r, 10));
+      }
+      const payload = await readMsg(reader);
+      if (!payload) break; // EOF = 发送端完成
+      // 复制到独立 ArrayBuffer（TS 5.7 严格类型 + 防止 view 越界）
+      const frameBuf = new ArrayBuffer(payload.byteLength);
+      new Uint8Array(frameBuf).set(payload);
+      handleDataFrame(frameBuf);
+      frameCount++;
+    }
+    // 3. 流结束 → 等 drainWrites 收尾
+    pendingDone = true;
+    void drainWrites();
+  } catch (e: any) {
+    if (recvAbort?.signal.aborted) {
+      // 用户取消
+    } else {
+      recvStatus.value = `接收出错: ${e?.message || e}`;
+    }
+  } finally {
+    // 等 drainWrites 完成（如果有残余）
+    await new Promise(r => setTimeout(r, 100));
+    if (finishing || (recvTotalChunks > 0 && nextWriteSeq >= recvTotalChunks)) {
+      // 已由 drainWrites 收尾
+    } else if (!recvAborted && recvTotalChunks > 0 && nextWriteSeq < recvTotalChunks) {
       recvStatus.value = receiving.value ? '连接意外关闭，接收可能不完整' : '已断开';
     }
     receiving.value = false;
-  };
-  ws.onerror = () => {
-    clearTimeout(openTimer);
-    if (!settled) { settled = true; }
-    recvStatus.value = '连接出错（中继不可达或被拦截）';
-    resetReceiver();
-  };
+  }
 }
 
 async function finishRecv() {
@@ -357,12 +308,7 @@ async function finishRecv() {
   for (let fi = 0; fi < writers.length; fi++) {
     const w = writers[fi];
     if (!w) { allOk = false; continue; }
-    try {
-      await w.close();
-    } catch (e: any) {
-      console.error('[recv] 文件写入关闭失败:', e);
-      allOk = false;
-    }
+    try { await w.close(); } catch { allOk = false; }
   }
   if (recvFallback) {
     recvStatus.value = allOk
@@ -378,94 +324,35 @@ async function finishRecv() {
   writers = [];
 }
 
-// P2P DataChannel 收到的分片帧重组：分片头 [totalLen u32][offset u32][payload]，凑齐后交给 enqueueRecv。
-let dcReasm: { total: number; parts: Map<number, Uint8Array>; received: number } | null = null;
-function onDcMessage(ev: any) {
-  if (typeof ev.data === 'string') return; // DC 只传二进制帧，文本不应出现
-  try {
-    const buf = ev.data as ArrayBuffer;
-    if (buf.byteLength < 8) return;
-    const dv = new DataView(buf);
-    const total = dv.getUint32(0);
-    const off = dv.getUint32(4);
-    const payload = new Uint8Array(buf, 8); // 子视图，需复制避免 buf 被回收
-    const copy = new Uint8Array(payload.length);
-    copy.set(payload);
-    if (!dcReasm || dcReasm.total !== total) {
-      // 新帧开始（若上一帧异常未收完则丢弃旧片段）
-      dcReasm = { total, parts: new Map(), received: 0 };
-    }
-    dcReasm.parts.set(off, copy);
-    dcReasm.received += copy.length;
-    if (dcReasm.received >= total) {
-      const full = new Uint8Array(total);
-      let pos = 0;
-      const keys = Array.from(dcReasm.parts.keys()).sort((a, b) => a - b);
-      for (const k of keys) { const p = dcReasm.parts.get(k)!; full.set(p, pos); pos += p.length; }
-      dcReasm = null;
-      handleDataFrame(full.buffer);
-    }
-  } catch (e: any) {
-    console.error('[recv] DC 分片重组失败:', e);
-    dcReasm = null;
-  }
-}
-
-// ================================================================
-//  接收端核心：并发解密 + 保序写盘流水线
-//  旧实现（recvChain 串行 await decryptChunkAsync）的瓶颈：单 Worker 解密是串行的，
-//  每帧必须等解密完才处理下一帧，接收端吞吐被锁死在「单 Worker 解密速度」，
-//  进而触发发送端流控暂停 → 整体速度被接收端拖死。
-//  新实现：帧到达即丢进 Worker 池并发解密（多个帧同时在多个 Worker 跑），
-//  解密完按全局序号入 readyBuf，单一写盘协程串行 await 写盘（保证不乱序）。
-//  解密与写盘真正重叠——写盘时后续帧已在 Worker 里解密。
-// ================================================================
-
-/** (fi, ci) → 全局递增序号（保证多文件、多块严格有序写盘） */
+/** (fi, ci) → 全局递增序号 */
 function frameSeq(fi: number, ci: number): number {
   let s = 0;
   for (let i = 0; i < fi; i++) s += perFileChunks[i] || 0;
   return s + ci;
 }
 
-/** 任意通道（WS 兜底 / P2P DataChannel 重组后）收到一帧的入口：立即并发解密，不阻塞其他帧 */
+/** 收到一帧的入口：立即并发解密，不阻塞后续帧 */
 function handleDataFrame(data: ArrayBuffer) {
   if (recvAborted) return;
-  // 防御：writers 尚未建好（setup 进行中 / 中继乱序导致数据帧先于 offer 送达）时，
-  // 先把整帧（复制底层 buffer，防被回收）暂存，等 setup 完成后再回放，避免命中
-  // 「文件索引越界」直接丢帧——这正是之前「下到 0.9MB 卡死」(max=-1) 的根因。
-  if (writers.length === 0) {
-    if (data.byteLength + preSetupBytes > PRE_SETUP_CAP) {
-      console.warn('[recv] setup 前暂存超限，丢弃最早的一批早期帧');
-      preSetupFrames = preSetupFrames.slice(1);
-    }
-    preSetupFrames.push(data.slice(0));
-    preSetupBytes += data.byteLength;
-    return;
-  }
   const frame = new Uint8Array(data);
   if (frame.length < FRAME_HDR) { recvStatus.value = '收到过短的数据帧'; return; }
   const dv = new DataView(frame.buffer);
   const fi = dv.getUint16(0);
-  if (fi === 0xFFFF) { onRecvEof(); return; } // 发送端经 DataChannel 发的结束标记
   const ci = dv.getUint32(2);
   const plainLen = dv.getUint32(6);
   const body = frame.subarray(FRAME_HDR);
-  // ⚠️ body.buffer 可能是整个底层 ArrayBuffer（含帧头），必须按 byteOffset/length 切出只属于 body 的 ArrayBuffer，
-  // 否则 Worker 端会把 12B 帧头也当密文解密 → HMAC 校验失败或文件损坏。
   const bodyBuf = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength);
   if (fi >= writers.length) {
     console.warn(`[recv] 文件索引越界: fi=${fi}, max=${writers.length - 1}`);
     return;
   }
   const seq = frameSeq(fi, ci);
-  // 并发解密（Worker 池自动负载均衡），不 await —— 让后续帧也能立刻开始解密
   decryptChunkAsync(bodyBuf, recvKey, plainLen)
     .then((plainBuf) => {
-      if (recvAborted) return;             // 已取消则丢弃此块
+      if (recvAborted) return;
       recvReceived += (plainBuf as ArrayBuffer).byteLength;
       readyBuf.set(seq, { fi, plain: new Uint8Array(plainBuf) });
-      void drainWrites();                   // 尝试推进写盘（背压判断见 drainWrites 末尾）
+      void drainWrites();
     })
     .catch((e: any) => {
       console.error('[recv] 解密失败:', e);
@@ -473,14 +360,7 @@ function handleDataFrame(data: ArrayBuffer) {
     });
 }
 
-/** 收到发送端经 DataChannel 发的结束标记（WS 通道的 done 由消息分支处理） */
-function onRecvEof() {
-  eofReceived = true;
-  void drainWrites();
-}
-
-/** 串行写盘协程：按全局序号顺序把 readyBuf 里的帧写入对应文件 writer。
- *  单协程运行（drainRunning 防重入），保证 WritableStream 不被并发 write。 */
+/** 串行写盘协程：按全局序号顺序写入 */
 async function drainWrites() {
   if (drainRunning) return;
   drainRunning = true;
@@ -489,25 +369,12 @@ async function drainWrites() {
       const item = readyBuf.get(nextWriteSeq)!;
       readyBuf.delete(nextWriteSeq);
       const w = writers[item.fi];
-      if (w) {
-        try { await w.write(item.plain); }
-        catch (we: any) { console.error('[recv] 写入失败:', we); }
-      }
+      if (w) { try { await w.write(item.plain); } catch {} }
       recvBytes += item.plain.length;
       recvProgress.value = recvTotal ? recvBytes / recvTotal : 1;
       nextWriteSeq++;
     }
-    // 端到端背压：根据「已收未写盘」积压决定通知发送端暂停/恢复。
-    // 写盘是最慢环节，由它直接驱动发送端速度 → 吞吐平滑、不震荡、不归零。
-    const backlog = recvReceived - recvBytes;
-    if (!recvPaused && backlog >= RECV_PAUSE_BYTES) {
-      recvPaused = true;
-      try { recvWs?.send(JSON.stringify({ type: 'pause', src: 'recv' })); } catch {}
-    } else if (recvPaused && backlog <= RECV_RESUME_BYTES) {
-      recvPaused = false;
-      try { recvWs?.send(JSON.stringify({ type: 'resume', src: 'recv' })); } catch {}
-    }
-    // 收齐全部帧 → 完成（done/EOF 信号丢失也能自愈）
+    // 收齐全部帧 → 完成
     if (recvTotalChunks > 0 && nextWriteSeq >= recvTotalChunks) {
       await finishRecv();
     }
@@ -516,23 +383,18 @@ async function drainWrites() {
   }
 }
 
-// 发送端取消：丢弃所有排队帧、中断落盘、回到初始等待状态
 function onCancelRecv() {
-  recvAborted = true;                 // 让正在跑的解密任务完成后丢弃、不写盘
-  readyBuf.clear();                   // 丢弃已解密待写盘的帧
-  for (const w of writers) { try { w.abort(); } catch { /* ignore */ } }
+  recvAborted = true;
+  readyBuf.clear();
+  for (const w of writers) { try { w.abort(); } catch {} }
   writers = [];
-  recvAborted = false;                // 复位以便下次接收
+  recvAborted = false;
   resetReceiver();
+  closeReceiverConn();
   recvStatus.value = '对方已取消发送，已重置为初始状态，可重新接收';
 }
 
-// ================================================================
-//  生命周期
-// ================================================================
-onUnmounted(() => {
-  closeReceiverWs();
-});
+onUnmounted(() => { closeReceiverConn(); });
 </script>
 
 <template>
@@ -553,10 +415,10 @@ onUnmounted(() => {
       <div class="presence">
         <span class="dot" :class="{ on: senderOnline }"></span>
         对方（发送端）：{{ senderOnline ? '已在线 ✓' : '等待加入…' }}
-        <span class="transport" :class="{ p2p: recvRtcOpen }">{{ recvRtcOpen ? 'P2P 直连' : '经中继转发' }}</span>
+        <span class="transport">HTTP 流式中继</span>
       </div>
       <div class="actions">
-        <button class="btn primary" :disabled="receiving || recvReady" @click="startRecv">连接接收</button>
+        <button class="btn primary" :disabled="receiving" @click="startRecv">连接接收</button>
       </div>
       <div v-if="recvFiles.length" class="filelist">
         <div v-for="f in recvFiles" :key="f.name" class="frow">
@@ -615,6 +477,5 @@ hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-faint); flex: none; }
 .dot.on { background: #2ecc71; box-shadow: 0 0 6px #2ecc71; }
 .transport { margin-left: 8px; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-dim); }
-.transport.p2p { color: #2ecc71; border-color: rgba(46, 204, 113, 0.4); }
 input[type=file] { font-size: 13px; color: var(--text-dim); }
 </style>

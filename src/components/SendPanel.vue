@@ -4,7 +4,6 @@ import type { QueuedFile, StorageType } from '@/types/transfer';
 import { createTransfer, refreshCode, setMessage, terminateTransfer, zipUrl } from '@/api/transfer';
 import { uploadAll } from '@/composables/useTusUpload';
 import { newSalt, E2EE_CHUNK_SIZE, randomPassphrase, deriveKey, LOCAL_SALT, LOCAL_CHUNK_SIZE } from '@/crypto/e2ee';
-import { createWebRTC, fetchIceServers } from '@/composables/useWebRTC';
 import { encryptChunkAsync } from '@/composables/useLocalCrypto';
 import SendFileRow from './SendFileRow.vue';
 
@@ -12,7 +11,7 @@ const emit = defineEmits<{
   (e: 'gotLoginCode', code: string): void;
 }>();
 
-// 发送方式：中转发送（带分享码/登录码/有效期/口令）| 本地直传（WebSocket 实时，无有效期/口令）
+// 发送方式：中转发送（带分享码/登录码/有效期/口令）| 本地直传（HTTP 流式实时，无有效期/口令）
 const sendMode = ref<'relay' | 'local'>('relay');
 
 const files = ref<QueuedFile[]>([]);
@@ -40,35 +39,13 @@ const error = ref('');
 // 取消分享弹窗
 const showTerminateDialog = ref(false);
 
-// ========== 本地直传（复用 LocalTransfer 逻辑）==========
+// ========== 本地直传（HTTP 流式中继）==========
 const LOCAL_CHUNK = LOCAL_CHUNK_SIZE;
 const FRAME_HDR = 12;
-// 本地直传 WS 缓冲高水位：发送端 bufferedAmount 超过此值就等 bufferedamountlow 事件。
-// 896KB 分片下 4MB 约等于 4~5 个分片在途，既不让开局冲太快，也保持管道饱满。
-const LOW = 4 * 1024 * 1024;
-const CONN_TIMEOUT = 10000;
-const DRAIN_TIMEOUT_MS = 30000;
-// 端到端流量控制：接收端驱动（PAUSE/RESUME）。
-// 接收端监视自身「已收未写盘」的积压字节，高水位发 pause、低水位发 resume，
-// 发送端收到即停/续。吞吐≈接收端能稳定写盘的速度，全程平滑、不震荡、不丢帧。
-// pause 可来自接收端('recv')或中继兜底('relay')，用集合合并多个暂停源。
-const pauseSources = new Set<string>();
-let pauseResolve: (() => void) | null = null;
-function waitWhilePaused(): Promise<void> {
-  if (pauseSources.size === 0 || lCancelRequested) return Promise.resolve();
-  return new Promise<void>((resolve) => { pauseResolve = resolve; });
-}
-function applyPause(src: string) { pauseSources.add(src); }
-function applyResume(src: string) {
-  pauseSources.delete(src);
-  if (pauseSources.size === 0 && pauseResolve) { const r = pauseResolve; pauseResolve = null; r(); }
-}
-const P2P_WAIT_MS = 8000; // 传输开始前等待 P2P 直连就绪的最长时长，超时回退中继
 const RELAY_DEFAULT = 'flashdrop-relay.315461.xyz';
-function resolveRelay() {
+function resolveRelayBase() {
   const host = (import.meta as any).env?.VITE_RELAY_URL || RELAY_DEFAULT;
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  return { host, proto };
+  return `https://${host}`;
 }
 
 const lRoom = ref('');
@@ -77,232 +54,147 @@ const lSendLink = ref('');
 const lKeyHex = ref('');
 const lSending = ref(false);
 const lDone = ref(false);
-const lTransferStarted = ref(false);
-let lLoopStarted = false;
-let lCancelRequested = false;   // 取消发送标志（由 cancelLocalSend 置位）
 const lProgress = ref(0);
 const lStatus = ref('');
 const lPeerOnline = ref(false);
-let lWs: WebSocket | null = null;
-
-// WebRTC P2P 直连层（叠加在现有 WS 中继之上；失败自动回退 WS）
-let lRtc: ReturnType<typeof createWebRTC> | null = null;
-let lRtcStarted = false;
-const lRtcOpen = ref(false);
-let lIce: RTCIceServer[] = [];
+let lAbort: AbortController | null = null;
+let lPollTimer: ReturnType<typeof setTimeout> | null = null;
 
 function resetLocalSender() {
-  lSending.value = false; lDone.value = false; lTransferStarted.value = false;
-  lLoopStarted = false; lProgress.value = 0; lPeerOnline.value = false;
-  lRtcOpen.value = false; lCancelRequested = false;
-}
-// 取消发送：立即终止当前传输循环，通知接收端一并重置，一切恢复到可重发状态
-function cancelLocalSend() {
-  if (!lSending.value) return;
-  lCancelRequested = true;
-  // 若发送端正卡在「等接收端暂停」的 await，立即唤醒它，让循环得以检查取消标志并退出
-  if (pauseResolve) { const r = pauseResolve; pauseResolve = null; r(); }
-  if (lWs && lWs.readyState === WebSocket.OPEN) {
-    try { lWs.send(JSON.stringify({ type: 'cancel' })); } catch { /* 对方没收到也没关系，本地仍会重置 */ }
-  }
-  lStatus.value = '已取消发送，可重新传输';
-}
-function closeLocalWs() {
-  if (lWs) { try { lWs.close(); } catch {} lWs = null; }
-  if (lRtc) { try { lRtc.destroy(); } catch {} lRtc = null; }
-  lRtcStarted = false; lRtcOpen.value = false;
+  lSending.value = false; lDone.value = false;
+  lProgress.value = 0; lPeerOnline.value = false;
 }
 
-// 创建 WebRTC 层（若已存在则跳过）。P2P 直连优先，失败由 doLocalSendLoop 回退 WS。
-function ensureLocalRtc(relayHost: string, proto: string) {
-  if (lRtc) return;
-  lRtc = createWebRTC({
-    role: 'sender',
-    iceServers: lIce,
-    sendSignal: (m) => { if (lWs && lWs.readyState === WebSocket.OPEN) lWs.send(JSON.stringify(m)); },
-    onState: (open) => { lRtcOpen.value = open; if (open) lStatus.value = '已建立 P2P 直连，准备传输'; },
-  });
+function cancelLocalSend() {
+  if (!lSending.value) return;
+  if (lAbort) { try { lAbort.abort(); } catch {} }
+  lStatus.value = '已取消发送，可重新传输';
+  resetLocalSender();
+}
+
+function closeLocalConn() {
+  if (lAbort) { try { lAbort.abort(); } catch {} lAbort = null; }
+  if (lPollTimer) { clearTimeout(lPollTimer); lPollTimer = null; }
+}
+
+/** 长度前缀编码：[4B u32 长度][payload] */
+function encodeMsg(payload: Uint8Array): Uint8Array {
+  const hdr = new Uint8Array(4);
+  new DataView(hdr.buffer).setUint32(0, payload.length, false);
+  const out = new Uint8Array(hdr.length + payload.length);
+  out.set(hdr, 0);
+  out.set(payload, hdr.length);
+  return out;
 }
 
 function genRoom() {
-  closeLocalWs(); resetLocalSender();
+  closeLocalConn(); resetLocalSender();
   const cs = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let s = ''; const a = new Uint8Array(6); crypto.getRandomValues(a);
   for (let i = 0; i < 6; i++) s += cs[a[i] % cs.length];
   lRoom.value = s; lPassphrase.value = randomPassphrase();
   lSendLink.value = `${location.origin}/?tab=local&room=${s}#k=${lPassphrase.value}`;
-  lStatus.value = '房间已生成，正在连接中继…'; void connectLocalSender();
+  lStatus.value = '房间已生成，等待对方加入…';
+  void pollReceiverReady();
 }
 
-async function connectLocalSender() {
-  if (!lRoom.value || !lPassphrase.value) return;
+/** 长轮询 GET /stream/:room/ready，等接收端连上并建好 sinks */
+async function pollReceiverReady() {
+  if (!lRoom.value) return;
+  const base = resolveRelayBase();
+  try {
+    const resp = await fetch(`${base}/stream/${lRoom.value}/ready`, { mode: 'cors' });
+    if (resp.ok) {
+      lPeerOnline.value = true;
+      lStatus.value = '对方已在线，可开始传输';
+      return;
+    }
+  } catch {}
+  // 继续轮询（3 秒间隔）
+  lPollTimer = setTimeout(() => void pollReceiverReady(), 3000);
+}
+
+async function startLocalSend() {
+  if (!lRoom.value || !lPassphrase.value) { lStatus.value = '请先生成房间'; return; }
+  if (!lPeerOnline.value) { lStatus.value = '对方尚未加入，请等待'; return; }
+  if (!files.value.length) { lStatus.value = '没有待发送文件'; return; }
+
   try { lKeyHex.value = await deriveKey(lPassphrase.value, LOCAL_SALT); }
   catch (e: any) { lStatus.value = `密钥派生失败: ${e?.message || e}`; return; }
-  const { host: relayHost, proto } = resolveRelay();
-  let ws: WebSocket;
-  try { ws = new WebSocket(`${proto}://${relayHost}/relay?room=${lRoom.value}&role=sender`); }
-  catch (e: any) { lStatus.value = `无法创建连接: ${e?.message || e}`; return; }
-  (ws as any).bufferedAmountLowThreshold = LOW; lWs = ws; resetLocalSender();
-  // 拉取 ICE 配置并创建 WebRTC 层（协商在对方上线后发起）
-  try { lIce = await fetchIceServers(relayHost, proto); } catch { lIce = []; }
-  ensureLocalRtc(relayHost, proto);
-  lStatus.value = '已连上中继，等待对方加入…';
-  let settled = false;
-  const openTimer = window.setTimeout(() => {
-    if (!settled && ws.readyState !== WebSocket.OPEN) { settled = true; lStatus.value = '连接超时：中继不可达'; resetLocalSender(); try { ws.close(); } catch {} }
-  }, CONN_TIMEOUT);
-  ws.onopen = () => { clearTimeout(openTimer); if (!settled) lStatus.value = '已连上中继，等待对方加入…'; };
-  ws.onmessage = (ev) => {
-    if (typeof ev.data !== 'string') return;
-    const msg = (() => { try { return JSON.parse(ev.data as string); } catch { return null; } })();
-    if (!msg) return;
-    if ((msg.type === 'peer-joined' && msg.role === 'receiver') || msg.type === 'receiver-joined') {
-      const wasOffline = !lPeerOnline.value; lPeerOnline.value = true;
-      // 对方上线即发起 WebRTC 协商（P2P 直连），稍后起传时若 DC 已开则走直连
-      ensureLocalRtc(relayHost, proto);
-      if (!lRtcStarted) { lRtcStarted = true; lRtc?.initiator().catch(() => {}); }
-      if (!lSending.value && !lDone.value) lStatus.value = '对方已在线，可开始传输';
-      if (lTransferStarted.value && !lLoopStarted && ws.readyState === WebSocket.OPEN && wasOffline) {
-        localSendOffer(ws); lStatus.value = '对方已加入，重新发起传输…';
-      }
-    } else if (msg.type === 'ready') { void doLocalSendLoop(ws); }
-    else if (msg.type === 'pause') {
-      // 接收端或中继要求减速：加入暂停源集合，发送循环会在此等待
-      applyPause(msg.src || 'recv');
-      if (lSending.value) lStatus.value = '接收端繁忙，已自动减速';
-    } else if (msg.type === 'resume') {
-      // 恢复：从暂停源集合移除，若已无暂停源则唤醒发送循环
-      applyResume(msg.src || 'recv');
-      if (lSending.value && pauseSources.size === 0) lStatus.value = '传输中…';
-    }
-    else if (msg.type === 'rtc-signal') { void lRtc?.onSignal(msg.data); }
-    else if (msg.type === 'peer-left') {
-      lPeerOnline.value = false;
-      if (!lDone.value) lStatus.value = '对方已断开，等待重新加入…';
-      // 断开则销毁 P2P，待重新加入时再协商
-      if (lRtc) { try { lRtc.destroy(); } catch {} lRtc = null; }
-      lRtcStarted = false; lRtcOpen.value = false;
-    }
-  };
-  ws.onclose = () => { clearTimeout(openTimer); if (!settled) settled = true; if (!lDone.value) resetLocalSender(); };
-  ws.onerror = () => { clearTimeout(openTimer); if (!settled) settled = true; lStatus.value = '连接出错（中继不可达或被拦截）'; resetLocalSender(); };
-}
 
-function localSendOffer(ws: WebSocket) {
-  try { ws.send(JSON.stringify({ type: 'offer', files: files.value.map(f => ({ name: f.file.name, size: f.file.size })) })); }
-  catch (e: any) { lStatus.value = `发送 offer 失败: ${e?.message || e}`; }
-}
+  lSending.value = true; lProgress.value = 0;
+  lStatus.value = '正在建立 HTTP 流式连接…';
+  lAbort = new AbortController();
 
-// 等待 P2P 直连就绪：传输开始时若 DataChannel 尚未 open（协商通常需 1~5s），
-// 轮询等待最多 timeoutMs；连上返回 true，超时返回 false（交由调用方回退中继）。
-// 解决「点发送太早、P2P 还没连上就被一次性判走中继」的时序 bug。
-function waitForRtc(timeoutMs: number): Promise<boolean> {
-  // 诊断开关：URL 带 ?force=relay 时强制只走中继、禁用 P2P，用于隔离"第一帧卡死"是否出在 P2P 路径
-  if (new URLSearchParams(location.search).get('force') === 'relay') return Promise.resolve(false);
-  if (lRtc && lRtc.isOpen()) return Promise.resolve(true);
-  if (lCancelRequested) return Promise.resolve(false);
-  return new Promise((resolve) => {
-    const start = Date.now();
-    const iv = window.setInterval(() => {
-      if (lCancelRequested) { window.clearInterval(iv); resolve(false); }
-      else if (lRtc && lRtc.isOpen()) { window.clearInterval(iv); resolve(true); }
-      else if (Date.now() - start > timeoutMs) { window.clearInterval(iv); resolve(false); }
-    }, 100);
-  });
-}
+  const base = resolveRelayBase();
+  // TransformStream 提供原生背压：writer.write() 在队列满时自动 await
+  const { readable, writable } = new TransformStream(
+    {},
+    new ByteLengthQueuingStrategy({ highWaterMark: 4 * 1024 * 1024 }),
+    new ByteLengthQueuingStrategy({ highWaterMark: 4 * 1024 * 1024 }),
+  );
+  const writer = writable.getWriter();
 
-function startLocalSend() {
-  if (!lWs || lWs.readyState !== WebSocket.OPEN) { lStatus.value = '未连接到中继'; return; }
-  if (!lPeerOnline.value) { lStatus.value = '对方尚未加入，请等待对方连接接收'; return; }
-  if (!files.value.length) { lStatus.value = '没有待发送文件'; return; }
-  lSending.value = true; lTransferStarted.value = true; lProgress.value = 0;
-  lStatus.value = '对方已连接，开始传输…'; localSendOffer(lWs);
-}
+  // 启动 POST（body = ReadableStream，流式上传；fetch 返回的 Promise 在 body 关闭后 resolve）
+  const postPromise = fetch(`${base}/stream/${lRoom.value}`, {
+    method: 'POST',
+    body: readable,
+    headers: { 'Content-Type': 'application/octet-stream' },
+    signal: lAbort.signal,
+    // @ts-ignore duplex 在 TS DOM lib 类型中可能缺失，Chrome 105+ 已支持
+    duplex: 'half',
+  } as any);
 
-async function doLocalSendLoop(ws: WebSocket) {
-  lLoopStarted = true;
-  pauseSources.clear(); pauseResolve = null; // 重置流控状态
-  // 先等 P2P 直连就绪（最多 P2P_WAIT_MS），连上才用 DataChannel，超时回退 WS。
-  // 避免「点发送太早、P2P 还没连上」就被一次性判走中继——这是之前「总是走中继」的根因。
-  // 仍一次性决定，避免同一文件混用两路导致帧乱序。
-  lStatus.value = '正在建立 P2P 直连…';
-  const useRtc = await waitForRtc(P2P_WAIT_MS);
-  if (useRtc) lStatus.value = 'P2P 直连已建立，开始传输…';
-  else lStatus.value = 'P2P 直连未就绪，已回退中继转发';
-  const ch = (useRtc && lRtc) ? lRtc.getChannel() : null;
-  const mapped = files.value.map(f => ({ file: f.file }));
-  const total = mapped.reduce((s, f) => s + f.file.size, 0);
-  if (total === 0) { ws.send(JSON.stringify({ type: 'done' })); lDone.value = true; lStatus.value = '传输完成（空）'; lSending.value = false; return; }
-  let sent = 0;
-  let cancelled = false;
   try {
+    // 1. 发送 offer（文件清单）
+    const offerJson = JSON.stringify({
+      type: 'offer',
+      files: files.value.map(f => ({ name: f.file.name, size: f.file.size })),
+    });
+    const offerBytes = new TextEncoder().encode(offerJson);
+    await writer.write(encodeMsg(offerBytes));
+    lStatus.value = '已发送文件清单，开始传输数据…';
+
+    // 2. 逐块加密 + 发送数据帧
+    const mapped = files.value.map(f => ({ file: f.file }));
+    const total = mapped.reduce((s, f) => s + f.file.size, 0);
+    if (total === 0) {
+      await writer.close();
+      lDone.value = true; lStatus.value = '传输完成（空）'; lSending.value = false;
+      return;
+    }
+    let sent = 0;
     for (let fi = 0; fi < mapped.length; fi++) {
       const file = mapped[fi].file; let offset = 0; let ci = 0;
       while (offset < file.size) {
-        if (lCancelRequested) { cancelled = true; break; } // 取消发送：跳出分片循环
-        if (ws.readyState !== WebSocket.OPEN && !useRtc) throw new Error('连接已断开');
-        // ---- 端到端流控：接收端发 pause 就停，resume 再续（不靠 ACK 窗口，避免来回震荡）----
-        while (pauseSources.size > 0 && !lCancelRequested) {
-          await waitWhilePaused();
-        }
         const end = Math.min(offset + LOCAL_CHUNK, file.size);
         const chunkBuf = await file.slice(offset, end).arrayBuffer();
         const plainLen = chunkBuf.byteLength;
         const enc = new Uint8Array(await encryptChunkAsync(chunkBuf, lKeyHex.value));
-        const header = new Uint8Array(FRAME_HDR); const dv = new DataView(header.buffer);
+        // 帧头：fi u16 + ci u32 + plainLen u32
+        const frame = new Uint8Array(FRAME_HDR + enc.length);
+        const dv = new DataView(frame.buffer);
         dv.setUint16(0, fi); dv.setUint32(2, ci); dv.setUint32(6, plainLen);
-        const frame = new Uint8Array(header.length + enc.length); frame.set(header, 0); frame.set(enc, header.length);
-        if (useRtc && ch) {
-          if (ch.bufferedAmount > LOW) await localSafeDrain(ch);
-          const ok = await lRtc!.sendFrame(frame);
-          if (!ok) throw new Error('P2P 通道发送失败，请重试');
-        } else {
-          if (ws.bufferedAmount > LOW) await localSafeDrain(ws);
-          ws.send(frame);
-        }
+        frame.set(enc, FRAME_HDR);
+        // encodeMsg 包一层长度前缀；writer.write 自带背压（队列满则 await）
+        await writer.write(encodeMsg(frame));
         offset += plainLen; ci++; sent += plainLen;
         lProgress.value = total ? sent / total : 1;
       }
-      if (cancelled) break; // 当前文件已取消，跳出文件循环
     }
-    if (cancelled) {
-      // 取消发送：不发 done 信号，直接清理回到可重发状态
-      resetLocalSender();
-      lStatus.value = '已取消发送，可重新传输';
-      return;
-    }
-    // 双通道发「完成」信号：P2P 下若 WS 的 done 因通道差异未达，DC 上的 EOF 帧可兜底完成
-    if (useRtc && ch && lRtc && lRtc.isOpen()) {
-      try {
-        const eof = new Uint8Array(FRAME_HDR);
-        new DataView(eof.buffer).setUint16(0, 0xFFFF); // 0xFFFF = 结束标记
-        await lRtc.sendFrame(eof);
-      } catch { /* 忽略，下面 WS 兜底 */ }
-    }
-    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'done' }));
+
+    // 3. 关闭流 → DO 关闭 GET response → 接收端收到 EOF = done
+    await writer.close();
     lDone.value = true; lStatus.value = '传输完成';
   } catch (e: any) {
-    if (lCancelRequested) { resetLocalSender(); lStatus.value = '已取消发送，可重新传输'; return; }
-    lStatus.value = `传输出错: ${e?.message || e}`;
+    if (lAbort?.signal.aborted) { lStatus.value = '已取消发送'; }
+    else lStatus.value = `传输出错: ${e?.message || e}`;
+  } finally {
+    lSending.value = false;
+    // 等 POST 返回（已结束则立即 resolve/reject）
+    try { await postPromise; } catch {}
+    lAbort = null;
   }
-  finally { lSending.value = false; }
-}
-
-function localSafeDrain(target: any): Promise<void> {
-  if (!target || target.bufferedAmount <= LOW) return Promise.resolve();
-  return new Promise((resolve) => {
-    // WebSocket 没有 bufferedamountlow 事件，必须轮询 bufferedAmount；
-    // RTCDataChannel 虽有该事件，但统一轮询更稳。
-    let interval: any;
-    const timer = setTimeout(() => { clearInterval(interval); resolve(); }, DRAIN_TIMEOUT_MS);
-    interval = setInterval(() => {
-      if ((target.bufferedAmount || 0) <= LOW || target.readyState === WebSocket.CLOSED || target.readyState === WebSocket.CLOSING) {
-        clearInterval(interval);
-        clearTimeout(timer);
-        resolve();
-      }
-    }, 50);
-  });
 }
 
 function copyLocalLink() { navigator.clipboard?.writeText(lSendLink.value); lStatus.value = '链接已复制'; }
@@ -493,8 +385,8 @@ watch(message, async (v) => {
   }
 });
 
-// 组件卸载时清理本地直传 WebSocket
-onUnmounted(() => { closeLocalWs(); });
+// 组件卸载时清理本地直传连接
+onUnmounted(() => { closeLocalConn(); });
 </script>
 
 <template>
@@ -651,7 +543,7 @@ onUnmounted(() => { closeLocalWs(); });
     <!-- ===== 本地直传模式 ===== -->
     <template v-else>
     <div class="local-send-panel">
-      <p class="hint">文件只在内存里经网站流转，不落服务器磁盘；双方需同时在线，关闭即止。</p>
+      <p class="hint">文件经 HTTP 流式中继转发，不落服务器磁盘；双方需同时在线，关闭即止。</p>
       <p class="hint e2ee-hint">🔒 已端到端加密：密钥仅在你的浏览器本地派生，服务器只转发密文、无法解密。</p>
 
       <div v-if="!lRoom" class="actions">
@@ -666,7 +558,6 @@ onUnmounted(() => { closeLocalWs(); });
         <div class="presence">
           <span class="dot" :class="{ on: lPeerOnline }"></span>
           对方（接收端）：{{ lPeerOnline ? '已在线 ✓' : '等待加入…' }}
-          <span class="transport" :class="{ p2p: lRtcOpen }">{{ lRtcOpen ? 'P2P 直连' : '经中继转发' }}</span>
         </div>
         <div class="actions">
           <button v-if="!lSending" class="btn primary" :disabled="lDone || !lPeerOnline" @click="startLocalSend">

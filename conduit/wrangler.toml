@@ -2,8 +2,8 @@ name = "flashdrop-relay"
 main = "src/index.js"
 compatibility_date = "2024-09-23"
 
-# 本地磁盘模式的中继 Worker：WebSocket 内存流转，不落盘。
-# 部署后前端“本地直传”连 wss://<your-subdomain>.workers.dev/relay
+# 本地直传的中继 Worker：HTTP 流式内存转发，不落盘。
+# 部署后前端"本地直传"连 https://<your-subdomain>.workers.dev/stream/:room
 
 [[durable_objects.bindings]]
 name = "RELAY"

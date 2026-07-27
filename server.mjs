@@ -382,7 +382,7 @@ async function main() {
     app.use(express.static(path.join(__dirname, 'public')));
   }
   // SPA 兜底（非 API 请求回 index.html，支持深链）
-  app.get(/^(?!\/(api|files|download)).*/, (req, res) => {
+  app.get(/^(?!\/(api|files|download|stream)).*/, (req, res) => {
     const file = fs.existsSync(distDir)
       ? path.join(distDir, 'index.html')
       : path.join(__dirname, 'public', 'index.html');
@@ -394,7 +394,7 @@ async function main() {
   const HOST = process.env.HOST || '0.0.0.0';
 
   const server = http.createServer(app);
-  attachRelay(server); // 本地磁盘模式：WebSocket 内存流转中继（不落盘）
+  attachRelay(app); // 本地磁盘模式：HTTP 流式中继（不落盘）
 
   server.listen(PORT, HOST, () => {
     console.log('闪传 FlashDrop 服务已启动');

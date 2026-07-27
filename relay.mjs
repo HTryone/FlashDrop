@@ -1,79 +1,84 @@
-// 本地磁盘模式 —— WebSocket 内存流转中继（不落盘）
+// 本地磁盘模式 —— HTTP 流式中继（不落盘）
 //
-// 协议（方案 C：管道 WSS 加密 + 文件块 E2EE 加密）：
-//   连接：  ws(s)://<host>/relay?room=<ROOM>&role=sender|receiver
-//   房间码 ROOM：6 位，仅用于在信令层把两端会合，中继不存储任何文件/密钥。
+// 协议（长度前缀分帧，HTTP 字节流）：
+//   GET  /stream/:room        — 接收端下载流（流式 Response）
+//   POST /stream/:room        — 发送端上传流（ReadableStream body）
+//   POST /stream/:room/ready  — 接收端标记就绪
+//   GET  /stream/:room/ready  — 发送端长轮询等就绪
 //
-//   控制消息（JSON 文本）：
-//     sender   -> relay : {type:'offer', name, size, totalChunks, chunkSize}
-//     relay    -> receiver: {type:'offer', ...}            (转发)
-//     receiver -> relay : {type:'ready'}
-//     relay    -> sender : {type:'ready'}                 (通知可开始发数据)
-//     relay    -> peer  : {type:'sender-joined'|'receiver-joined'}
-//     relay    -> peer  : {type:'peer-left'}
-//     either   -> relay : {type:'bye'}
-//
-//   数据消息（二进制）：
-//     [chunkIndex u32 BE][iv 16B][ciphertext...]
-//     密文由发送方浏览器端 E2EE 加密，中继只在内存里转发，看不到明文、不写磁盘。
-//
-//   任一方断开 -> 通知对端 peer-left -> 房间清空。无有效期、无登录码、关闭即止。
+// DO 用 PassThrough 把 POST body 流式转发给 GET response——无逐帧转发开销，
+// 背压由 Node Stream pipe 原生处理。不落盘：文件数据只在两端 HTTP 流间过内存。
 
-import { WebSocketServer } from 'ws';
+import { PassThrough } from 'node:stream';
 
-export function attachRelay(server) {
-  const wss = new WebSocketServer({ server, path: '/relay' });
-  const rooms = new Map(); // room -> { sender, receiver }
+export function attachRelay(app) {
+  // room -> { pass: PassThrough, ready: boolean }
+  const rooms = new Map();
 
-  wss.on('connection', (ws, req) => {
-    let url;
-    try {
-      url = new URL(req.url, 'http://localhost');
-    } catch {
-      ws.close(1008, 'bad url');
-      return;
-    }
-    const room = url.searchParams.get('room');
-    const role = url.searchParams.get('role');
-    if (!room || (role !== 'sender' && role !== 'receiver')) {
-      ws.close(1008, 'need room & role');
-      return;
-    }
-    ws.room = room;
-    ws.role = role;
-
+  function getRoom(room) {
     let entry = rooms.get(room);
     if (!entry) {
-      entry = {};
+      entry = { pass: new PassThrough(), ready: false };
       rooms.set(room, entry);
     }
-    if (role === 'sender') entry.sender = ws;
-    else entry.receiver = ws;
+    return entry;
+  }
 
-    // 1:1 房间里已在场的对端（最多一个）
-    const existing = role === 'sender' ? entry.receiver : entry.sender;
-    if (existing && existing.readyState === existing.OPEN) {
-      // 双向通知：老一端收到「新端加入」，新一端收到「对端已在线」
-      existing.send(JSON.stringify({ type: 'peer-joined', role }));
-      ws.send(JSON.stringify({ type: 'peer-joined', role: existing.role }));
-    }
+  function cleanupRoom(room) {
+    const e = rooms.get(room);
+    if (e) { e.pass.destroy(); rooms.delete(room); }
+  }
 
-    ws.on('message', (data, isBinary) => {
-      // 内存流转：原样转发给对端，绝不落盘；保持文本/二进制帧类型
-      const peer = role === 'sender' ? entry.receiver : entry.sender;
-      if (peer && peer.readyState === peer.OPEN) peer.send(data, { binary: isBinary });
+  // GET /stream/:room — 接收端下载流
+  app.get('/stream/:room', (req, res) => {
+    const entry = getRoom(req.params.room);
+    res.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Cache-Control': 'no-cache',
+      'Access-Control-Allow-Origin': '*',
     });
-
-    ws.on('close', () => {
-      const peer = role === 'sender' ? entry.receiver : entry.sender;
-      if (peer && peer.readyState === peer.OPEN) peer.send(JSON.stringify({ type: 'peer-left' }));
-      if (entry.sender === ws) entry.sender = null;
-      if (entry.receiver === ws) entry.receiver = null;
-      if (!entry.sender && !entry.receiver) rooms.delete(room);
+    entry.pass.pipe(res);
+    req.on('close', () => {
+      // 接收端断开，清理
+      cleanupRoom(req.params.room);
     });
-
-    ws.on('error', () => {});
   });
 
-  return wss;
+  // POST /stream/:room — 发送端上传流
+  app.post('/stream/:room', (req, res) => {
+    const entry = getRoom(req.params.room);
+    // Node Stream pipe 自带背压：pass 队列满时暂停读 req
+    req.pipe(entry.pass);
+    req.on('end', () => {
+      entry.pass.end();
+      res.status(200).send('done');
+      // 延迟清理，让 GET 端读完残余数据
+      setTimeout(() => cleanupRoom(req.params.room), 5000);
+    });
+    req.on('error', () => {
+      entry.pass.destroy();
+      res.status(500).send('error');
+      cleanupRoom(req.params.room);
+    });
+  });
+
+  // POST /stream/:room/ready — 接收端标记就绪
+  app.post('/stream/:room/ready', (req, res) => {
+    const entry = rooms.get(req.params.room);
+    if (entry) entry.ready = true;
+    res.status(200).send('ok');
+  });
+
+  // GET /stream/:room/ready — 发送端长轮询等就绪
+  app.get('/stream/:room/ready', (req, res) => {
+    const check = () => {
+      const entry = rooms.get(req.params.room);
+      if (!entry) { res.status(410).send('gone'); return; }
+      if (entry.ready) { res.status(200).send('ready'); return; }
+      setTimeout(check, 100);
+    };
+    check();
+  });
+
+  return rooms;
 }
