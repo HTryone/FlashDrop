@@ -48,7 +48,7 @@ const CONN_TIMEOUT = 10000;
 const DRAIN_TIMEOUT_MS = 30000;
 // 端到端 ACK 流控：发送端最多领先接收端 WINDOW 帧，超了就等 ACK。
 // 防止发送端把 DO 中继内存打爆（之前无流控导致 272MB 文件传完但接收端只收到一点）。
-const FLOW_WINDOW = 32;        // 滑动窗口大小（帧数）
+const FLOW_WINDOW = 128;         // 滑动窗口大小（帧数），2MB/帧下 128帧=256MB 缓冲余量
 let flowUnacked = 0;           // 已发送未确认的帧数
 let flowResolveAck: (() => void) | null = null; // 等待 ACK 的 Promise resolve
 const P2P_WAIT_MS = 8000; // 传输开始前等待 P2P 直连就绪的最长时长，超时回退中继

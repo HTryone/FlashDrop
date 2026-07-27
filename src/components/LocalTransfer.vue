@@ -150,7 +150,7 @@ let recvTotalChunks = 0;                 // 期望总块数（由 offer 文件�
 let recvKey = '';
 let finishing = false;            // 防止 done/EOF/收齐 多处触发重复关流
 // 端到端 ACK 流控：每处理完 ACK_INTERVAL 帧就通知发送端，防止发送端打爆中继 DO 内存
-const ACK_INTERVAL = 8;           // 每处理 8 帧发一次 ACK（平衡频率与开销）
+const ACK_INTERVAL = 32;          // 每处理 32 帧发一次 ACK（2MB/帧下减少 ACK 频率，降低往返开销）
 let ackProcessed = 0;             // 自上次 ACK 后已处理的帧数
 
 /** 清理接收端状态 */

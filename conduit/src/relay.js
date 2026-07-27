@@ -10,9 +10,9 @@ export class Relay {
     // 每对 peer 一个发送队列；key 为 "room:sender" / "room:receiver"
     this.queues = new Map();
     // 单个队列最大积压字节数（超过后丢弃最旧帧，防止 DO 内存爆）
-    this.MAX_QUEUE_BYTES = 4 * 1024 * 1024; // 4MB
+    this.MAX_QUEUE_BYTES = 32 * 1024 * 1024; // 32MB（2MB/帧下可缓存 ~15 帧）
     // 单个队列最大积压帧数
-    this.MAX_QUEUE_FRAMES = 500;
+    this.MAX_QUEUE_FRAMES = 100;              // 2MB/帧 × 100 = 200MB 上限（字节优先触发）
   }
 
   async fetch(request) {
