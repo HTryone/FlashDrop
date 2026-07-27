@@ -47,10 +47,10 @@ const LOW = 16 * 1024 * 1024;
 const CONN_TIMEOUT = 10000;
 const DRAIN_TIMEOUT_MS = 30000;
 const P2P_WAIT_MS = 8000; // 传输开始前等待 P2P 直连就绪的最长时长，超时回退中继
-const RELAY_DEFAULT = 'flashdrop-relay.xianshenghu363.workers.dev';
+const RELAY_DEFAULT = 'flashdrop-relay.315461.xyz';
 function resolveRelay() {
   const host = (import.meta as any).env?.VITE_RELAY_URL || RELAY_DEFAULT;
-  const proto = (host.includes('workers.dev') || location.protocol === 'https:') ? 'wss' : 'ws';
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   return { host, proto };
 }
 

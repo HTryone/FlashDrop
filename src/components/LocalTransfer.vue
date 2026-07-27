@@ -18,10 +18,10 @@ const FRAME_HDR = 12;                    // 帧头：fi(u16) + ci(u32) + plainLe
 const CONN_TIMEOUT = 10000;             // 连接超时 ms
 
 // 默认线上中转（Cloudflare Worker，WSS）。可用构建时 VITE_RELAY_URL=xxx 覆盖。
-const RELAY_DEFAULT = 'flashdrop-relay.xianshenghu363.workers.dev';
+const RELAY_DEFAULT = 'flashdrop-relay.315461.xyz';
 function resolveRelay() {
   const host = (import.meta as any).env?.VITE_RELAY_URL || RELAY_DEFAULT;
-  const proto = (host.includes('workers.dev') || location.protocol === 'https:') ? 'wss' : 'ws';
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   return { host, proto };
 }
 
