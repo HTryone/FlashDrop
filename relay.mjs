@@ -49,7 +49,8 @@ export function attachRelay(server, app) {
   }
 
   // WebSocket 控制通道
-  const wss = new WebSocketServer({ server, path: '/ws/' });
+  // 注意：ws 库的 path 参数是精确匹配，不能写 '/ws/' 来匹配 '/ws/ROOM'，所以不传 path，手动校验
+  const wss = new WebSocketServer({ server });
   wss.on('connection', (ws, req) => {
     const match = (req.url || '').match(/^\/ws\/([^/?]+)/);
     if (!match) { ws.close(); return; }
