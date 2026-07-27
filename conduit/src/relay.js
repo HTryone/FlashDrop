@@ -129,7 +129,8 @@ export class Relay {
     }
     queue.frames.push(frame);
     queue.bytes += frame.byteLength || 0;
-    console.log(`[relay] ${att.role}→binary ${frame.byteLength}B q=${queue.frames.length} bytes=${queue.bytes}`);
+    // 调试期可打开：每帧都打印会严重拖慢 CF DO 吞吐。
+    // console.log(`[relay] ${att.role}→binary ${frame.byteLength}B q=${queue.frames.length} bytes=${queue.bytes}`);
 
     this.tryDrain(queue, peer, att.room);
   }

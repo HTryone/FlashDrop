@@ -23,6 +23,21 @@ export interface RtcOptions {
 }
 
 export function createWebRTC(opts: RtcOptions) {
+  // 当前环境（如部分浏览器/扩展/企业策略）可能完全禁用 WebRTC，直接返回“不可用”的 stub，
+  // 避免反复 new RTCPeerConnection 抛出 TypeError 污染控制台。
+  if (typeof RTCPeerConnection === 'undefined') {
+    console.warn('[rtc] 当前环境不支持 RTCPeerConnection，P2P 直连不可用');
+    return {
+      initiator: async () => {},
+      onSignal: async () => {},
+      sendFrame: async () => false,
+      isOpen: () => false,
+      bufferedAmount: () => 0,
+      getChannel: () => null,
+      destroy: () => {},
+    };
+  }
+
   let pc: RTCPeerConnection | null = null;
   let dc: RTCDataChannel | null = null;
 

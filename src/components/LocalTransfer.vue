@@ -164,6 +164,11 @@ const readyBuf = new Map<number, { fi: number; plain: Uint8Array }>(); // 解密
 let drainRunning = false;           // 写盘协程是否运行中（防止并发 write 导致 WritableStream 报错）
 let eofReceived = false;            // 收到发送端经 DataChannel 发的结束标记
 let pendingDone = false;            // 收到 done 控制消息
+// 防御性缓冲：writers 尚未建好（setup 进行中 / 中继把数据帧先于 offer 送达）时，
+// 把二进制数据帧暂存，等 setup 完成后再回放，避免命中「文件索引越界」直接丢帧（之前 max=-1 卡死的根因）。
+let preSetupFrames: ArrayBuffer[] = [];
+let preSetupBytes = 0;
+const PRE_SETUP_CAP = 256 * 1024 * 1024; // 暂存上限 256MB，超出则丢弃最早期帧（防内存爆）
 
 /** 清理接收端状态 */
 function resetReceiver() {
@@ -182,6 +187,7 @@ function resetReceiver() {
   recvReceived = 0; recvPaused = false;
   perFileChunks = []; nextWriteSeq = 0; readyBuf.clear(); drainRunning = false;
   eofReceived = false; pendingDone = false;
+  preSetupFrames = []; preSetupBytes = 0;
   dcReasm = null;
   if (recvRtc) { try { recvRtc.destroy(); } catch { /* ignore */ } recvRtc = null; }
   recvRtcOpen.value = false;
@@ -296,6 +302,11 @@ async function startRecv() {
           return;
         }
         recvReady.value = true;
+        // 回放 setup 前暂存的早期数据帧（中继乱序场景），避免丢帧
+        if (preSetupFrames.length) {
+          const buf = preSetupFrames; preSetupFrames = []; preSetupBytes = 0;
+          for (const f of buf) handleDataFrame(f);
+        }
         recvStatus.value = recvFallback
           ? `收到 ${msg.files.length} 个文件，开始接收（当前为不安全连接，已切换为浏览器下载模式；大文件建议用 https 访问以获得流式写入）`
           : `收到 ${msg.files.length} 个文件，开始流式接收…`;
@@ -420,6 +431,18 @@ function frameSeq(fi: number, ci: number): number {
 /** 任意通道（WS 兜底 / P2P DataChannel 重组后）收到一帧的入口：立即并发解密，不阻塞其他帧 */
 function handleDataFrame(data: ArrayBuffer) {
   if (recvAborted) return;
+  // 防御：writers 尚未建好（setup 进行中 / 中继乱序导致数据帧先于 offer 送达）时，
+  // 先把整帧（复制底层 buffer，防被回收）暂存，等 setup 完成后再回放，避免命中
+  // 「文件索引越界」直接丢帧——这正是之前「下到 0.9MB 卡死」(max=-1) 的根因。
+  if (writers.length === 0) {
+    if (data.byteLength + preSetupBytes > PRE_SETUP_CAP) {
+      console.warn('[recv] setup 前暂存超限，丢弃最早的一批早期帧');
+      preSetupFrames = preSetupFrames.slice(1);
+    }
+    preSetupFrames.push(data.slice(0));
+    preSetupBytes += data.byteLength;
+    return;
+  }
   const frame = new Uint8Array(data);
   if (frame.length < FRAME_HDR) { recvStatus.value = '收到过短的数据帧'; return; }
   const dv = new DataView(frame.buffer);
