@@ -38,6 +38,7 @@ export class Relay {
       server.send(JSON.stringify({ type: 'peer-joined', role: role === 'sender' ? 'receiver' : 'sender' }));
     }
 
+    console.log(`[relay] ws accepted room=${room} role=${role}`);
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -67,7 +68,8 @@ export class Relay {
         const msg = queue.frames[0];
         try {
           peer.send(msg);                 // WebSocket.send 返回 void，不能用它判断成功
-        } catch {
+        } catch (e) {
+          console.warn(`[relay] peer.send threw, retry via timer: ${e?.message || e}`);
           // 对端 WS 缓冲区满或连接异常：保留队列，稍后定时重试（不依赖新消息到来）
           this.scheduleDrain(queue, peer, room);
           break;
@@ -84,9 +86,11 @@ export class Relay {
     if (!sender) return;
     if (queue.bytes > this.PAUSE_BYTES && !queue.paused) {
       queue.paused = true;
+      console.warn(`[relay] queue=${queue.bytes}B>32MB, send pause(relay)`);
       try { sender.send(JSON.stringify({ type: 'pause', src: 'relay' })); } catch {}
     } else if (queue.bytes < this.RESUME_BYTES && queue.paused) {
       queue.paused = false;
+      console.log(`[relay] queue=${queue.bytes}B<8MB, send resume(relay)`);
       try { sender.send(JSON.stringify({ type: 'resume', src: 'relay' })); } catch {}
     }
   }
@@ -125,6 +129,7 @@ export class Relay {
     }
     queue.frames.push(frame);
     queue.bytes += frame.byteLength || 0;
+    console.log(`[relay] ${att.role}→binary ${frame.byteLength}B q=${queue.frames.length} bytes=${queue.bytes}`);
 
     this.tryDrain(queue, peer, att.room);
   }
@@ -151,6 +156,7 @@ export class Relay {
   }
 
   webSocketError(ws) {
+    console.error('[relay] websocket error, closing');
     ws.close();
   }
 }

@@ -233,7 +233,11 @@ async function startRecv() {
   receiving.value = true;
   recvStatus.value = '连接中…';
   // 拉取 ICE 并创建 WebRTC 层（接收端为 answerer，收到 offer 即应答）
+  // 诊断开关：URL 带 ?force=relay 时跳过 P2P，强制只走中继（与发送端保持一致）
   try { rIce = await fetchIceServers(relayHost, proto); } catch { rIce = []; }
+  if (new URLSearchParams(location.search).get('force') === 'relay') {
+    recvStatus.value = '诊断模式：已禁用 P2P，强制走中继';
+  } else {
   recvRtc = createWebRTC({
     role: 'receiver',
     iceServers: rIce,
@@ -241,6 +245,7 @@ async function startRecv() {
     onDataChannel: (dc) => { dc.onmessage = onDcMessage; },
     onState: (open) => { recvRtcOpen.value = open; },
   });
+  }
 
   let settled = false;
   const openTimer = window.setTimeout(() => {

@@ -197,6 +197,8 @@ function localSendOffer(ws: WebSocket) {
 // 轮询等待最多 timeoutMs；连上返回 true，超时返回 false（交由调用方回退中继）。
 // 解决「点发送太早、P2P 还没连上就被一次性判走中继」的时序 bug。
 function waitForRtc(timeoutMs: number): Promise<boolean> {
+  // 诊断开关：URL 带 ?force=relay 时强制只走中继、禁用 P2P，用于隔离"第一帧卡死"是否出在 P2P 路径
+  if (new URLSearchParams(location.search).get('force') === 'relay') return Promise.resolve(false);
   if (lRtc && lRtc.isOpen()) return Promise.resolve(true);
   if (lCancelRequested) return Promise.resolve(false);
   return new Promise((resolve) => {
