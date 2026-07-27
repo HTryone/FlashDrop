@@ -179,86 +179,53 @@ async function startLocalSend() {
   // Cloudflare POST 请求体限制 100MB，每片留余量用 80MB
   const POST_LIMIT = 80 * 1024 * 1024;
 
-  // 分片 POST 管理：每个 POST 一个 ReadableStream，enqueue 写入加密帧
-  let postCtrl: ReadableStreamDefaultController<Uint8Array> | null = null;
-  let postPromise: Promise<Response> | null = null;
-  let postBytes = 0;
+  // 本片内待发送的所有「长度前缀帧」累积在数组里，满 POST_LIMIT 就发一次 POST
+  let pending: Uint8Array[] = [];
+  let pendingBytes = 0;
 
-  function startNewPost() {
-    postCtrl = null;
-    const stream = new ReadableStream<Uint8Array>({
-      start(c) {
-        postCtrl = c;
-        console.log(`[send] ReadableStream started, controller=${!!c}`);
-      }
-    }, new ByteLengthQueuingStrategy({ highWaterMark: 2 * 1024 * 1024 }));
-    console.log(`[send] starting fetch POST to ${base}/stream/${lRoom.value}`);
-    postPromise = fetch(`${base}/stream/${lRoom.value}`, {
-      method: 'POST',
-      body: stream,
-      headers: { 'Content-Type': 'application/octet-stream' },
-      signal: lAbort!.signal,
-      // @ts-ignore duplex 在 TS DOM lib 类型中可能缺失，Chrome 105+ 已支持
-      duplex: 'half',
-    } as any);
-    // 早期捕获 POST 错误，避免静默失败
-    postPromise.then(r => {
-      console.log(`[send] POST response: ${r.status}`);
-    }).catch((e: any) => {
-      console.error('[send] POST fetch error:', e);
-      if (!lAbort?.signal.aborted) {
-        lStatus.value = `上传连接失败: ${e?.message || e}`;
-      }
-    });
-    postBytes = 0;
-  }
+  async function flushPost(isLast: boolean) {
+    if (pending.length === 0 && !isLast) return;
+    // 把本片所有帧拼成一个连续字节数组（一次性普通请求体，不用 duplex 流式）
+    const body = new Uint8Array(pendingBytes);
+    let off = 0;
+    for (const f of pending) { body.set(f, off); off += f.length; }
+    pending = []; pendingBytes = 0;
 
-  async function writeFrame(bytes: Uint8Array) {
-    const msg = encodeMsg(bytes);
-    // 当前片放不下 → 关闭当前 POST，开新片
-    if (postBytes > 0 && postBytes + msg.byteLength > POST_LIMIT) {
-      console.log(`[send] POST limit reached, closing current post at ${postBytes} bytes`);
-      postCtrl!.close();
-      try { await postPromise; } catch (e: any) {
-        throw new Error(`上传片失败: ${e?.message || e}`);
-      }
-      startNewPost();
+    const url = isLast
+      ? `${base}/stream/${lRoom.value}/close`
+      : `${base}/stream/${lRoom.value}`;
+    console.log(`[send] flushPost isLast=${isLast} bytes=${body.length}`);
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body,
+        signal: lAbort!.signal,
+      });
+      if (!isLast && !resp.ok) throw new Error(`上传失败 HTTP ${resp.status}`);
+      console.log(`[send] POST response: ${resp.status}`);
+    } catch (e: any) {
+      if (lAbort?.signal.aborted) throw e;
+      throw new Error(`上传连接失败: ${e?.message || e}`);
     }
-    // 背压：队列满时让出事件循环，让 fetch 消费数据
-    const ctrl = postCtrl!;
-    let waitCount = 0;
-    while ((ctrl.desiredSize ?? 1) <= 0) {
-      waitCount++;
-      if (waitCount > 1000) {
-        console.error(`[send] backpressure stuck, desiredSize=${ctrl.desiredSize}`);
-        throw new Error('背压卡死：fetch 可能未在消费流');
-      }
-      await new Promise(r => setTimeout(r, 0));
-    }
-    ctrl.enqueue(msg);
-    postBytes += msg.byteLength;
-    console.log(`[send] enqueued ${msg.byteLength} bytes, postBytes=${postBytes}, desiredSize=${ctrl.desiredSize}`);
   }
 
   try {
-    startNewPost();
-
-    // 1. 发送 offer（文件清单）
+    // 1. 发送 offer（文件清单），作为第一个长度前缀帧
     const offerJson = JSON.stringify({
       type: 'offer',
       files: files.value.map(f => ({ name: f.file.name, size: f.file.size })),
     });
     const offerBytes = new TextEncoder().encode(offerJson);
-    await writeFrame(offerBytes);
+    pending.push(encodeMsg(offerBytes));
+    pendingBytes += offerBytes.length + 4;
     lStatus.value = '已发送文件清单，开始传输数据…';
 
-    // 2. 逐块加密 + 发送数据帧
+    // 2. 逐块加密，攒帧
     const mapped = files.value.map(f => ({ file: f.file }));
     const total = mapped.reduce((s, f) => s + f.file.size, 0);
     if (total === 0) {
-      postCtrl!.close();
-      try { await postPromise; } catch {}
-      await fetch(`${base}/stream/${lRoom.value}/close`, { method: 'POST', signal: lAbort.signal });
+      await flushPost(true);
       lDone.value = true; lStatus.value = '传输完成（空）'; lSending.value = false;
       return;
     }
@@ -275,21 +242,17 @@ async function startLocalSend() {
         const dv = new DataView(frame.buffer);
         dv.setUint16(0, fi); dv.setUint32(2, ci); dv.setUint32(6, plainLen);
         frame.set(enc, FRAME_HDR);
-        await writeFrame(frame);
+        pending.push(encodeMsg(frame));
+        pendingBytes += frame.length + 4;
+        // 本片攒够上限 → 立即发送这个 POST，开启下一个片
+        if (pendingBytes >= POST_LIMIT) await flushPost(false);
         offset += plainLen; ci++; sent += plainLen;
         lProgress.value = total ? sent / total : 1;
       }
     }
 
-    // 3. 关闭最后一个 POST，然后发 /close → DO 关 writable → GET 收到 EOF = done
-    postCtrl!.close();
-    try { await postPromise; } catch (e: any) {
-      throw new Error(`最后一片上传失败: ${e?.message || e}`);
-    }
-    await fetch(`${base}/stream/${lRoom.value}/close`, {
-      method: 'POST',
-      signal: lAbort.signal,
-    });
+    // 3. 发送最后一片（带 /close，让 DO 关闭 writable → 接收端收到 EOF = 完成）
+    await flushPost(true);
     lDone.value = true; lStatus.value = '传输完成';
   } catch (e: any) {
     if (lAbort?.signal.aborted) { lStatus.value = '已取消发送'; }

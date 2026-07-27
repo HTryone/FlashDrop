@@ -40,13 +40,18 @@ export class Relay {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    // CORS 预检
+    // CORS 预检：显式回显 Origin 与请求头（不要用 '*'，部分浏览器拒 '*'），并缓存 1 天
     if (request.method === 'OPTIONS') {
+      const origin = request.headers.get('Origin') || '*';
+      const reqHeaders = request.headers.get('Access-Control-Request-Headers') || 'Content-Type';
       return new Response(null, {
-        headers: this.cors({
+        headers: {
+          'Access-Control-Allow-Origin': origin,
           'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': '*',
-        }),
+          'Access-Control-Allow-Headers': reqHeaders,
+          'Access-Control-Max-Age': '86400',
+          'Cache-Control': 'no-cache, no-store',
+        },
       });
     }
 
