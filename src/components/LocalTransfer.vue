@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onUnmounted } from 'vue';
 import {
-  encryptChunk, decryptChunk, deriveKey, randomPassphrase,
+  decryptChunk, deriveKey, randomPassphrase,
   LOCAL_SALT, LOCAL_CHUNK_SIZE,
 } from '@/crypto/e2ee';
 import { createWebRTC, fetchIceServers } from '@/composables/useWebRTC';
@@ -14,9 +14,7 @@ const CHUNK = LOCAL_CHUNK_SIZE;          // 加密前分片大小（明文）
 // 加密后单帧 ≈ 768KB + 16(IV) + ≤16(PKCS7) + 32(HMAC) + 12(帧头) ≈ 786.5KB，远低于 Cloudflare DO 的 1MB 上限
 const FRAME_HDR = 12;                    // 帧头：fi(u16) + ci(u32) + plainLen(u32)
 // Cloudflare DO WebSocket 消息上限 1 MB（≈1,000,000 字节），需留余量
-const LOW = 16 * 1024 * 1024;           // 背压阈值 16MiB（增大缓冲区，减少停顿，提升吞吐）
 const CONN_TIMEOUT = 10000;             // 连接超时 ms
-const DRAIN_TIMEOUT_MS = 30000;         // 背压等待超时 ms
 
 // 默认线上中转（Cloudflare Worker，WSS）。可用构建时 VITE_RELAY_URL=xxx 覆盖。
 const RELAY_DEFAULT = 'flashdrop-relay.xianshenghu363.workers.dev';
@@ -36,12 +34,6 @@ function fmt(n: number) {
 /** 安全解析 JSON，失败返回 null */
 function safeParse(text: string): any {
   try { return JSON.parse(text); } catch { return null; }
-}
-
-/** 安全执行加密，失败抛出带上下文的 Error */
-function safeEncrypt(plain: Uint8Array, keyHex: string): Uint8Array<ArrayBuffer> {
-  try { return encryptChunk(plain, keyHex); }
-  catch (e: any) { throw new Error(`加密失败: ${e?.message || e}`); }
 }
 
 /** 安全执行解密，失败抛出带上下文的 Error */
@@ -135,250 +127,8 @@ async function makeSinks(files: any[]) {
 }
 
 // ================================================================
-//  发送方
+//  接收方
 // ================================================================
-const sendFiles = ref<File[]>([]);
-const room = ref('');
-const passphrase = ref('');
-const sendLink = ref('');
-const keyHex = ref('');
-const sending = ref(false);
-const sendDone = ref(false);
-const transferStarted = ref(false);     // 用户已点「开始传输」（offer 已发出）
-let loopStarted = false;                // doSendLoop 是否已启动（防止接收端晚加入重发 offer 导致重复发送）
-const sendProgress = ref(0);
-const sendStatus = ref('');
-const peerOnline = ref(false);
-let sendWs: WebSocket | null = null;
-
-function pick(e: Event) {
-  const input = e.target as HTMLInputElement;
-  if (input.files) sendFiles.value = Array.from(input.files);
-}
-const sendTotal = computed(() => sendFiles.value.reduce((s, f) => s + f.size, 0));
-
-/** 清理发送端状态（用于重连/关闭时） */
-function resetSender() {
-  sending.value = false;
-  sendDone.value = false;
-  transferStarted.value = false;
-  loopStarted = false;
-  sendProgress.value = 0;
-  peerOnline.value = false;
-}
-/** 安全关闭发送端 WS */
-function closeSenderWs() {
-  if (sendWs) { try { sendWs.close(); } catch { /* ignore */ } sendWs = null; }
-}
-
-function genRoom() {
-  // 防止重复连接：先关旧 WS
-  closeSenderWs();
-  resetSender();
-
-  const cs = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let s = '';
-  const a = new Uint8Array(6);
-  crypto.getRandomValues(a);
-  for (let i = 0; i < 6; i++) s += cs[a[i] % cs.length];
-  room.value = s;
-  passphrase.value = randomPassphrase();
-  sendLink.value = `${location.origin}/?tab=local&room=${s}#k=${passphrase.value}`;
-  sendStatus.value = '房间已生成，正在连接中继…';
-  void connectSender();
-}
-
-/** 生成房间后立即连接中继，提前感知对方是否在线 */
-async function connectSender() {
-  if (!room.value || !passphrase.value) return;
-  try {
-    keyHex.value = await deriveKey(passphrase.value, LOCAL_SALT);
-  } catch (e: any) {
-    sendStatus.value = `密钥派生失败: ${e?.message || e}`;
-    return;
-  }
-
-  const { host: relayHost, proto } = resolveRelay();
-  let ws: WebSocket;
-  try {
-    ws = new WebSocket(`${proto}://${relayHost}/relay?room=${room.value}&role=sender`);
-  } catch (e: any) {
-    sendStatus.value = `无法创建连接: ${e?.message || e}`;
-    return;
-  }
-  (ws as any).bufferedAmountLowThreshold = LOW;
-  sendWs = ws;
-  resetSender();
-  sendStatus.value = '已连上中继，等待对方加入…';
-
-  // 连接超时
-  let settled = false;
-  const openTimer = window.setTimeout(() => {
-    if (!settled && ws.readyState !== WebSocket.OPEN) {
-      settled = true;
-      sendStatus.value = '连接超时：中继不可达';
-      resetSender();
-      try { ws.close(); } catch { /* ignore */ }
-    }
-  }, CONN_TIMEOUT);
-
-  ws.onopen = () => {
-    clearTimeout(openTimer);
-    if (!settled) sendStatus.value = '已连上中继，等待对方加入…';
-  };
-
-  ws.onmessage = (ev) => {
-    if (typeof ev.data !== 'string') return; // 忽略非文本帧（发送端不应收到二进制）
-    const msg = safeParse(ev.data as string);
-    if (!msg) return;
-
-    if ((msg.type === 'peer-joined' && msg.role === 'receiver') || msg.type === 'receiver-joined') {
-      const wasOffline = !peerOnline.value;
-      peerOnline.value = true;
-      if (!sending.value && !sendDone.value) {
-        sendStatus.value = '对方已在线，可开始传输';
-      }
-      // 接收端晚加入：用户已点「开始传输」但 offer 在对方连接前发出（已丢失），
-      // 此时重发一次 offer，让新加入的接收端拿到文件清单并回 ready，从而启动传输。
-      // 仅在传输尚未真正开始（loopStarted=false）时重发，避免重复发送数据帧。
-      if (transferStarted.value && !loopStarted && ws.readyState === WebSocket.OPEN && wasOffline) {
-        sendOffer(ws);
-        sendStatus.value = '对方已加入，重新发起传输…';
-      }
-    } else if (msg.type === 'ready') {
-      void doSendLoop(ws);
-    } else if (msg.type === 'peer-left') {
-      peerOnline.value = false;
-      if (!sendDone.value) sendStatus.value = '对方已断开，等待重新加入…';
-    }
-    // 忽略未知消息类型
-  };
-
-  ws.onclose = () => {
-    clearTimeout(openTimer);
-    if (!settled) { settled = true; }
-    if (!sendDone.value) resetSender();
-  };
-  ws.onerror = () => {
-    clearTimeout(openTimer);
-    if (!settled) { settled = true; }
-    sendStatus.value = '连接出错（中继不可达或被拦截）';
-    resetSender();
-  };
-}
-
-/** 发送 offer（文件清单）。供「开始传输」与「接收端晚加入重发」复用 */
-function sendOffer(ws: WebSocket) {
-  try {
-    ws.send(JSON.stringify({
-      type: 'offer',
-      files: sendFiles.value.map((f) => ({ name: f.name, size: f.size })),
-    }));
-  } catch (e: any) {
-    sendStatus.value = `发送 offer 失败: ${e?.message || e}`;
-  }
-}
-
-/** 真正开始传输（门控：必须对方在线 + WS 就绪） */
-function startSend() {
-  if (!sendWs || sendWs.readyState !== WebSocket.OPEN) {
-    sendStatus.value = '未连接到中继'; return;
-  }
-  if (!peerOnline.value) {
-    sendStatus.value = '对方尚未加入，请等待对方连接接收'; return;
-  }
-  if (!sendFiles.value.length) {
-    sendStatus.value = '没有待发送文件'; return;
-  }
-  sending.value = true;
-  transferStarted.value = true;
-  sendProgress.value = 0;
-  sendStatus.value = '对方已连接，开始传输…';
-  sendOffer(sendWs);
-}
-
-async function doSendLoop(ws: WebSocket) {
-  loopStarted = true;
-  const files = sendFiles.value;
-  const total = files.reduce((s, f) => s + f.size, 0);
-  if (total === 0) {
-    // 空文件列表，直接结束
-    ws.send(JSON.stringify({ type: 'done' }));
-    sendDone.value = true;
-    sendStatus.value = '传输完成（空）';
-    sending.value = false;
-    return;
-  }
-  let sent = 0;
-  try {
-    for (let fi = 0; fi < files.length; fi++) {
-      const file = files[fi];
-      let offset = 0;
-      let ci = 0;
-      while (offset < file.size) {
-        // 检查 WS 是否还活着
-        if (ws.readyState !== WebSocket.OPEN) {
-          throw new Error('连接已断开');
-        }
-        const end = Math.min(offset + CHUNK, file.size);
-        const buf = await file.slice(offset, end).arrayBuffer();
-        const plain = new Uint8Array(buf);
-        const enc = safeEncrypt(plain, keyHex.value);
-
-        // 组装帧：[fi:u16][ci:u32][plainLen:u32][encrypted_chunk]
-        const header = new Uint8Array(FRAME_HDR);
-        const dv = new DataView(header.buffer);
-        dv.setUint16(0, fi);
-        dv.setUint32(2, ci);
-        dv.setUint32(6, buf.byteLength); // 真实明文长度（用于接收端去除 PKCS7 填充）
-        const frame = new Uint8Array(header.length + enc.length);
-        frame.set(header, 0);
-        frame.set(enc, header.length);
-
-        // 背压控制
-        if (ws.bufferedAmount > LOW) await safeDrain(ws);
-
-        ws.send(frame);
-        offset += buf.byteLength;
-        ci++;
-        sent += buf.byteLength;
-        sendProgress.value = total ? sent / total : 1;
-      }
-    }
-    // 全部发完
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'done' }));
-    }
-    sendDone.value = true;
-    sendStatus.value = '传输完成';
-  } catch (e: any) {
-    sendStatus.value = `传输出错: ${e?.message || e}`;
-  } finally {
-    sending.value = false;
-  }
-}
-
-/** 带超时的背压等待 */
-function safeDrain(ws: WebSocket): Promise<void> {
-  if (ws.bufferedAmount <= LOW) return Promise.resolve();
-  return new Promise((resolve) => {
-    const onLow = () => { cleanup(); resolve(); };
-    const onClose = () => { cleanup(); resolve(); };
-    const timer = setTimeout(() => { cleanup(); resolve(); }, DRAIN_TIMEOUT_MS);
-    function cleanup() {
-      clearTimeout(timer);
-      ws.removeEventListener('bufferedamountlow', onLow as any);
-      ws.removeEventListener('close', onClose as any);
-    }
-    ws.addEventListener('bufferedamountlow', onLow as any, { once: true });
-    ws.addEventListener('close', onClose as any, { once: true });
-  });
-}
-
-function copyLink() {
-  navigator.clipboard?.writeText(sendLink.value);
-  sendStatus.value = '链接已复制';
-}
 
 // ================================================================
 //  接收方
@@ -659,52 +409,12 @@ function handleRecvFrame(data: ArrayBuffer) {
 //  生命周期
 // ================================================================
 onUnmounted(() => {
-  closeSenderWs();
   closeReceiverWs();
 });
 </script>
 
 <template>
   <div class="local">
-    <!-- 发送 -->
-    <section class="blk" v-if="!props.side || props.side === 'send'">
-      <h3>① 发送（本地直传）</h3>
-      <p class="hint">文件只在内存里经网站流转，不落服务器磁盘；双方需同时在线，关闭即止。</p>
-      <input type="file" multiple @change="pick" :disabled="sending" />
-      <div v-if="sendFiles.length" class="filelist">
-        <div v-for="f in sendFiles" :key="f.name" class="frow">
-          <span>{{ f.name }}</span><span class="sz">{{ fmt(f.size) }}</span>
-        </div>
-        <div class="total">共 {{ sendFiles.length }} 个 · {{ fmt(sendTotal) }}</div>
-      </div>
-
-      <div v-if="!room" class="actions">
-        <button class="btn primary" :disabled="!sendFiles.length" @click="genRoom">生成直传房间</button>
-      </div>
-      <div v-else class="roominfo">
-        <div class="code">房间码：<b>{{ room }}</b></div>
-        <div class="link">
-          <input :value="sendLink" readonly />
-          <button class="btn sm" @click="copyLink">复制链接</button>
-        </div>
-        <div class="presence">
-          <span class="dot" :class="{ on: peerOnline }"></span>
-          对方（接收端）：{{ peerOnline ? '已在线 ✓' : '等待加入…' }}
-        </div>
-        <div class="actions">
-          <button class="btn primary" :disabled="sending || sendDone || !peerOnline" @click="startSend">
-            {{ sending ? '传输中…' : sendDone ? '已完成' : (peerOnline ? '开始传输' : '等待对方加入…') }}
-          </button>
-        </div>
-        <div v-if="sending || sendDone" class="bar">
-          <div class="fill" :style="{ width: (sendProgress * 100) + '%' }"></div>
-        </div>
-      </div>
-      <div class="status">{{ sendStatus }}</div>
-    </section>
-
-    <hr v-if="!props.side" />
-
     <!-- 接收 -->
     <section class="blk" v-if="!props.side || props.side === 'receive'">
       <h3>② 接收（输入房间码）</h3>
