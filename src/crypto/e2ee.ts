@@ -155,10 +155,11 @@ export async function decryptBlob(
 
 // ---------- 本地磁盘模式：单块加解密（WebSocket 逐块流转，不落盘）----------
 // 与中转模式不同，这里是"边读边加密边发"，每块独立 IV，解密端逐块还原。
-export const LOCAL_CHUNK_SIZE = 896 * 1024; // 896KB 一块（加密后单帧 ≈ 897KB，低于 Cloudflare DO 的 1MB WebSocket 消息上限）
-// 加密后单帧 ≈ 896KB(明文) + 16(IV) + ≤16(PKCS7填充) + 32(HMAC) + 12(帧头) ≈ 897KB
-// Cloudflare Durable Object WebSocket 单条消息上限约 1MB（≈1,000,000 字节），留约 100KB 余量
-// 之前误用 2MB，加密后 ≈2.06MB 会超标，导致线上 Worker 静默丢弃/截断二进制帧，接收端卡死
+export const LOCAL_CHUNK_SIZE = 8 * 1024 * 1024; // 8MB 一块（加密后单帧 ≈ 8.06MB，远低于 Cloudflare DO 的 32MB WebSocket 消息上限）
+// 加密后单帧 ≈ 8MB(明文) + 16(IV) + ≤16(PKCS7填充) + 32(HMAC) + 12(帧头) ≈ 8.06MB
+// Cloudflare 于 2025-10-25 将 Durable Object WebSocket 单条消息上限从 1MB 提升到 32MB（官方 release-notes），
+// 故原先为不超 1MB 而被迫切成 896KB 已无必要；放大到 8MB 可大幅减少帧数/中继往返/每帧 HMAC 开销 → 提速明显。
+// 留约 24MB 余量，远在 32MB 上限内；同时避免单帧过大导致一处失败要重传整块（权衡后取 8MB）。
 // 本地磁盘口令随机且单次会话使用，固定 salt 足够（避免把 salt 塞进链接）
 export const LOCAL_SALT = 'flashdrop-local-v1';
 
