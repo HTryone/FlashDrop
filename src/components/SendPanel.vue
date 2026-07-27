@@ -43,14 +43,9 @@ const showTerminateDialog = ref(false);
 // ========== 本地直传（复用 LocalTransfer 逻辑）==========
 const LOCAL_CHUNK = LOCAL_CHUNK_SIZE;
 const FRAME_HDR = 12;
-const LOW = 16 * 1024 * 1024;
+const LOW = 8 * 1024 * 1024;     // WS bufferedAmount 低水位线：8MB（TCP 自动背压，不用手动 ACK）
 const CONN_TIMEOUT = 10000;
 const DRAIN_TIMEOUT_MS = 30000;
-// 端到端 ACK 流控：发送端最多领先接收端 WINDOW 帧，超了就等 ACK。
-// 防止发送端把 DO 中继内存打爆（之前无流控导致 272MB 文件传完但接收端只收到一点）。
-const FLOW_WINDOW = 128;         // 滑动窗口大小（帧数），2MB/帧下 128帧=256MB 缓冲余量
-let flowUnacked = 0;           // 已发送未确认的帧数
-let flowResolveAck: (() => void) | null = null; // 等待 ACK 的 Promise resolve
 const P2P_WAIT_MS = 8000; // 传输开始前等待 P2P 直连就绪的最长时长，超时回退中继
 const RELAY_DEFAULT = 'flashdrop-relay.315461.xyz';
 function resolveRelay() {
@@ -88,8 +83,6 @@ function resetLocalSender() {
 function cancelLocalSend() {
   if (!lSending.value) return;
   lCancelRequested = true;
-  // 若发送端正卡在「等接收端 ACK」的 await，立即唤醒它，让循环得以检查取消标志并退出
-  if (flowResolveAck) { const r = flowResolveAck; flowResolveAck = null; r(); }
   if (lWs && lWs.readyState === WebSocket.OPEN) {
     try { lWs.send(JSON.stringify({ type: 'cancel' })); } catch { /* 对方没收到也没关系，本地仍会重置 */ }
   }
@@ -154,14 +147,6 @@ async function connectLocalSender() {
         localSendOffer(ws); lStatus.value = '对方已加入，重新发起传输…';
       }
     } else if (msg.type === 'ready') { void doLocalSendLoop(ws); }
-    else if (msg.type === 'ack') {
-      // 接收端确认已处理完 N 帧，释放流控窗口
-      const n = msg.count || 0;
-      flowUnacked = Math.max(0, flowUnacked - n);
-      if (flowResolveAck && flowUnacked < FLOW_WINDOW) {
-        const r = flowResolveAck; flowResolveAck = null; r();
-      }
-    }
     else if (msg.type === 'rtc-signal') { void lRtc?.onSignal(msg.data); }
     else if (msg.type === 'peer-left') {
       lPeerOnline.value = false;
@@ -206,7 +191,6 @@ function startLocalSend() {
 
 async function doLocalSendLoop(ws: WebSocket) {
   lLoopStarted = true;
-  flowUnacked = 0; flowResolveAck = null; // 重置流控状态
   // 先等 P2P 直连就绪（最多 P2P_WAIT_MS），连上才用 DataChannel，超时回退 WS。
   // 避免「点发送太早、P2P 还没连上」就被一次性判走中继——这是之前「总是走中继」的根因。
   // 仍一次性决定，避免同一文件混用两路导致帧乱序。
@@ -226,10 +210,6 @@ async function doLocalSendLoop(ws: WebSocket) {
       while (offset < file.size) {
         if (lCancelRequested) { cancelled = true; break; } // 取消发送：跳出分片循环
         if (ws.readyState !== WebSocket.OPEN && !useRtc) throw new Error('连接已断开');
-        // ---- 端到端流控：窗口满就等接收端 ACK ----
-        while (flowUnacked >= FLOW_WINDOW && !useRtc) {
-          await new Promise<void>((resolve) => { flowResolveAck = resolve; });
-        }
         const end = Math.min(offset + LOCAL_CHUNK, file.size);
         const chunkBuf = await file.slice(offset, end).arrayBuffer();
         const plainLen = chunkBuf.byteLength;
@@ -244,7 +224,6 @@ async function doLocalSendLoop(ws: WebSocket) {
         } else {
           if (ws.bufferedAmount > LOW) await localSafeDrain(ws);
           ws.send(frame);
-          flowUnacked++; // 中继模式计入流控
         }
         offset += plainLen; ci++; sent += plainLen;
         lProgress.value = total ? sent / total : 1;

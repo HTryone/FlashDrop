@@ -155,11 +155,10 @@ export async function decryptBlob(
 
 // ---------- 本地磁盘模式：单块加解密（WebSocket 逐块流转，不落盘）----------
 // 与中转模式不同，这里是"边读边加密边发"，每块独立 IV，解密端逐块还原。
-export const LOCAL_CHUNK_SIZE = 2 * 1024 * 1024; // 2MB 一块（加密后≈2.05MB，远低于 CF DO 的 16MB 单条 WS 消息上限；增大分片→减少帧数→提升吞吐）
-// 加密后单帧 ≈ 2MB + 16(IV) + ≤16(PKCS7填充) + 32(HMAC) + 12(帧头) ≈ 2.06MB
-// Cloudflare Durable Object WebSocket 单条消息上限 16MB（≈16,777,216 字节），余量充足
-// 若改回 1MiB，加密后 ≈1.05MB 会超标导致线上 Worker 静默丢弃二进制帧
-// 本地磁盘口令随机且单次会话使用，固定 salt 足够（避免把 salt 塞进链接）
+// 分片越大 → 帧数越少 → 帧头/加密/WS 开销越低 → 吞吐越高。
+// CF DO WebSocket 单条消息上限 16MB（≈16,777,216 字节）。
+// 4MB 加密后 ≈ 4.06MB，余量充足；272MB 文件只需 ~68 帧（原 768KB 时 363 帧）。
+export const LOCAL_CHUNK_SIZE = 4 * 1024 * 1024; // 4MB 一块
 export const LOCAL_SALT = 'flashdrop-local-v1';
 
 /** 加密单个明文块 → 帧：[16B IV][ciphertext][32B HMAC] */
