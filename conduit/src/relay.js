@@ -65,10 +65,10 @@ export class Relay {
     try {
       while (queue.frames.length > 0) {
         const msg = queue.frames[0];
-        let ok = true;
-        try { ok = peer.send(msg); } catch { ok = false; }
-        if (!ok) {
-          // 对端 WS 缓冲区满：保留队列，稍后定时重试（不依赖新消息到来）
+        try {
+          peer.send(msg);                 // WebSocket.send 返回 void，不能用它判断成功
+        } catch {
+          // 对端 WS 缓冲区满或连接异常：保留队列，稍后定时重试（不依赖新消息到来）
           this.scheduleDrain(queue, peer, room);
           break;
         }
@@ -112,11 +112,19 @@ export class Relay {
       return;
     }
 
-    // 二进制数据帧：进有界队列，**绝不丢弃**，靠接收端 pause 控制上游速度
+    // 二进制数据帧：进有界队列，**绝不丢弃**，靠接收端 pause 控制上游速度。
+    // ⚠️ CF DO Hibernation 下，message buffer 在回调返回后可能失效，必须立即复制一份再入队。
     const queue = this.getQueue(att.room, att.role);
-    const msgSize = message.byteLength || 0;
-    queue.frames.push(message);
-    queue.bytes += msgSize;
+    let frame;
+    if (message instanceof ArrayBuffer) {
+      frame = new Uint8Array(message);
+    } else if (ArrayBuffer.isView(message)) {
+      frame = new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
+    } else {
+      frame = message;
+    }
+    queue.frames.push(frame);
+    queue.bytes += frame.byteLength || 0;
 
     this.tryDrain(queue, peer, att.room);
   }
@@ -125,7 +133,9 @@ export class Relay {
     const att = ws.deserializeAttachment();
     if (att) {
       const peer = this.findPeer(att.room, att.role === 'sender' ? 'receiver' : 'sender');
-      if (peer) peer.send(JSON.stringify({ type: 'peer-left' }));
+      if (peer) {
+        try { peer.send(JSON.stringify({ type: 'peer-left' })); } catch {}
+      }
       // 清理该方向的队列（含定时器）
       const keys = [
         `${att.room}:${att.role}`,

@@ -289,12 +289,17 @@ async function doLocalSendLoop(ws: WebSocket) {
 function localSafeDrain(target: any): Promise<void> {
   if (!target || target.bufferedAmount <= LOW) return Promise.resolve();
   return new Promise((resolve) => {
-    const onLow = () => { cleanup(); resolve(); };
-    const onClose = () => { cleanup(); resolve(); };
-    const timer = setTimeout(() => { cleanup(); resolve(); }, DRAIN_TIMEOUT_MS);
-    function cleanup() { clearTimeout(timer); target.removeEventListener('bufferedamountlow', onLow as any); target.removeEventListener('close', onClose as any); }
-    target.addEventListener('bufferedamountlow', onLow as any, { once: true });
-    target.addEventListener('close', onClose as any, { once: true });
+    // WebSocket 没有 bufferedamountlow 事件，必须轮询 bufferedAmount；
+    // RTCDataChannel 虽有该事件，但统一轮询更稳。
+    let interval: any;
+    const timer = setTimeout(() => { clearInterval(interval); resolve(); }, DRAIN_TIMEOUT_MS);
+    interval = setInterval(() => {
+      if ((target.bufferedAmount || 0) <= LOW || target.readyState === WebSocket.CLOSED || target.readyState === WebSocket.CLOSING) {
+        clearInterval(interval);
+        clearTimeout(timer);
+        resolve();
+      }
+    }, 50);
   });
 }
 
