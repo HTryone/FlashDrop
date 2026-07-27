@@ -46,6 +46,7 @@ const FRAME_HDR = 12;
 const LOW = 16 * 1024 * 1024;
 const CONN_TIMEOUT = 10000;
 const DRAIN_TIMEOUT_MS = 30000;
+const P2P_WAIT_MS = 8000; // 传输开始前等待 P2P 直连就绪的最长时长，超时回退中继
 const RELAY_DEFAULT = 'flashdrop-relay.xianshenghu363.workers.dev';
 function resolveRelay() {
   const host = (import.meta as any).env?.VITE_RELAY_URL || RELAY_DEFAULT;
@@ -154,6 +155,20 @@ function localSendOffer(ws: WebSocket) {
   catch (e: any) { lStatus.value = `发送 offer 失败: ${e?.message || e}`; }
 }
 
+// 等待 P2P 直连就绪：传输开始时若 DataChannel 尚未 open（协商通常需 1~5s），
+// 轮询等待最多 timeoutMs；连上返回 true，超时返回 false（交由调用方回退中继）。
+// 解决「点发送太早、P2P 还没连上就被一次性判走中继」的时序 bug。
+function waitForRtc(timeoutMs: number): Promise<boolean> {
+  if (lRtc && lRtc.isOpen()) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const iv = window.setInterval(() => {
+      if (lRtc && lRtc.isOpen()) { window.clearInterval(iv); resolve(true); }
+      else if (Date.now() - start > timeoutMs) { window.clearInterval(iv); resolve(false); }
+    }, 100);
+  });
+}
+
 function startLocalSend() {
   if (!lWs || lWs.readyState !== WebSocket.OPEN) { lStatus.value = '未连接到中继'; return; }
   if (!lPeerOnline.value) { lStatus.value = '对方尚未加入，请等待对方连接接收'; return; }
@@ -164,9 +179,13 @@ function startLocalSend() {
 
 async function doLocalSendLoop(ws: WebSocket) {
   lLoopStarted = true;
-  // 一次性决定本次传输走 P2P 直连(DataChannel) 还是回退 WS 中继，
-  // 避免同一文件混用两路导致帧乱序。
-  const useRtc = !!(lRtc && lRtc.isOpen());
+  // 先等 P2P 直连就绪（最多 P2P_WAIT_MS），连上才用 DataChannel，超时回退 WS。
+  // 避免「点发送太早、P2P 还没连上」就被一次性判走中继——这是之前「总是走中继」的根因。
+  // 仍一次性决定，避免同一文件混用两路导致帧乱序。
+  lStatus.value = '正在建立 P2P 直连…';
+  const useRtc = await waitForRtc(P2P_WAIT_MS);
+  if (useRtc) lStatus.value = 'P2P 直连已建立，开始传输…';
+  else lStatus.value = 'P2P 直连未就绪，已回退中继转发';
   const ch = (useRtc && lRtc) ? lRtc.getChannel() : null;
   const mapped = files.value.map(f => ({ file: f.file }));
   const total = mapped.reduce((s, f) => s + f.file.size, 0);
