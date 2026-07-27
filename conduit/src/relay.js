@@ -2,17 +2,22 @@
 // 不落盘：文件数据只在两端 WebSocket 间流过内存。
 // 使用 Hibernatable WebSocket API（state.acceptWebSocket），生产环境稳定可靠。
 //
-// v2: 加入背压保护。接收端处理慢时，DO 内存不会无限堆积导致被 Cloudflare 杀掉。
+// 流控原则（v3）：
+//   1. 二进制帧进「有界队列」但【绝不丢弃】，靠接收端 pause 控制上游速度。
+//   2. 对端 WS 缓冲满（peer.send 返回 false）时保留队列，用定时器重试排空，
+//      不依赖「新消息到来」才重试（否则发送端暂停后队列永远卡死）。
+//   3. 队列积压超 PAUSE_BYTES 时，中继自行发 pause(src:'relay') 给发送端作兜底，
+//      正常情况下接收端会在更早（自身 16MB 积压）就先发 pause。
 export class Relay {
   constructor(state, env) {
     this.state = state;
     this.env = env;
     // 每对 peer 一个发送队列；key 为 "room:sender" / "room:receiver"
     this.queues = new Map();
-    // 单个队列最大积压字节数（超过后丢弃最旧帧，防止 DO 内存爆）
-    this.MAX_QUEUE_BYTES = 32 * 1024 * 1024; // 32MB（2MB/帧下可缓存 ~15 帧）
-    // 单个队列最大积压帧数
-    this.MAX_QUEUE_FRAMES = 100;              // 2MB/帧 × 100 = 200MB 上限（字节优先触发）
+    // 背压兜底阈值：队列积压超过 PAUSE_BYTES 时中继自行发 pause 给发送端；
+    // 正常情况下接收端会在更早（自身 16MB 积压）就发 pause，这里是防 pause 信令丢失的最后保险。
+    this.PAUSE_BYTES = 32 * 1024 * 1024; // 32MB
+    this.RESUME_BYTES = 8 * 1024 * 1024;  // 8MB
   }
 
   async fetch(request) {
@@ -48,30 +53,51 @@ export class Relay {
   getQueue(room, fromRole) {
     const key = `${room}:${fromRole}`;
     if (!this.queues.has(key)) {
-      this.queues.set(key, { bytes: 0, frames: [], draining: false });
+      this.queues.set(key, { bytes: 0, frames: [], draining: false, paused: false, drainTimer: null });
     }
     return this.queues.get(key);
   }
 
-  // 尝试排空队列（由 webSocketMessage 或 drainLoop 调用）
-  tryDrain(queue, peer) {
+  // 尝试排空队列（由 webSocketMessage 或 scheduleDrain 调用）。绝不丢弃帧。
+  tryDrain(queue, peer, room) {
     if (queue.draining || !peer || queue.frames.length === 0) return;
     queue.draining = true;
     try {
       while (queue.frames.length > 0) {
         const msg = queue.frames[0];
-        const ok = peer.send(msg);
+        let ok = true;
+        try { ok = peer.send(msg); } catch { ok = false; }
         if (!ok) {
-          // 对端 WS 缓冲区满，停止发送，下次 webSocketMessage 触发时再试
+          // 对端 WS 缓冲区满：保留队列，稍后定时重试（不依赖新消息到来）
+          this.scheduleDrain(queue, peer, room);
           break;
         }
-        const frame = queue.frames.shift();
-        queue.bytes -= frame.byteLength || (typeof frame === 'string' ? new TextEncoder().encode(frame).length : 0);
+        queue.frames.shift();
+        queue.bytes -= msg.byteLength || 0;
         if (queue.bytes < 0) queue.bytes = 0;
       }
     } finally {
       queue.draining = false;
     }
+    // 背压兜底：队列积压过多则通知【发送端】暂停（防 pause 信令丢失导致 DO 内存爆）
+    const sender = this.findPeer(room, 'sender');
+    if (!sender) return;
+    if (queue.bytes > this.PAUSE_BYTES && !queue.paused) {
+      queue.paused = true;
+      try { sender.send(JSON.stringify({ type: 'pause', src: 'relay' })); } catch {}
+    } else if (queue.bytes < this.RESUME_BYTES && queue.paused) {
+      queue.paused = false;
+      try { sender.send(JSON.stringify({ type: 'resume', src: 'relay' })); } catch {}
+    }
+  }
+
+  // 对端缓冲满时，用定时器重试排空（DO 活跃传输期间定时可靠触发）
+  scheduleDrain(queue, peer, room) {
+    if (queue.drainTimer) return;
+    queue.drainTimer = setTimeout(() => {
+      queue.drainTimer = null;
+      this.tryDrain(queue, peer, room);
+    }, 50);
   }
 
   webSocketMessage(ws, message) {
@@ -80,30 +106,19 @@ export class Relay {
     const peer = this.findPeer(att.room, peerRole);
     if (!peer) return; // 对端还没连，丢弃
 
-    // 文本控制消息（JSON）直接转发，不走队列
+    // 文本控制消息（JSON）直接转发，不走队列（pause/resume/ack/done/offer 等）
     if (typeof message === 'string') {
       peer.send(message);
       return;
     }
 
-    // 二进制数据帧走背压队列
+    // 二进制数据帧：进有界队列，**绝不丢弃**，靠接收端 pause 控制上游速度
     const queue = this.getQueue(att.room, att.role);
     const msgSize = message.byteLength || 0;
-
-    // 队列满了 → 丢弃最旧帧（优于让 DO 内存爆炸被杀）
-    if (queue.bytes + msgSize > this.MAX_QUEUE_BYTES || queue.frames.length >= this.MAX_QUEUE_FRAMES) {
-      const dropped = queue.frames.shift();
-      if (dropped) {
-        queue.bytes -= dropped.byteLength || 0;
-        if (queue.bytes < 0) queue.bytes = 0;
-      }
-    }
-
     queue.frames.push(message);
     queue.bytes += msgSize;
 
-    // 尝试立即转发
-    this.tryDrain(queue, peer);
+    this.tryDrain(queue, peer, att.room);
   }
 
   webSocketClose(ws) {
@@ -111,11 +126,16 @@ export class Relay {
     if (att) {
       const peer = this.findPeer(att.room, att.role === 'sender' ? 'receiver' : 'sender');
       if (peer) peer.send(JSON.stringify({ type: 'peer-left' }));
-      // 清理该方向的队列
-      const key1 = `${att.room}:${att.role}`;
-      const key2 = `${att.room}:${att.role === 'sender' ? 'receiver' : 'sender'}`;
-      this.queues.delete(key1);
-      this.queues.delete(key2);
+      // 清理该方向的队列（含定时器）
+      const keys = [
+        `${att.room}:${att.role}`,
+        `${att.room}:${att.role === 'sender' ? 'receiver' : 'sender'}`,
+      ];
+      for (const k of keys) {
+        const q = this.queues.get(k);
+        if (q && q.drainTimer) { clearTimeout(q.drainTimer); q.drainTimer = null; }
+        this.queues.delete(k);
+      }
     }
     ws.close();
   }

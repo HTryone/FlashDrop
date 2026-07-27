@@ -149,9 +149,13 @@ let recvChunks = 0;                      // 已收到的数据块数（用于收
 let recvTotalChunks = 0;                 // 期望总块数（由 offer 文件清单推算）
 let recvKey = '';
 let finishing = false;            // 防止 done/EOF/收齐 多处触发重复关流
-// 端到端 ACK 流控：每处理完 ACK_INTERVAL 帧就通知发送端，防止发送端打爆中继 DO 内存
-const ACK_INTERVAL = 32;          // 每处理 32 帧发一次 ACK（2MB/帧下减少 ACK 频率，降低往返开销）
-let ackProcessed = 0;             // 自上次 ACK 后已处理的帧数
+// 端到端流量控制：接收端监视自身「已解密未写盘」的积压字节，
+// 超过高水位发 pause、回落低水位发 resume，驱动发送端减速/恢复。
+// 这样写盘速度直接决定整体吞吐，全程平滑、不震荡、不归零、不丢帧。
+const RECV_PAUSE_BYTES = 16 * 1024 * 1024; // 高水位：积压 >16MB 即通知发送端暂停
+const RECV_RESUME_BYTES = 4 * 1024 * 1024;  // 低水位：积压 <4MB 才恢复（迟滞避免抖动）
+let recvPaused = false;            // 当前是否已通知发送端暂停
+let recvReceived = 0;             // 已解密、进入流水线的字节数（含已写盘）
 let recvAborted = false;          // 收到发送端 cancel 后置位，正在跑的 processFrame 会中途退出
 // —— 并发解密 + 保序写盘（接收端流水线，根治「接收端慢拖垮整体」）——
 let perFileChunks: number[] = [];   // 每文件帧数（offer 时推算），用于把 (fi,ci) 映射成全局序号
@@ -175,7 +179,7 @@ function resetReceiver() {
   for (const w of writers) { try { w.abort(); } catch { /* ignore */ } }
   writers = [];
   recvKey = '';
-  ackProcessed = 0;
+  recvReceived = 0; recvPaused = false;
   perFileChunks = []; nextWriteSeq = 0; readyBuf.clear(); drainRunning = false;
   eofReceived = false; pendingDone = false;
   dcReasm = null;
@@ -428,8 +432,9 @@ function handleDataFrame(data: ArrayBuffer) {
   decryptChunkAsync(body.buffer, recvKey, plainLen)
     .then((plainBuf) => {
       if (recvAborted) return;             // 已取消则丢弃此块
+      recvReceived += (plainBuf as ArrayBuffer).byteLength;
       readyBuf.set(seq, { fi, plain: new Uint8Array(plainBuf) });
-      void drainWrites();                   // 尝试推进写盘（ACK 在写盘完成时发，见 drainWrites）
+      void drainWrites();                   // 尝试推进写盘（背压判断见 drainWrites 末尾）
     })
     .catch((e: any) => {
       console.error('[recv] 解密失败:', e);
@@ -460,14 +465,16 @@ async function drainWrites() {
       recvBytes += item.plain.length;
       recvProgress.value = recvTotal ? recvBytes / recvTotal : 1;
       nextWriteSeq++;
-      // 端到端 ACK 流控：每 ACK_INTERVAL 帧实际写盘完成后通知发送端
-      // 关键：必须在写盘完成（而非解密完成）后 ACK，否则发送端流控窗口与
-      // 接收端真实处理速度错配，导致来回振荡（发快收慢交替）。
-      ackProcessed++;
-      if (ackProcessed >= ACK_INTERVAL && recvWs && recvWs.readyState === WebSocket.OPEN) {
-        try { recvWs.send(JSON.stringify({ type: 'ack', count: ackProcessed })); } catch {}
-        ackProcessed = 0;
-      }
+    }
+    // 端到端背压：根据「已收未写盘」积压决定通知发送端暂停/恢复。
+    // 写盘是最慢环节，由它直接驱动发送端速度 → 吞吐平滑、不震荡、不归零。
+    const backlog = recvReceived - recvBytes;
+    if (!recvPaused && backlog >= RECV_PAUSE_BYTES) {
+      recvPaused = true;
+      try { recvWs?.send(JSON.stringify({ type: 'pause', src: 'recv' })); } catch {}
+    } else if (recvPaused && backlog <= RECV_RESUME_BYTES) {
+      recvPaused = false;
+      try { recvWs?.send(JSON.stringify({ type: 'resume', src: 'recv' })); } catch {}
     }
     // 收齐全部帧 → 完成（done/EOF 信号丢失也能自愈）
     if (recvTotalChunks > 0 && nextWriteSeq >= recvTotalChunks) {
