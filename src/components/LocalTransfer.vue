@@ -12,9 +12,9 @@ const props = defineProps<{ side?: 'send' | 'receive' }>();
 
 // ---------- 常量 ----------
 const CHUNK = LOCAL_CHUNK_SIZE;          // 加密前分片大小（明文）
-// 加密后单帧 ≈ 8MB + 16(IV) + ≤16(PKCS7) + 32(HMAC) + 12(帧头) ≈ 8.06MB，远低于 Cloudflare DO 的 32MB WebSocket 上限（2025-10-25 起由 1MB 提升）
+// 加密后单帧 ≈ 896KB + 16(IV) + ≤16(PKCS7) + 32(HMAC) + 12(帧头) ≈ 897KB，低于 Cloudflare DO 的 1MB WebSocket 上限
 const FRAME_HDR = 12;                    // 帧头：fi(u16) + ci(u32) + plainLen(u32)
-// Cloudflare DO WebSocket 消息上限已提升至 32 MB（≈33,554,432 字节），8MB 分块留足余量
+// Cloudflare DO WebSocket 消息上限 1 MB（≈1,000,000 字节），需留余量
 const CONN_TIMEOUT = 10000;             // 连接超时 ms
 
 // 默认线上中转（Cloudflare Worker，WSS）。可用构建时 VITE_RELAY_URL=xxx 覆盖。
