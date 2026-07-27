@@ -304,7 +304,18 @@ async function startRecv() {
         console.log(`[recv] retry GET #${attempt}, waiting for data...`);
         await new Promise(r => setTimeout(r, 1000 * attempt));
       }
-      offerPayload = await readMsg(reader);
+      // 跳过 DO 写的「开场帧」(非 JSON)，读到真正的 offer(JSON, type:'offer') 为止
+      let found = false;
+      for (let guard = 0; guard < 8 && !found; guard++) {
+        const m = await readMsg(reader);
+        if (!m) break; // EOF：交给外层重试或放弃
+        try {
+          const o = JSON.parse(new TextDecoder().decode(m));
+          if (o && o.type === 'offer') { offerPayload = m; found = true; }
+        } catch {
+          // 开场帧等非法 JSON，忽略继续读
+        }
+      }
       if (offerPayload) break;
       console.log(`[recv] offer EOF on attempt ${attempt}, will retry`);
     }
@@ -342,6 +353,11 @@ async function startRecv() {
       }
       const payload = await readMsg(reader);
       if (!payload) break; // EOF = 发送端完成
+      // 容忍偶发的过短帧（如 DO 开场帧落在数据段），跳过不报错
+      if (payload.length < FRAME_HDR) {
+        console.log(`[recv] 跳过过短帧(${payload.length}B，疑似开场帧)`);
+        continue;
+      }
       // 复制到独立 ArrayBuffer（TS 5.7 严格类型 + 防止 view 越界）
       const frameBuf = new ArrayBuffer(payload.byteLength);
       new Uint8Array(frameBuf).set(payload);

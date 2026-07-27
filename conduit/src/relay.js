@@ -116,6 +116,18 @@ export class Relay {
         entry = this.createRoom(room);
         console.log(`[stream] GET ${room}, created new room`);
       }
+      // 关键修复：立即往流里写 1 字节「开场帧」，防止 Cloudflare 缓冲空响应体。
+      // 现象：接收端先连 GET 时 DO 的 TransformStream 还是空的，Cloudflare 边缘会
+      // 一直等、把响应缓存到发送端 /close（上传完成）才整体下发，表现为
+      // 「下载在上传完成后才开始、且只有 ~200KB/s」。写开场帧后响应立即开始流式下发。
+      // 接收端会跳过这个非 offer 帧（见 LocalTransfer.vue）。
+      try {
+        const ow = entry.writable.getWriter();
+        await ow.write(new Uint8Array([0, 0, 0, 1, 0x00])); // [4B 长度前缀=1][1字节 0x00]
+        ow.releaseLock();
+      } catch (e) {
+        // writable 可能已被关闭，忽略
+      }
       return new Response(entry.readable, {
         headers: this.cors({
           'Content-Type': 'application/octet-stream',
