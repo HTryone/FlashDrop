@@ -1,12 +1,13 @@
 // 本地磁盘模式 —— HTTP 流式中继（不落盘）
 //
 // 协议（长度前缀分帧，HTTP 字节流）：
-//   GET  /stream/:room        — 接收端下载流（流式 Response）
-//   POST /stream/:room        — 发送端上传流（ReadableStream body）
-//   POST /stream/:room/ready  — 接收端标记就绪
-//   GET  /stream/:room/ready  — 发送端长轮询等就绪
+//   GET  /stream/:room         — 接收端下载流（流式 Response，整条传输期间一直开）
+//   POST /stream/:room         — 发送端分片上传（ReadableStream body，每片 <100MB）
+//   POST /stream/:room/ready   — 接收端标记就绪
+//   GET  /stream/:room/ready   — 发送端长轮询等就绪
+//   POST /stream/:room/close   — 发送端通知传输结束（关闭 pass → GET 收到 EOF）
 //
-// DO 用 PassThrough 把 POST body 流式转发给 GET response——无逐帧转发开销，
+// 多片 POST：req.pipe(pass, {end:false}) 不关 pass，等 /close 来关。
 // 背压由 Node Stream pipe 原生处理。不落盘：文件数据只在两端 HTTP 流间过内存。
 
 import { PassThrough } from 'node:stream';
@@ -44,22 +45,29 @@ export function attachRelay(app) {
     });
   });
 
-  // POST /stream/:room — 发送端上传流
+  // POST /stream/:room — 发送端分片上传（多片，不关 pass）
   app.post('/stream/:room', (req, res) => {
     const entry = getRoom(req.params.room);
-    // Node Stream pipe 自带背压：pass 队列满时暂停读 req
-    req.pipe(entry.pass);
+    // { end: false } → req 结束时不关 pass，等 /close 来关
+    req.pipe(entry.pass, { end: false });
     req.on('end', () => {
-      entry.pass.end();
-      res.status(200).send('done');
-      // 延迟清理，让 GET 端读完残余数据
-      setTimeout(() => cleanupRoom(req.params.room), 5000);
+      res.status(200).send('ok');
     });
     req.on('error', () => {
       entry.pass.destroy();
       res.status(500).send('error');
       cleanupRoom(req.params.room);
     });
+  });
+
+  // POST /stream/:room/close — 发送端通知传输结束
+  app.post('/stream/:room/close', (req, res) => {
+    const entry = rooms.get(req.params.room);
+    if (entry) {
+      entry.pass.end();
+      setTimeout(() => cleanupRoom(req.params.room), 5000);
+    }
+    res.status(200).send('closed');
   });
 
   // POST /stream/:room/ready — 接收端标记就绪
