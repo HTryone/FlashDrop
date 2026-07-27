@@ -101,10 +101,9 @@ export class Relay {
     // GET /stream/:room — 接收端下载流
     if (request.method === 'GET') {
       let entry = this.rooms.get(room);
-      if (!entry || entry.consumed) {
-        entry = this.createRoom(room);
-      }
-      entry.consumed = true;
+      if (!entry) entry = this.createRoom(room);
+      // 不设 consumed 标志：POST 必须复用同一个 room 的 writable，
+      // 否则 POST 会创建新 room → GET 读旧 readable、POST 写新 writable → 数据断裂
       return new Response(entry.readable, {
         headers: this.cors({
           'Content-Type': 'application/octet-stream',
@@ -113,12 +112,10 @@ export class Relay {
       });
     }
 
-    // POST /stream/:room — 发送端分片上传
+    // POST /stream/:room — 发送端分片上传（复用 GET 创建的同一个 room）
     if (request.method === 'POST') {
       let entry = this.rooms.get(room);
-      if (!entry || entry.consumed) {
-        entry = this.createRoom(room);
-      }
+      if (!entry) entry = this.createRoom(room);
       try {
         await request.body.pipeTo(entry.writable, { preventClose: true });
       } catch (e) {
@@ -196,7 +193,7 @@ export class Relay {
       new ByteLengthQueuingStrategy({ highWaterMark: 4 * 1024 * 1024 }),
     );
     const entry = {
-      readable, writable, ready: false, consumed: false,
+      readable, writable, ready: false,
       wsSender: null, wsReceiver: null,
     };
     this.rooms.set(room, entry);

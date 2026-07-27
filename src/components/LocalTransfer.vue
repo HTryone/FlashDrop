@@ -120,7 +120,6 @@ let recvKey = '';
 let finishing = false;
 let recvAborted = false;
 let recvAbort: AbortController | null = null;
-let recvWs: WebSocket | null = null;
 // 并发解密 + 保序写盘
 let perFileChunks: number[] = [];
 let nextWriteSeq = 0;
@@ -147,12 +146,10 @@ function resetReceiver() {
   recvReceived = 0;
   perFileChunks = []; nextWriteSeq = 0; readyBuf.clear(); drainRunning = false;
   pendingDone = false;
-  if (recvWs) { try { recvWs.close(); } catch {} recvWs = null; }
 }
 
 function closeReceiverConn() {
   if (recvAbort) { try { recvAbort.abort(); } catch {} recvAbort = null; }
-  if (recvWs) { try { recvWs.close(); } catch {} recvWs = null; }
   finishing = false;
 }
 
@@ -238,22 +235,8 @@ async function startRecv() {
   const reader = resp.body.getReader();
 
   try {
-    // 建立 WebSocket 控制通道，连上后立即通知发送端已就绪，
-    // 同时保持 DO 活跃，确保 rooms 中的 TransformStream 不丢
-    let readySent = false;
-    const wsBase = resolveRelayBase().replace(/^https:/, 'wss:');
-    recvWs = new WebSocket(`${wsBase}/ws/${recvRoom.value}?role=receiver`);
-    recvWs.onopen = () => {
-      try { recvWs?.send(JSON.stringify({ type: 'ready' })); readySent = true; }
-      catch (e: any) { recvStatus.value = `发送 ready 失败: ${e?.message || e}`; }
-    };
-    recvWs.onerror = () => {
-      if (!readySent) {
-        recvStatus.value = '控制通道出错，尝试 HTTP 兼容通道…';
-        // 降级：旧长轮询路径作为兜底
-        void fetch(`${base}/stream/${recvRoom.value}/ready`, { method: 'POST' }).catch(() => {});
-      }
-    };
+    // 通知发送端已就绪（HTTP POST，不需要 WebSocket）
+    try { await fetch(`${base}/stream/${recvRoom.value}/ready`, { method: 'POST' }); } catch {}
 
     // 1. 读 offer（第一条消息）
     const offerPayload = await readMsg(reader);
