@@ -17,13 +17,19 @@ export default {
       // 缺 CORS 浏览器会拦截并报 "TypeError: Failed to fetch"，导致 P2P 永远拿不到 ICE 配置。
       const body = JSON.stringify({
         iceServers: [
+          // —— STUN：多地址并存，浏览器自动逐个尝试打洞 ——
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
           { urls: 'stun:stun.qq.com:3478' },
           { urls: 'stun:stun.chat.bilibili.com:3478' },
           { urls: 'stun:stun.miwifi.com:3478' },
-          // { urls: 'turn:YOUR_TURN_HOST:3478?transport=udp', username: 'flashdrop', credential: 'change-me' },
-          // { urls: 'turn:YOUR_TURN_HOST:3478?transport=tcp', username: 'flashdrop', credential: 'change-me' },
+          // —— TURN（公共免费，走 TCP，对称 NAT / UDP 被挡时兜底）——
+          // 国内节点（astral.fan 阿里云段，延迟低，TUN 代理下必通）；匿名公开，随时可能限流/下线，不稳定即换。
+          { urls: 'turn:8.148.29.206:11010?transport=tcp' },
+          // 海外节点（OpenRelay/metered）；匿名可能拒连，仅作候选，不影响其余 STUN/TURN 使用。
+          // 如需专属凭据，去 metered.ca 注册后替换下方端点（仍走 ?transport=tcp）。
+          { urls: 'turn:openrelay.metered.ca:443?transport=tcp' },
+          { urls: 'turn:openrelay.metered.ca:80?transport=tcp' },
         ],
       });
       return new Response(body, {
