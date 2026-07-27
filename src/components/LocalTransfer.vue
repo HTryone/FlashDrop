@@ -149,6 +149,9 @@ let recvChunks = 0;                      // 已收到的数据块数（用于收
 let recvTotalChunks = 0;                 // 期望总块数（由 offer 文件清单推算）
 let recvKey = '';
 let finishing = false;            // 防止 done/EOF/收齐 多处触发重复关流
+// 端到端 ACK 流控：每处理完 ACK_INTERVAL 帧就通知发送端，防止发送端打爆中继 DO 内存
+const ACK_INTERVAL = 8;           // 每处理 8 帧发一次 ACK（平衡频率与开销）
+let ackProcessed = 0;             // 自上次 ACK 后已处理的帧数
 
 /** 清理接收端状态 */
 function resetReceiver() {
@@ -164,6 +167,7 @@ function resetReceiver() {
   for (const w of writers) { try { w.abort(); } catch { /* ignore */ } }
   writers = [];
   recvKey = '';
+  ackProcessed = 0;
   dcReasm = null;
   if (recvRtc) { try { recvRtc.destroy(); } catch { /* ignore */ } recvRtc = null; }
   recvRtcOpen.value = false;
@@ -410,6 +414,12 @@ async function processFrame(data: ArrayBuffer) {
     recvProgress.value = recvTotal ? recvBytes / recvTotal : 1;
     // 自愈：收齐最后一帧即自动完成（覆盖 done/EOF 信号丢失的情况）
     recvChunks++;
+    // ---- 端到端 ACK 流控：每 ACK_INTERVAL 帧通知发送端 ----
+    ackProcessed++;
+    if (ackProcessed >= ACK_INTERVAL && recvWs && recvWs.readyState === WebSocket.OPEN) {
+      try { recvWs.send(JSON.stringify({ type: 'ack', count: ackProcessed })); } catch {}
+      ackProcessed = 0;
+    }
     if (recvTotalChunks > 0 && recvChunks >= recvTotalChunks) enqueueRecv({ kind: 'done' });
   } catch (e: any) {
     console.error('[recv] 数据帧处理失败:', e);
