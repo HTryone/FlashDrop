@@ -153,6 +153,13 @@ let finishing = false;            // 防止 done/EOF/收齐 多处触发重复�
 const ACK_INTERVAL = 32;          // 每处理 32 帧发一次 ACK（2MB/帧下减少 ACK 频率，降低往返开销）
 let ackProcessed = 0;             // 自上次 ACK 后已处理的帧数
 let recvAborted = false;          // 收到发送端 cancel 后置位，正在跑的 processFrame 会中途退出
+// —— 并发解密 + 保序写盘（接收端流水线，根治「接收端慢拖垮整体」）——
+let perFileChunks: number[] = [];   // 每文件帧数（offer 时推算），用于把 (fi,ci) 映射成全局序号
+let nextWriteSeq = 0;               // 下一个待写盘的全局帧序号（严格递增，保证文件不乱序）
+const readyBuf = new Map<number, { fi: number; plain: Uint8Array }>(); // 解密完成、等待落盘的帧（按序号）
+let drainRunning = false;           // 写盘协程是否运行中（防止并发 write 导致 WritableStream 报错）
+let eofReceived = false;            // 收到发送端经 DataChannel 发的结束标记
+let pendingDone = false;            // 收到 done 控制消息
 
 /** 清理接收端状态 */
 function resetReceiver() {
@@ -169,6 +176,8 @@ function resetReceiver() {
   writers = [];
   recvKey = '';
   ackProcessed = 0;
+  perFileChunks = []; nextWriteSeq = 0; readyBuf.clear(); drainRunning = false;
+  eofReceived = false; pendingDone = false;
   dcReasm = null;
   if (recvRtc) { try { recvRtc.destroy(); } catch { /* ignore */ } recvRtc = null; }
   recvRtcOpen.value = false;
@@ -266,6 +275,8 @@ async function startRecv() {
         recvBytes = 0;
         // 推算总块数（每块 LOCAL_CHUNK 字节），用于收齐最后一帧自动完成，不再依赖外部 done 信号
         recvTotalChunks = msg.files.reduce((s: number, f: any) => s + Math.max(1, Math.ceil((f.size || 0) / CHUNK)), 0);
+        // 每文件帧数（用于把 (fi,ci) 映射成全局写盘序号，保证多文件不乱序）
+        perFileChunks = msg.files.map((f: any) => Math.max(1, Math.ceil((f.size || 0) / CHUNK)));
         recvChunks = 0;
         // 创建写入 sink（自动选 StreamSaver / Blob 降级），任何异常都被 makeSinks 内部兜住
         try {
@@ -283,7 +294,8 @@ async function startRecv() {
           ws.send(JSON.stringify({ type: 'ready' }));
         } catch { /* ready 发送失败不影响后续 */ }
       } else if (msg.type === 'done') {
-        enqueueRecv({ kind: 'done' });
+        pendingDone = true;
+        void drainWrites();   // 排空后若已收齐全部帧则完成
       } else if (msg.type === 'peer-left') {
         senderOnline.value = false;
         recvStatus.value = '对方已断开';
@@ -298,7 +310,7 @@ async function startRecv() {
     }
 
     // ---- 二进制数据帧（WS 兜底通道；P2P 直连时由 dc.onmessage 调用同一处理函数）----
-    enqueueRecv({ kind: 'frame', data: ev.data as ArrayBuffer });
+    handleDataFrame(ev.data as ArrayBuffer);
   };
 
   ws.onclose = () => {
@@ -371,7 +383,7 @@ function onDcMessage(ev: any) {
       const keys = Array.from(dcReasm.parts.keys()).sort((a, b) => a - b);
       for (const k of keys) { const p = dcReasm.parts.get(k)!; full.set(p, pos); pos += p.length; }
       dcReasm = null;
-      enqueueRecv({ kind: 'frame', data: full.buffer });
+      handleDataFrame(full.buffer);
     }
   } catch (e: any) {
     console.error('[recv] DC 分片重组失败:', e);
@@ -379,70 +391,100 @@ function onDcMessage(ev: any) {
   }
 }
 
-// 接收帧有序处理队列：异步解密不能乱序写盘（否则文件损坏），故所有数据帧与完成信号都进同一串行链。
-let recvChain: Promise<void> = Promise.resolve();
-type RecvJob = { kind: 'frame'; data: ArrayBuffer } | { kind: 'done' } | { kind: 'cancel' };
-function enqueueRecv(job: RecvJob) {
-  const prev = recvChain;
-  recvChain = prev.then(() => processRecv(job)).catch((e: any) => console.error('[recv] 处理失败:', e));
+// ================================================================
+//  接收端核心：并发解密 + 保序写盘流水线
+//  旧实现（recvChain 串行 await decryptChunkAsync）的瓶颈：单 Worker 解密是串行的，
+//  每帧必须等解密完才处理下一帧，接收端吞吐被锁死在「单 Worker 解密速度」，
+//  进而触发发送端流控暂停 → 整体速度被接收端拖死。
+//  新实现：帧到达即丢进 Worker 池并发解密（多个帧同时在多个 Worker 跑），
+//  解密完按全局序号入 readyBuf，单一写盘协程串行 await 写盘（保证不乱序）。
+//  解密与写盘真正重叠——写盘时后续帧已在 Worker 里解密。
+// ================================================================
+
+/** (fi, ci) → 全局递增序号（保证多文件、多块严格有序写盘） */
+function frameSeq(fi: number, ci: number): number {
+  let s = 0;
+  for (let i = 0; i < fi; i++) s += perFileChunks[i] || 0;
+  return s + ci;
 }
 
-async function processRecv(job: RecvJob) {
-  if (job.kind === 'done') { await finishRecv(); return; }
-  if (job.kind === 'cancel') { onCancelRecv(); return; }
-  await processFrame(job.data);
+/** 任意通道（WS 兜底 / P2P DataChannel 重组后）收到一帧的入口：立即并发解密，不阻塞其他帧 */
+function handleDataFrame(data: ArrayBuffer) {
+  if (recvAborted) return;
+  const frame = new Uint8Array(data);
+  if (frame.length < FRAME_HDR) { recvStatus.value = '收到过短的数据帧'; return; }
+  const dv = new DataView(frame.buffer);
+  const fi = dv.getUint16(0);
+  if (fi === 0xFFFF) { onRecvEof(); return; } // 发送端经 DataChannel 发的结束标记
+  const ci = dv.getUint32(2);
+  const plainLen = dv.getUint32(6);
+  const body = frame.slice(FRAME_HDR);
+  if (fi >= writers.length) {
+    console.warn(`[recv] 文件索引越界: fi=${fi}, max=${writers.length - 1}`);
+    return;
+  }
+  const seq = frameSeq(fi, ci);
+  // 并发解密（Worker 池自动负载均衡），不 await —— 让后续帧也能立刻开始解密
+  decryptChunkAsync(body.buffer, recvKey, plainLen)
+    .then((plainBuf) => {
+      if (recvAborted) return;             // 已取消则丢弃此块
+      readyBuf.set(seq, { fi, plain: new Uint8Array(plainBuf) });
+      // 端到端 ACK 流控：每 ACK_INTERVAL 帧通知发送端
+      ackProcessed++;
+      if (ackProcessed >= ACK_INTERVAL && recvWs && recvWs.readyState === WebSocket.OPEN) {
+        try { recvWs.send(JSON.stringify({ type: 'ack', count: ackProcessed })); } catch {}
+        ackProcessed = 0;
+      }
+      void drainWrites();                   // 尝试推进写盘
+    })
+    .catch((e: any) => {
+      console.error('[recv] 解密失败:', e);
+      recvStatus.value = `数据帧错误: ${e?.message || e}`;
+    });
+}
+
+/** 收到发送端经 DataChannel 发的结束标记（WS 通道的 done 由消息分支处理） */
+function onRecvEof() {
+  eofReceived = true;
+  void drainWrites();
+}
+
+/** 串行写盘协程：按全局序号顺序把 readyBuf 里的帧写入对应文件 writer。
+ *  单协程运行（drainRunning 防重入），保证 WritableStream 不被并发 write。 */
+async function drainWrites() {
+  if (drainRunning) return;
+  drainRunning = true;
+  try {
+    while (readyBuf.has(nextWriteSeq)) {
+      const item = readyBuf.get(nextWriteSeq)!;
+      readyBuf.delete(nextWriteSeq);
+      const w = writers[item.fi];
+      if (w) {
+        try { await w.write(item.plain); }
+        catch (we: any) { console.error('[recv] 写入失败:', we); }
+      }
+      recvBytes += item.plain.length;
+      recvProgress.value = recvTotal ? recvBytes / recvTotal : 1;
+      nextWriteSeq++;
+    }
+    // 收齐全部帧 → 完成（done/EOF 信号丢失也能自愈）
+    if (recvTotalChunks > 0 && nextWriteSeq >= recvTotalChunks) {
+      await finishRecv();
+    }
+  } finally {
+    drainRunning = false;
+  }
 }
 
 // 发送端取消：丢弃所有排队帧、中断落盘、回到初始等待状态
 function onCancelRecv() {
-  recvAborted = true;                 // 让正在跑的 processFrame 解密后不再写盘
-  recvChain = Promise.resolve();     // 丢弃后续排队的处理任务
+  recvAborted = true;                 // 让正在跑的解密任务完成后丢弃、不写盘
+  readyBuf.clear();                   // 丢弃已解密待写盘的帧
   for (const w of writers) { try { w.abort(); } catch { /* ignore */ } }
   writers = [];
   recvAborted = false;                // 复位以便下次接收
   resetReceiver();
   recvStatus.value = '对方已取消发送，已重置为初始状态，可重新接收';
-}
-
-// 单帧处理（WS 兜底通道与 P2P DataChannel 共用，保证串行入队、不乱序）。
-async function processFrame(data: ArrayBuffer) {
-  try {
-    const frame = new Uint8Array(data);
-    if (frame.length < FRAME_HDR) { recvStatus.value = '收到过短的数据帧'; return; }
-    const dv = new DataView(frame.buffer);
-    const fi = dv.getUint16(0);
-    if (fi === 0xFFFF) { enqueueRecv({ kind: 'done' }); return; } // 发送端经 DataChannel 发的结束标记
-    const plainLen = dv.getUint32(6);
-    const body = frame.slice(FRAME_HDR);
-    // 边界检查（writer 数组已按文件数预建，只需校验文件索引）
-    if (fi >= writers.length) {
-      console.warn(`[recv] 文件索引越界: fi=${fi}, max=${writers.length - 1}`);
-      return;
-    }
-    // 解密丢到后台 Worker，主线程不阻塞；recvChain 保证按到达顺序串行写盘
-    const plainBuf = await decryptChunkAsync(body.buffer, recvKey, plainLen);
-    if (recvAborted) return;          // 已取消，丢弃此块不写盘
-    const plain = new Uint8Array(plainBuf);
-    const w = writers[fi];
-    if (w) {
-      w.write(plain).catch((we: any) => console.error('[recv] 写入失败:', we));
-    }
-    recvBytes += plain.length;
-    recvProgress.value = recvTotal ? recvBytes / recvTotal : 1;
-    // 自愈：收齐最后一帧即自动完成（覆盖 done/EOF 信号丢失的情况）
-    recvChunks++;
-    // ---- 端到端 ACK 流控：每 ACK_INTERVAL 帧通知发送端 ----
-    ackProcessed++;
-    if (ackProcessed >= ACK_INTERVAL && recvWs && recvWs.readyState === WebSocket.OPEN) {
-      try { recvWs.send(JSON.stringify({ type: 'ack', count: ackProcessed })); } catch {}
-      ackProcessed = 0;
-    }
-    if (recvTotalChunks > 0 && recvChunks >= recvTotalChunks) enqueueRecv({ kind: 'done' });
-  } catch (e: any) {
-    console.error('[recv] 数据帧处理失败:', e);
-    recvStatus.value = `数据帧错误: ${e?.message || e}`;
-    // 不中断接收，继续尝试后续帧（单个坏块不应终止整个传输）
-  }
 }
 
 // ================================================================
