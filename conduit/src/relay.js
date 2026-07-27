@@ -101,9 +101,13 @@ export class Relay {
     // GET /stream/:room — 接收端下载流
     if (request.method === 'GET') {
       let entry = this.rooms.get(room);
-      if (!entry) entry = this.createRoom(room);
-      // 不设 consumed 标志：POST 必须复用同一个 room 的 writable，
-      // 否则 POST 会创建新 room → GET 读旧 readable、POST 写新 writable → 数据断裂
+      if (!entry || entry.readable.locked) {
+        // 如果已有房间但 readable 被占用（接收端重连/重复 GET），
+        // 必须重建房间，否则 new Response(entry.readable) 会抛
+        // "ReadableStream is disturbed (has already been read from)"
+        if (entry && entry.readable.locked) this.rooms.delete(room);
+        entry = this.createRoom(room);
+      }
       return new Response(entry.readable, {
         headers: this.cors({
           'Content-Type': 'application/octet-stream',

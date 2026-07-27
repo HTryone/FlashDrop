@@ -19,10 +19,14 @@ export function attachRelay(server, app) {
   // room -> { pass: PassThrough, ready: boolean, wsSender: WebSocket|null, wsReceiver: WebSocket|null }
   const rooms = new Map();
 
-  function getRoom(room) {
+  function getRoom(room, allowReplace = false) {
     let entry = rooms.get(room);
-    if (!entry) {
-      entry = { pass: new PassThrough(), ready: false, wsSender: null, wsReceiver: null };
+    if (!entry || (allowReplace && entry.res)) {
+      if (entry && entry.res) {
+        // 接收端重连：断开旧响应，新 GET 接管 PassThrough
+        try { entry.pass.unpipe(entry.res); entry.res.end(); } catch {}
+      }
+      entry = { pass: new PassThrough(), ready: false, wsSender: null, wsReceiver: null, res: null };
       rooms.set(room, entry);
     }
     return entry;
@@ -79,7 +83,8 @@ export function attachRelay(server, app) {
 
   // GET /stream/:room — 接收端下载流
   app.get('/stream/:room', (req, res) => {
-    const entry = getRoom(req.params.room);
+    const entry = getRoom(req.params.room, true);
+    entry.res = res;
     res.writeHead(200, {
       'Content-Type': 'application/octet-stream',
       'Cache-Control': 'no-cache',
@@ -87,6 +92,7 @@ export function attachRelay(server, app) {
     });
     entry.pass.pipe(res);
     req.on('close', () => {
+      if (entry.res === res) entry.res = null;
       cleanupRoom(req.params.room);
     });
   });
