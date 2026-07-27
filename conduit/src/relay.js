@@ -119,11 +119,16 @@ export class Relay {
     // 二进制数据帧：进有界队列，**绝不丢弃**，靠接收端 pause 控制上游速度。
     // ⚠️ CF DO Hibernation 下，message buffer 在回调返回后可能失效，必须立即复制一份再入队。
     const queue = this.getQueue(att.room, att.role);
+    // ⚠️ 必须真正复制字节！ArrayBuffer/视图构造器(Uint8Array(x))只创建 view，不复制。
+    // CF DO Hibernation 下 webSocketMessage 的 message 在事件回调返回后会被回收/复用，
+    // 若只持有 view，入队后异步转发(下次事件/scheduleDrain 50ms)时发出的就是悬空垃圾字节
+    // → 接收端解密 HMAC 校验失败（"数据可能被篡改"）。本地 Node ws 给的是独立 Buffer，故本地能传、线上炸。
     let frame;
     if (message instanceof ArrayBuffer) {
-      frame = new Uint8Array(message);
+      frame = new Uint8Array(message.slice(0));        // ArrayBuffer.slice() 真正复制底层字节
     } else if (ArrayBuffer.isView(message)) {
-      frame = new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
+      frame = new Uint8Array(message.byteLength);
+      frame.set(message);                              // 复制字节到独立 buffer
     } else {
       frame = message;
     }
