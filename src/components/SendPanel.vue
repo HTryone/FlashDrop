@@ -183,30 +183,47 @@ async function startLocalSend() {
   let pending: Uint8Array[] = [];
   let pendingBytes = 0;
 
-  async function flushPost(isLast: boolean) {
-    if (pending.length === 0 && !isLast) return;
+  // 把 pending 里攒的帧作为一个 POST 发到 /stream/:room（数据平面）。
+  // 注意：数据永远走 /stream/:room，绝不能走 /close —— /close 会忽略请求体直接关流，
+  // 否则接收端 GET 拿到空流，表现为「未收到文件清单 / EOF at header」。
+  async function flushData() {
+    if (pending.length === 0) return;
     // 把本片所有帧拼成一个连续字节数组（一次性普通请求体，不用 duplex 流式）
     const body = new Uint8Array(pendingBytes);
     let off = 0;
     for (const f of pending) { body.set(f, off); off += f.length; }
     pending = []; pendingBytes = 0;
 
-    const url = isLast
-      ? `${base}/stream/${lRoom.value}/close`
-      : `${base}/stream/${lRoom.value}`;
-    console.log(`[send] flushPost isLast=${isLast} bytes=${body.length}`);
+    console.log(`[send] flushData bytes=${body.length}`);
     try {
-      const resp = await fetch(url, {
+      const resp = await fetch(`${base}/stream/${lRoom.value}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream' },
         body,
         signal: lAbort!.signal,
       });
-      if (!isLast && !resp.ok) throw new Error(`上传失败 HTTP ${resp.status}`);
+      if (!resp.ok) throw new Error(`上传失败 HTTP ${resp.status}`);
       console.log(`[send] POST response: ${resp.status}`);
     } catch (e: any) {
       if (lAbort?.signal.aborted) throw e;
       throw new Error(`上传连接失败: ${e?.message || e}`);
+    }
+  }
+
+  // 数据全部发完后，单独发一个空 POST 到 /close 关闭流
+  // （Worker 的 /close 处理器关闭 writable → 接收端 GET 流收到 EOF = 传输完成）
+  async function sendClose() {
+    console.log(`[send] sendClose`);
+    try {
+      await fetch(`${base}/stream/${lRoom.value}/close`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: new Uint8Array(0),
+        signal: lAbort!.signal,
+      });
+    } catch (e: any) {
+      if (lAbort?.signal.aborted) throw e;
+      throw new Error(`关闭流失败: ${e?.message || e}`);
     }
   }
 
@@ -225,7 +242,8 @@ async function startLocalSend() {
     const mapped = files.value.map(f => ({ file: f.file }));
     const total = mapped.reduce((s, f) => s + f.file.size, 0);
     if (total === 0) {
-      await flushPost(true);
+      await flushData();
+      await sendClose();
       lDone.value = true; lStatus.value = '传输完成（空）'; lSending.value = false;
       return;
     }
@@ -244,15 +262,16 @@ async function startLocalSend() {
         frame.set(enc, FRAME_HDR);
         pending.push(encodeMsg(frame));
         pendingBytes += frame.length + 4;
-        // 本片攒够上限 → 立即发送这个 POST，开启下一个片
-        if (pendingBytes >= POST_LIMIT) await flushPost(false);
+        // 本片攒够上限 → 立即发送这个 POST（数据走 /stream/:room），开启下一个片
+        if (pendingBytes >= POST_LIMIT) await flushData();
         offset += plainLen; ci++; sent += plainLen;
         lProgress.value = total ? sent / total : 1;
       }
     }
 
-    // 3. 发送最后一片（带 /close，让 DO 关闭 writable → 接收端收到 EOF = 完成）
-    await flushPost(true);
+    // 3. 发送最后一片数据到 /stream/:room，再单独发 /close 关闭流（DO 关闭 writable → 接收端 EOF = 完成）
+    await flushData();
+    await sendClose();
     lDone.value = true; lStatus.value = '传输完成';
   } catch (e: any) {
     if (lAbort?.signal.aborted) { lStatus.value = '已取消发送'; }
