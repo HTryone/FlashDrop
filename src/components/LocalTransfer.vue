@@ -131,6 +131,8 @@ let pendingDone = false;
 // 本地背压：已收未写盘积压超阈值时暂停读流，等写盘追上（替代 WS 的 PAUSE/RESUME 信令）
 const RECV_PAUSE_BYTES = 16 * 1024 * 1024;
 let recvReceived = 0;
+let lastProgressAt = 0;     // 进度回传节流时间戳
+let recvDoneSent = false;   // recv-done 是否已发送给发送端（防重复）
 
 function resetReceiver() {
   receiving.value = false;
@@ -146,6 +148,7 @@ function resetReceiver() {
   writers = [];
   recvKey = '';
   recvReceived = 0;
+  lastProgressAt = 0; recvDoneSent = false;
   perFileChunks = []; nextWriteSeq = 0; readyBuf.clear(); drainRunning = false;
   pendingDone = false;
   if (recvWs) { try { recvWs.close(); } catch {} recvWs = null; }
@@ -456,10 +459,23 @@ async function drainWrites() {
       if (w) { try { await w.write(item.plain); } catch {} }
       recvBytes += item.plain.length;
       recvProgress.value = recvTotal ? recvBytes / recvTotal : 1;
+      // 节流回传进度给发送端（~200ms 一次，避免高频 WS 消息压垮控制通道）
+      const _now = Date.now();
+      if (recvWs && recvWs.readyState === WebSocket.OPEN && _now - lastProgressAt >= 200) {
+        lastProgressAt = _now;
+        try { recvWs.send(JSON.stringify({ type: 'progress', received: recvBytes, total: recvTotal })); } catch {}
+      }
       nextWriteSeq++;
     }
     // 收齐全部帧 → 完成
     if (recvTotalChunks > 0 && nextWriteSeq >= recvTotalChunks) {
+      // 通知发送端：已全部收齐写盘（仅发一次，防止重复）
+      if (!recvDoneSent) {
+        recvDoneSent = true;
+        if (recvWs && recvWs.readyState === WebSocket.OPEN) {
+          try { recvWs.send(JSON.stringify({ type: 'recv-done' })); } catch {}
+        }
+      }
       await finishRecv();
     }
   } finally {

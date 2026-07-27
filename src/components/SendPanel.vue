@@ -123,6 +123,16 @@ function connectControl() {
           lWsReadyNotified = true;
           lPeerOnline.value = true;
           lStatus.value = '对方已在线，可开始传输';
+        } else if (data.type === 'progress') {
+          // 接收端真实已收进度（明文口径，与发送端 total 同源，比例零偏差）
+          const t = data.total || 1;
+          lProgress.value = Math.min(1, (data.received || 0) / t);
+        } else if (data.type === 'recv-done' && !lDone.value) {
+          // 接收端确已收齐写盘 → 发送端才标记完成（两端状态一致）
+          lDone.value = true;
+          lProgress.value = 1;
+          lSending.value = false;
+          lStatus.value = '传输完成';
         }
       } catch {}
     };
@@ -285,7 +295,6 @@ async function startLocalSend() {
 
     // 生产者：逐块加密入队（与 postOneChunk 并行）
     const producer = (async () => {
-      let sent = 0;
       for (let fi = 0; fi < mapped.length; fi++) {
         const file = mapped[fi].file; let offset = 0; let ci = 0;
         while (offset < file.size) {
@@ -301,8 +310,8 @@ async function startLocalSend() {
           pushFrame(encodeMsg(frame));
           // 简单背压：在途帧过多则等待消费
           while (pending.length > 300) { await new Promise<void>((r) => waiters.push(r)); }
-          offset += plainLen; ci++; sent += plainLen;
-          lProgress.value = total ? sent / total : 1;
+          offset += plainLen; ci++;
+          // 进度改由接收端 WS 回传的 progress 事件驱动（见 onmessage），不再用本地生产进度
         }
       }
       producerDone = true;
@@ -316,12 +325,22 @@ async function startLocalSend() {
     }
     await producer;
     await sendClose();
-    lDone.value = true; lStatus.value = '传输完成';
+    // 不立即标记完成：真正完成以接收端 recv-done 为准（见 onmessage 的 recv-done 分支），
+    // 这样发送端「完成态」= 接收端确已收齐写盘，两端状态永远一致。
+    lStatus.value = '文件已发送，等待对方接收完成…';
+    // 兜底超时：30s 内未收到 recv-done（如对方 WS 断开），也标记完成，避免发送端卡死
+    setTimeout(() => {
+      if (!lDone.value && lSending.value) {
+        lDone.value = true;
+        lStatus.value = '已完成（对方可能已离线，文件应已送达）';
+        lSending.value = false;
+      }
+    }, 30000);
   } catch (e: any) {
     if (lAbort?.signal.aborted) { lStatus.value = '已取消发送'; }
     else lStatus.value = `传输出错: ${e?.message || e}`;
-  } finally {
     lSending.value = false;
+  } finally {
     lAbort = null;
   }
 }
