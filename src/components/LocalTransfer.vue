@@ -152,6 +152,7 @@ let finishing = false;            // 防止 done/EOF/收齐 多处触发重复�
 // 端到端 ACK 流控：每处理完 ACK_INTERVAL 帧就通知发送端，防止发送端打爆中继 DO 内存
 const ACK_INTERVAL = 32;          // 每处理 32 帧发一次 ACK（2MB/帧下减少 ACK 频率，降低往返开销）
 let ackProcessed = 0;             // 自上次 ACK 后已处理的帧数
+let recvAborted = false;          // 收到发送端 cancel 后置位，正在跑的 processFrame 会中途退出
 
 /** 清理接收端状态 */
 function resetReceiver() {
@@ -287,6 +288,9 @@ async function startRecv() {
         senderOnline.value = false;
         recvStatus.value = '对方已断开';
         receiving.value = false;
+      } else if (msg.type === 'cancel') {
+        // 发送端主动取消：中断接收、丢弃已落盘的部分数据、回到初始等待状态
+        onCancelRecv();
       } else if (msg.type === 'rtc-signal') {
         void recvRtc?.onSignal(msg.data);
       }
@@ -377,7 +381,7 @@ function onDcMessage(ev: any) {
 
 // 接收帧有序处理队列：异步解密不能乱序写盘（否则文件损坏），故所有数据帧与完成信号都进同一串行链。
 let recvChain: Promise<void> = Promise.resolve();
-type RecvJob = { kind: 'frame'; data: ArrayBuffer } | { kind: 'done' };
+type RecvJob = { kind: 'frame'; data: ArrayBuffer } | { kind: 'done' } | { kind: 'cancel' };
 function enqueueRecv(job: RecvJob) {
   const prev = recvChain;
   recvChain = prev.then(() => processRecv(job)).catch((e: any) => console.error('[recv] 处理失败:', e));
@@ -385,7 +389,19 @@ function enqueueRecv(job: RecvJob) {
 
 async function processRecv(job: RecvJob) {
   if (job.kind === 'done') { await finishRecv(); return; }
+  if (job.kind === 'cancel') { onCancelRecv(); return; }
   await processFrame(job.data);
+}
+
+// 发送端取消：丢弃所有排队帧、中断落盘、回到初始等待状态
+function onCancelRecv() {
+  recvAborted = true;                 // 让正在跑的 processFrame 解密后不再写盘
+  recvChain = Promise.resolve();     // 丢弃后续排队的处理任务
+  for (const w of writers) { try { w.abort(); } catch { /* ignore */ } }
+  writers = [];
+  recvAborted = false;                // 复位以便下次接收
+  resetReceiver();
+  recvStatus.value = '对方已取消发送，已重置为初始状态，可重新接收';
 }
 
 // 单帧处理（WS 兜底通道与 P2P DataChannel 共用，保证串行入队、不乱序）。
@@ -405,6 +421,7 @@ async function processFrame(data: ArrayBuffer) {
     }
     // 解密丢到后台 Worker，主线程不阻塞；recvChain 保证按到达顺序串行写盘
     const plainBuf = await decryptChunkAsync(body.buffer, recvKey, plainLen);
+    if (recvAborted) return;          // 已取消，丢弃此块不写盘
     const plain = new Uint8Array(plainBuf);
     const w = writers[fi];
     if (w) {

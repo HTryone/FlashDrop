@@ -67,6 +67,7 @@ const lSending = ref(false);
 const lDone = ref(false);
 const lTransferStarted = ref(false);
 let lLoopStarted = false;
+let lCancelRequested = false;   // 取消发送标志（由 cancelLocalSend 置位）
 const lProgress = ref(0);
 const lStatus = ref('');
 const lPeerOnline = ref(false);
@@ -81,7 +82,18 @@ let lIce: RTCIceServer[] = [];
 function resetLocalSender() {
   lSending.value = false; lDone.value = false; lTransferStarted.value = false;
   lLoopStarted = false; lProgress.value = 0; lPeerOnline.value = false;
-  lRtcOpen.value = false;
+  lRtcOpen.value = false; lCancelRequested = false;
+}
+// 取消发送：立即终止当前传输循环，通知接收端一并重置，一切恢复到可重发状态
+function cancelLocalSend() {
+  if (!lSending.value) return;
+  lCancelRequested = true;
+  // 若发送端正卡在「等接收端 ACK」的 await，立即唤醒它，让循环得以检查取消标志并退出
+  if (flowResolveAck) { const r = flowResolveAck; flowResolveAck = null; r(); }
+  if (lWs && lWs.readyState === WebSocket.OPEN) {
+    try { lWs.send(JSON.stringify({ type: 'cancel' })); } catch { /* 对方没收到也没关系，本地仍会重置 */ }
+  }
+  lStatus.value = '已取消发送，可重新传输';
 }
 function closeLocalWs() {
   if (lWs) { try { lWs.close(); } catch {} lWs = null; }
@@ -173,10 +185,12 @@ function localSendOffer(ws: WebSocket) {
 // 解决「点发送太早、P2P 还没连上就被一次性判走中继」的时序 bug。
 function waitForRtc(timeoutMs: number): Promise<boolean> {
   if (lRtc && lRtc.isOpen()) return Promise.resolve(true);
+  if (lCancelRequested) return Promise.resolve(false);
   return new Promise((resolve) => {
     const start = Date.now();
     const iv = window.setInterval(() => {
-      if (lRtc && lRtc.isOpen()) { window.clearInterval(iv); resolve(true); }
+      if (lCancelRequested) { window.clearInterval(iv); resolve(false); }
+      else if (lRtc && lRtc.isOpen()) { window.clearInterval(iv); resolve(true); }
       else if (Date.now() - start > timeoutMs) { window.clearInterval(iv); resolve(false); }
     }, 100);
   });
@@ -205,10 +219,12 @@ async function doLocalSendLoop(ws: WebSocket) {
   const total = mapped.reduce((s, f) => s + f.file.size, 0);
   if (total === 0) { ws.send(JSON.stringify({ type: 'done' })); lDone.value = true; lStatus.value = '传输完成（空）'; lSending.value = false; return; }
   let sent = 0;
+  let cancelled = false;
   try {
     for (let fi = 0; fi < mapped.length; fi++) {
       const file = mapped[fi].file; let offset = 0; let ci = 0;
       while (offset < file.size) {
+        if (lCancelRequested) { cancelled = true; break; } // 取消发送：跳出分片循环
         if (ws.readyState !== WebSocket.OPEN && !useRtc) throw new Error('连接已断开');
         // ---- 端到端流控：窗口满就等接收端 ACK ----
         while (flowUnacked >= FLOW_WINDOW && !useRtc) {
@@ -233,6 +249,13 @@ async function doLocalSendLoop(ws: WebSocket) {
         offset += plainLen; ci++; sent += plainLen;
         lProgress.value = total ? sent / total : 1;
       }
+      if (cancelled) break; // 当前文件已取消，跳出文件循环
+    }
+    if (cancelled) {
+      // 取消发送：不发 done 信号，直接清理回到可重发状态
+      resetLocalSender();
+      lStatus.value = '已取消发送，可重新传输';
+      return;
     }
     // 双通道发「完成」信号：P2P 下若 WS 的 done 因通道差异未达，DC 上的 EOF 帧可兜底完成
     if (useRtc && ch && lRtc && lRtc.isOpen()) {
@@ -244,7 +267,10 @@ async function doLocalSendLoop(ws: WebSocket) {
     }
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'done' }));
     lDone.value = true; lStatus.value = '传输完成';
-  } catch (e: any) { lStatus.value = `传输出错: ${e?.message || e}`; }
+  } catch (e: any) {
+    if (lCancelRequested) { resetLocalSender(); lStatus.value = '已取消发送，可重新传输'; return; }
+    lStatus.value = `传输出错: ${e?.message || e}`;
+  }
   finally { lSending.value = false; }
 }
 
@@ -623,9 +649,10 @@ onUnmounted(() => { closeLocalWs(); });
           <span class="transport" :class="{ p2p: lRtcOpen }">{{ lRtcOpen ? 'P2P 直连' : '经中继转发' }}</span>
         </div>
         <div class="actions">
-          <button class="btn primary" :disabled="lSending || lDone || !lPeerOnline" @click="startLocalSend">
-            {{ lSending ? '传输中…' : lDone ? '已完成' : (lPeerOnline ? '开始传输' : '等待对方加入…') }}
+          <button v-if="!lSending" class="btn primary" :disabled="lDone || !lPeerOnline" @click="startLocalSend">
+            {{ lDone ? '已完成' : (lPeerOnline ? '开始传输' : '等待对方加入…') }}
           </button>
+          <button v-else class="btn danger" @click="cancelLocalSend">取消发送</button>
         </div>
         <div v-if="lSending || lDone" class="bar">
           <div class="fill" :style="{ width: (lProgress * 100) + '%' }"></div>
