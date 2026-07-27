@@ -34,7 +34,18 @@ export function createWebRTC(opts: RtcOptions) {
 
   function ensurePc(): RTCPeerConnection {
     if (pc) return pc;
-    pc = new RTCPeerConnection({ iceServers: opts.iceServers });
+    // 防御：iceServers 配置非法（如缺凭据的 turn 条目）会让构造函数抛 TypeError。
+    // 出错时降级为"仅 STUN 条目重试"，保证 P2P 不因一条坏 TURN 全挂。
+    try {
+      pc = new RTCPeerConnection({ iceServers: opts.iceServers });
+    } catch (e) {
+      console.warn('[rtc] RTCPeerConnection 构造失败，剔除 TURN 后重试:', e);
+      const stunOnly = opts.iceServers.filter((s) => {
+        const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+        return urls.every((u) => /^stun:/i.test(String(u)));
+      });
+      pc = new RTCPeerConnection({ iceServers: stunOnly });
+    }
     pc.onicecandidate = (e) => {
       if (e.candidate) opts.sendSignal({ type: 'rtc-signal', data: e.candidate.toJSON() });
     };
@@ -158,7 +169,9 @@ export async function fetchIceServers(host: string, proto: string): Promise<RTCI
     const cleanHost = host.replace(/^wss?:\/\//, '');
     const r = await fetch(`${httpProto}://${cleanHost}/rtc-config`);
     const j = await r.json();
-    if (Array.isArray(j.iceServers) && j.iceServers.length) return j.iceServers as RTCIceServer[];
+    if (Array.isArray(j.iceServers) && j.iceServers.length) {
+      return sanitizeIceServers(j.iceServers as RTCIceServer[]);
+    }
   } catch (e) {
     console.warn('[rtc] 获取 ICE 配置失败，回退默认 STUN:', e);
   }
@@ -170,4 +183,20 @@ export async function fetchIceServers(host: string, proto: string): Promise<RTCI
     { urls: 'stun:stun.chat.bilibili.com:3478' },
     { urls: 'stun:stun.miwifi.com:3478' },
   ];
+}
+
+// 防御性过滤：浏览器硬性要求 turn:/turns: 条目必须带 username+credential，
+// 否则 new RTCPeerConnection 直接抛 TypeError，整个 P2P（含 STUN）全挂。
+// 服务端配置手滑（如只填裸 turn 地址）时，这里静默剔除坏条目，只损失 TURN 不炸全局。
+function sanitizeIceServers(list: RTCIceServer[]): RTCIceServer[] {
+  const ok = list.filter((s) => {
+    const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+    const hasTurn = urls.some((u) => /^turns?:/i.test(String(u)));
+    if (hasTurn && (!s.username || !s.credential)) {
+      console.warn('[rtc] 剔除缺凭据的 TURN 条目（否则会导致 RTCPeerConnection 构造失败）:', urls);
+      return false;
+    }
+    return true;
+  });
+  return ok.length ? ok : list; // 全被剔光就原样返回，交给下层 try-catch
 }

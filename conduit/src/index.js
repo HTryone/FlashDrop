@@ -24,12 +24,22 @@ export default {
           { urls: 'stun:stun.chat.bilibili.com:3478' },
           { urls: 'stun:stun.miwifi.com:3478' },
           // —— TURN（公共免费，走 TCP，对称 NAT / UDP 被挡时兜底）——
-          // 国内节点（astral.fan 阿里云段，延迟低，TUN 代理下必通）；匿名公开，随时可能限流/下线，不稳定即换。
-          { urls: 'turn:8.148.29.206:11010?transport=tcp' },
-          // 海外节点（OpenRelay/metered）；匿名可能拒连，仅作候选，不影响其余 STUN/TURN 使用。
-          // 如需专属凭据，去 metered.ca 注册后替换下方端点（仍走 ?transport=tcp）。
-          { urls: 'turn:openrelay.metered.ca:443?transport=tcp' },
-          { urls: 'turn:openrelay.metered.ca:80?transport=tcp' },
+          // ⚠️ 浏览器硬性要求：turn: 地址必须带 username+credential，否则
+          //    new RTCPeerConnection 直接抛 TypeError，整个 P2P（含 STUN）全挂。
+          // OpenRelay/metered 公开凭据：openrelayproject / openrelayproject。
+          // 如需专属凭据，去 metered.ca 注册后替换（仍走 ?transport=tcp）。
+          // 国内节点：暂无带凭据的可靠公共 TURN（此前填的 8.148.29.206 是 EasyTier 组网节点、
+          // 非标准 TURN 且无凭据，已移除）；国内兜底继续走现有 WS 中继，日后自建 coturn 再补。
+          {
+            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+            username: 'openrelayproject',
+            credential: 'openrelayproject',
+          },
+          {
+            urls: 'turn:openrelay.metered.ca:80?transport=tcp',
+            username: 'openrelayproject',
+            credential: 'openrelayproject',
+          },
         ],
       });
       return new Response(body, {
