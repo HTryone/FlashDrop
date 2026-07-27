@@ -9,11 +9,19 @@ export default {
     // 仅 STUN 即可覆盖大多数 NAT；对称 NAT 穿透失败会自动回退到现有 WebSocket 中继（等同 TURN 的兜底角色）。
     // 若日后自部署 coturn，把下方注释的 turn 项填上即可，无需改前端。
     if (url.pathname === '/rtc-config') {
+      // ICE 服务器清单：多地址并存，浏览器会逐个尝试；
+      // 谷歌 STUN 在海外可用、国内常被墙，故并列国内可达 STUN 作备用。
+      // TURN 暂留空（对称 NAT 兜底走现有 WebSocket 中继，比海外免费 TURN 更快）。
+      // 若日后在国内 VPS 自部署 coturn，取消下方注释并填入凭据即可，前端无需改动。
       return Response.json({
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
-          // { urls: 'turn:your-turn.example.com:3478', username: 'flashdrop', credential: 'change-me' },
+          { urls: 'stun:stun.qq.com:3478' },
+          { urls: 'stun:stun.chat.bilibili.com:3478' },
+          { urls: 'stun:stun.miwifi.com:3478' },
+          // { urls: 'turn:YOUR_TURN_HOST:3478?transport=udp', username: 'flashdrop', credential: 'change-me' },
+          // { urls: 'turn:YOUR_TURN_HOST:3478?transport=tcp', username: 'flashdrop', credential: 'change-me' },
         ],
       });
     }

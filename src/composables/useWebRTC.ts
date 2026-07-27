@@ -150,16 +150,24 @@ export function createWebRTC(opts: RtcOptions) {
 }
 
 // 从中继 host 拉取 ICE 服务器清单；失败回退到公共 STUN。
+// 注意：传入的 proto 是信令 WS 协议（wss/ws），但 /rtc-config 是普通 HTTP GET 端点，
+// fetch 只支持 http/https，故此处需把 wss→https、ws→http。
 export async function fetchIceServers(host: string, proto: string): Promise<RTCIceServer[]> {
   try {
-    const r = await fetch(`${proto}://${host}/rtc-config`);
+    const httpProto = proto === 'wss' ? 'https' : 'http';
+    const cleanHost = host.replace(/^wss?:\/\//, '');
+    const r = await fetch(`${httpProto}://${cleanHost}/rtc-config`);
     const j = await r.json();
     if (Array.isArray(j.iceServers) && j.iceServers.length) return j.iceServers as RTCIceServer[];
   } catch (e) {
     console.warn('[rtc] 获取 ICE 配置失败，回退默认 STUN:', e);
   }
+  // 兜底列表（/rtc-config 整个 fetch 失败时）：谷歌 + 国内并存，避免国内只剩连不上的谷歌。
   return [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun.qq.com:3478' },
+    { urls: 'stun:stun.chat.bilibili.com:3478' },
+    { urls: 'stun:stun.miwifi.com:3478' },
   ];
 }
