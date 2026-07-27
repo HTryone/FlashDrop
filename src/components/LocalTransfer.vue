@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, onUnmounted } from 'vue';
 import {
-  decryptChunk, deriveKey, randomPassphrase,
+  deriveKey, randomPassphrase,
   LOCAL_SALT, LOCAL_CHUNK_SIZE,
 } from '@/crypto/e2ee';
 import { createWebRTC, fetchIceServers } from '@/composables/useWebRTC';
+import { decryptChunkAsync } from '@/composables/useLocalCrypto';
 
 // 由父组件（发送/接收面板）指定渲染哪一侧；不传则两侧都渲染
 const props = defineProps<{ side?: 'send' | 'receive' }>();
@@ -34,12 +35,6 @@ function fmt(n: number) {
 /** 安全解析 JSON，失败返回 null */
 function safeParse(text: string): any {
   try { return JSON.parse(text); } catch { return null; }
-}
-
-/** 安全执行解密，失败抛出带上下文的 Error */
-function safeDecrypt(frame: Uint8Array, keyHex: string, plainLen?: number): Uint8Array<ArrayBuffer> {
-  try { return decryptChunk(frame, keyHex, plainLen); }
-  catch (e: any) { throw new Error(`解密失败: ${e?.message || e}`); }
 }
 
 // ================================================================
@@ -153,6 +148,7 @@ let recvTotal = 0;
 let recvChunks = 0;                      // 已收到的数据块数（用于收齐自动完成）
 let recvTotalChunks = 0;                 // 期望总块数（由 offer 文件清单推算）
 let recvKey = '';
+let finishing = false;            // 防止 done/EOF/收齐 多处触发重复关流
 
 /** 清理接收端状态 */
 function resetReceiver() {
@@ -177,6 +173,7 @@ function closeReceiverWs() {
   if (recvWs) { try { recvWs.close(); } catch { /* ignore */ } recvWs = null; }
   if (recvRtc) { try { recvRtc.destroy(); } catch { /* ignore */ } recvRtc = null; }
   recvRtcOpen.value = false;
+  finishing = false;
 }
 
 function parsePastedLink() {
@@ -281,7 +278,7 @@ async function startRecv() {
           ws.send(JSON.stringify({ type: 'ready' }));
         } catch { /* ready 发送失败不影响后续 */ }
       } else if (msg.type === 'done') {
-        finishRecv();
+        enqueueRecv({ kind: 'done' });
       } else if (msg.type === 'peer-left') {
         senderOnline.value = false;
         recvStatus.value = '对方已断开';
@@ -293,7 +290,7 @@ async function startRecv() {
     }
 
     // ---- 二进制数据帧（WS 兜底通道；P2P 直连时由 dc.onmessage 调用同一处理函数）----
-    handleRecvFrame(ev.data as ArrayBuffer);
+    enqueueRecv({ kind: 'frame', data: ev.data as ArrayBuffer });
   };
 
   ws.onclose = () => {
@@ -314,6 +311,8 @@ async function startRecv() {
 }
 
 async function finishRecv() {
+  if (finishing) return;
+  finishing = true;
   let allOk = true;
   for (let fi = 0; fi < writers.length; fi++) {
     const w = writers[fi];
@@ -339,7 +338,7 @@ async function finishRecv() {
   writers = [];
 }
 
-// P2P DataChannel 收到的分片帧重组：分片头 [totalLen u32][offset u32][payload]，凑齐后交给 handleRecvFrame。
+// P2P DataChannel 收到的分片帧重组：分片头 [totalLen u32][offset u32][payload]，凑齐后交给 enqueueRecv。
 let dcReasm: { total: number; parts: Map<number, Uint8Array>; received: number } | null = null;
 function onDcMessage(ev: any) {
   if (typeof ev.data === 'string') return; // DC 只传二进制帧，文本不应出现
@@ -364,7 +363,7 @@ function onDcMessage(ev: any) {
       const keys = Array.from(dcReasm.parts.keys()).sort((a, b) => a - b);
       for (const k of keys) { const p = dcReasm.parts.get(k)!; full.set(p, pos); pos += p.length; }
       dcReasm = null;
-      handleRecvFrame(full.buffer);
+      enqueueRecv({ kind: 'frame', data: full.buffer });
     }
   } catch (e: any) {
     console.error('[recv] DC 分片重组失败:', e);
@@ -372,15 +371,27 @@ function onDcMessage(ev: any) {
   }
 }
 
-// 二进制数据帧处理：WS 兜底通道与 P2P DataChannel 共用同一函数，避免逻辑分叉。
-function handleRecvFrame(data: ArrayBuffer) {
+// 接收帧有序处理队列：异步解密不能乱序写盘（否则文件损坏），故所有数据帧与完成信号都进同一串行链。
+let recvChain: Promise<void> = Promise.resolve();
+type RecvJob = { kind: 'frame'; data: ArrayBuffer } | { kind: 'done' };
+function enqueueRecv(job: RecvJob) {
+  const prev = recvChain;
+  recvChain = prev.then(() => processRecv(job)).catch((e: any) => console.error('[recv] 处理失败:', e));
+}
+
+async function processRecv(job: RecvJob) {
+  if (job.kind === 'done') { await finishRecv(); return; }
+  await processFrame(job.data);
+}
+
+// 单帧处理（WS 兜底通道与 P2P DataChannel 共用，保证串行入队、不乱序）。
+async function processFrame(data: ArrayBuffer) {
   try {
     const frame = new Uint8Array(data);
     if (frame.length < FRAME_HDR) { recvStatus.value = '收到过短的数据帧'; return; }
     const dv = new DataView(frame.buffer);
     const fi = dv.getUint16(0);
-    if (fi === 0xFFFF) { finishRecv(); return; } // 发送端经 DataChannel 发的结束标记
-    const ci = dv.getUint32(2);
+    if (fi === 0xFFFF) { enqueueRecv({ kind: 'done' }); return; } // 发送端经 DataChannel 发的结束标记
     const plainLen = dv.getUint32(6);
     const body = frame.slice(FRAME_HDR);
     // 边界检查（writer 数组已按文件数预建，只需校验文件索引）
@@ -388,7 +399,9 @@ function handleRecvFrame(data: ArrayBuffer) {
       console.warn(`[recv] 文件索引越界: fi=${fi}, max=${writers.length - 1}`);
       return;
     }
-    const plain = safeDecrypt(body, recvKey, plainLen);
+    // 解密丢到后台 Worker，主线程不阻塞；recvChain 保证按到达顺序串行写盘
+    const plainBuf = await decryptChunkAsync(body.buffer, recvKey, plainLen);
+    const plain = new Uint8Array(plainBuf);
     const w = writers[fi];
     if (w) {
       w.write(plain).catch((we: any) => console.error('[recv] 写入失败:', we));
@@ -397,7 +410,7 @@ function handleRecvFrame(data: ArrayBuffer) {
     recvProgress.value = recvTotal ? recvBytes / recvTotal : 1;
     // 自愈：收齐最后一帧即自动完成（覆盖 done/EOF 信号丢失的情况）
     recvChunks++;
-    if (recvTotalChunks > 0 && recvChunks >= recvTotalChunks) finishRecv();
+    if (recvTotalChunks > 0 && recvChunks >= recvTotalChunks) enqueueRecv({ kind: 'done' });
   } catch (e: any) {
     console.error('[recv] 数据帧处理失败:', e);
     recvStatus.value = `数据帧错误: ${e?.message || e}`;

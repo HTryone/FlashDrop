@@ -3,8 +3,9 @@ import { ref, computed, watch, onUnmounted } from 'vue';
 import type { QueuedFile, StorageType } from '@/types/transfer';
 import { createTransfer, refreshCode, setMessage, terminateTransfer, zipUrl } from '@/api/transfer';
 import { uploadAll } from '@/composables/useTusUpload';
-import { newSalt, E2EE_CHUNK_SIZE, randomPassphrase, deriveKey, LOCAL_SALT, LOCAL_CHUNK_SIZE, encryptChunk } from '@/crypto/e2ee';
+import { newSalt, E2EE_CHUNK_SIZE, randomPassphrase, deriveKey, LOCAL_SALT, LOCAL_CHUNK_SIZE } from '@/crypto/e2ee';
 import { createWebRTC, fetchIceServers } from '@/composables/useWebRTC';
+import { encryptChunkAsync } from '@/composables/useLocalCrypto';
 import SendFileRow from './SendFileRow.vue';
 
 const emit = defineEmits<{
@@ -93,11 +94,6 @@ function ensureLocalRtc(relayHost: string, proto: string) {
   });
 }
 
-function safeEncryptLocal(plain: Uint8Array, keyHex: string): Uint8Array<ArrayBuffer> {
-  try { return encryptChunk(plain, keyHex); }
-  catch (e: any) { throw new Error(`加密失败: ${e?.message || e}`); }
-}
-
 function genRoom() {
   closeLocalWs(); resetLocalSender();
   const cs = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -182,10 +178,11 @@ async function doLocalSendLoop(ws: WebSocket) {
       while (offset < file.size) {
         if (ws.readyState !== WebSocket.OPEN && !useRtc) throw new Error('连接已断开');
         const end = Math.min(offset + LOCAL_CHUNK, file.size);
-        const buf = await file.slice(offset, end).arrayBuffer();
-        const plain = new Uint8Array(buf); const enc = safeEncryptLocal(plain, lKeyHex.value);
+        const chunkBuf = await file.slice(offset, end).arrayBuffer();
+        const plainLen = chunkBuf.byteLength;
+        const enc = new Uint8Array(await encryptChunkAsync(chunkBuf, lKeyHex.value));
         const header = new Uint8Array(FRAME_HDR); const dv = new DataView(header.buffer);
-        dv.setUint16(0, fi); dv.setUint32(2, ci); dv.setUint32(6, buf.byteLength);
+        dv.setUint16(0, fi); dv.setUint32(2, ci); dv.setUint32(6, plainLen);
         const frame = new Uint8Array(header.length + enc.length); frame.set(header, 0); frame.set(enc, header.length);
         if (useRtc && ch) {
           if (ch.bufferedAmount > LOW) await localSafeDrain(ch);
@@ -195,7 +192,7 @@ async function doLocalSendLoop(ws: WebSocket) {
           if (ws.bufferedAmount > LOW) await localSafeDrain(ws);
           ws.send(frame);
         }
-        offset += buf.byteLength; ci++; sent += buf.byteLength;
+        offset += plainLen; ci++; sent += plainLen;
         lProgress.value = total ? sent / total : 1;
       }
     }
