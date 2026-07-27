@@ -429,13 +429,7 @@ function handleDataFrame(data: ArrayBuffer) {
     .then((plainBuf) => {
       if (recvAborted) return;             // 已取消则丢弃此块
       readyBuf.set(seq, { fi, plain: new Uint8Array(plainBuf) });
-      // 端到端 ACK 流控：每 ACK_INTERVAL 帧通知发送端
-      ackProcessed++;
-      if (ackProcessed >= ACK_INTERVAL && recvWs && recvWs.readyState === WebSocket.OPEN) {
-        try { recvWs.send(JSON.stringify({ type: 'ack', count: ackProcessed })); } catch {}
-        ackProcessed = 0;
-      }
-      void drainWrites();                   // 尝试推进写盘
+      void drainWrites();                   // 尝试推进写盘（ACK 在写盘完成时发，见 drainWrites）
     })
     .catch((e: any) => {
       console.error('[recv] 解密失败:', e);
@@ -466,6 +460,14 @@ async function drainWrites() {
       recvBytes += item.plain.length;
       recvProgress.value = recvTotal ? recvBytes / recvTotal : 1;
       nextWriteSeq++;
+      // 端到端 ACK 流控：每 ACK_INTERVAL 帧实际写盘完成后通知发送端
+      // 关键：必须在写盘完成（而非解密完成）后 ACK，否则发送端流控窗口与
+      // 接收端真实处理速度错配，导致来回振荡（发快收慢交替）。
+      ackProcessed++;
+      if (ackProcessed >= ACK_INTERVAL && recvWs && recvWs.readyState === WebSocket.OPEN) {
+        try { recvWs.send(JSON.stringify({ type: 'ack', count: ackProcessed })); } catch {}
+        ackProcessed = 0;
+      }
     }
     // 收齐全部帧 → 完成（done/EOF 信号丢失也能自愈）
     if (recvTotalChunks > 0 && nextWriteSeq >= recvTotalChunks) {
