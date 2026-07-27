@@ -74,11 +74,13 @@ export function attachRelay(app) {
   app.post('/stream/:room/ready', (req, res) => {
     const entry = rooms.get(req.params.room);
     if (entry) entry.ready = true;
+    res.set({ 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache, no-store' });
     res.status(200).send('ok');
   });
 
   // GET /stream/:room/ready — 发送端长轮询等就绪
   app.get('/stream/:room/ready', (req, res) => {
+    res.set({ 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache, no-store' });
     const check = () => {
       const entry = rooms.get(req.params.room);
       if (!entry) { res.status(410).send('gone'); return; }

@@ -103,7 +103,7 @@ async function pollReceiverReady() {
   if (!lRoom.value) return;
   const base = resolveRelayBase();
   try {
-    const resp = await fetch(`${base}/stream/${lRoom.value}/ready`, { mode: 'cors' });
+    const resp = await fetch(`${base}/stream/${lRoom.value}/ready?t=${Date.now()}`, { mode: 'cors' });
     if (resp.ok) {
       lPeerOnline.value = true;
       lStatus.value = '对方已在线，可开始传输';

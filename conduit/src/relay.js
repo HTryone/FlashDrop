@@ -25,7 +25,7 @@ export class Relay {
   }
 
   cors(h = {}) {
-    return { 'Access-Control-Allow-Origin': '*', ...h };
+    return { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache, no-store', ...h };
   }
 
   async fetch(request) {
