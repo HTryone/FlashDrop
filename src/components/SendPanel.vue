@@ -126,13 +126,13 @@ function connectControl() {
         }
       } catch {}
     };
-    ws.onerror = () => {
+    ws.onerror = (ev) => {
       if (!lWsReadyNotified) {
         lStatus.value = '控制通道出错，尝试 HTTP 兼容通道…';
         void pollReceiverReady();
       }
     };
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       if (lWs === ws) lWs = null;
       // 只有曾经成功打开过的连接才自动重连，避免初始失败时死循环
       if (opened && !lWsReadyNotified && !lSending.value) {
@@ -191,44 +191,65 @@ async function startLocalSend() {
   }
 
   const base = resolveRelayBase();
-  // Cloudflare POST 请求体限制 100MB，每片留余量用 80MB
+  // Cloudflare POST 请求体限制 100MB，每片留余量用 80MB；本地 relay 无此限制但保持一致分片
   const POST_LIMIT = 80 * 1024 * 1024;
 
-  // 本片内待发送的所有「长度前缀帧」累积在数组里，满 POST_LIMIT 就发一次 POST
+  // ---- 流式分片 POST（核心修复）----
+  // 旧逻辑：攒满 80MB 一次性 fetch POST 大 body → 大请求体在代理/Cloudflare 链路上被丢弃，
+  //         接收端只收到 OPTIONS 预检、永远收不到数据体（表现为「未收到文件清单 / EOF at header」）。
+  // 新逻辑：producer 异步加密产生帧入队，postOneChunk 顺序发起每个分片 ReadableStream POST，
+  //         边产生边上传（不再缓冲 80MB 大 body），浏览器原生背压限流，relay 端 req.pipe 原生转发。
   let pending: Uint8Array[] = [];
-  let pendingBytes = 0;
+  let producerDone = false;
+  let waiters: Array<() => void> = [];
+  let chunkBytes = 0;
 
-  // 把 pending 里攒的帧作为一个 POST 发到 /stream/:room（数据平面）。
-  // 注意：数据永远走 /stream/:room，绝不能走 /close —— /close 会忽略请求体直接关流，
-  // 否则接收端 GET 拿到空流，表现为「未收到文件清单 / EOF at header」。
-  async function flushData() {
-    if (pending.length === 0) return;
-    // 把本片所有帧拼成一个连续字节数组（一次性普通请求体，不用 duplex 流式）
-    const body = new Uint8Array(pendingBytes);
-    let off = 0;
-    for (const f of pending) { body.set(f, off); off += f.length; }
-    pending = []; pendingBytes = 0;
+  function pushFrame(f: Uint8Array) {
+    pending.push(f);
+    const w = waiters.shift(); if (w) w();
+  }
+  function notifyDrain() {
+    const w = waiters.shift(); if (w) w();
+  }
+  async function waitFrame(): Promise<void> {
+    if (pending.length > 0) return;
+    await new Promise<void>((res) => waiters.push(res));
+  }
 
-    console.log(`[send] flushData bytes=${body.length}`);
-    try {
-      const resp = await fetch(`${base}/stream/${lRoom.value}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body,
-        signal: lAbort!.signal,
-      });
-      if (!resp.ok) throw new Error(`上传失败 HTTP ${resp.status}`);
-      console.log(`[send] POST response: ${resp.status}`);
-    } catch (e: any) {
-      if (lAbort?.signal.aborted) throw e;
-      throw new Error(`上传连接失败: ${e?.message || e}`);
-    }
+  // 发送一个分片（一个 ReadableStream POST）；返回 false 表示全部发完
+  async function postOneChunk(): Promise<boolean> {
+    chunkBytes = 0;
+    const rs = new ReadableStream({
+      async pull(ctrl) {
+        if (pending.length === 0) {
+          if (producerDone) { ctrl.close(); return; }
+          await waitFrame();
+          if (pending.length === 0) {
+            if (producerDone) { ctrl.close(); return; }
+            return; // 再等一轮
+          }
+        }
+        const frame = pending.shift()!;
+        notifyDrain();
+        ctrl.enqueue(frame);
+        chunkBytes += frame.length;
+        if (chunkBytes >= POST_LIMIT) { ctrl.close(); return; }
+      },
+    });
+    const resp = await fetch(`${base}/stream/${lRoom.value}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: rs,
+      duplex: 'half',
+      signal: lAbort!.signal,
+    } as any);
+    if (!resp.ok) throw new Error(`上传失败 HTTP ${resp.status}`);
+    return !(producerDone && pending.length === 0);
   }
 
   // 数据全部发完后，单独发一个空 POST 到 /close 关闭流
   // （Worker 的 /close 处理器关闭 writable → 接收端 GET 流收到 EOF = 传输完成）
   async function sendClose() {
-    console.log(`[send] sendClose`);
     try {
       await fetch(`${base}/stream/${lRoom.value}/close`, {
         method: 'POST',
@@ -243,49 +264,57 @@ async function startLocalSend() {
   }
 
   try {
-    // 1. 发送 offer（文件清单），作为第一个长度前缀帧
+    // 1. offer（文件清单）作为第一个帧，立即入队
     const offerJson = JSON.stringify({
       type: 'offer',
       files: files.value.map(f => ({ name: f.file.name, size: f.file.size })),
     });
     const offerBytes = new TextEncoder().encode(offerJson);
-    pending.push(encodeMsg(offerBytes));
-    pendingBytes += offerBytes.length + 4;
+    pushFrame(encodeMsg(offerBytes));
     lStatus.value = '已发送文件清单，开始传输数据…';
 
-    // 2. 逐块加密，攒帧
     const mapped = files.value.map(f => ({ file: f.file }));
     const total = mapped.reduce((s, f) => s + f.file.size, 0);
     if (total === 0) {
-      await flushData();
+      producerDone = true; notifyDrain();
+      let more = true; while (more) more = await postOneChunk();
       await sendClose();
       lDone.value = true; lStatus.value = '传输完成（空）'; lSending.value = false;
       return;
     }
-    let sent = 0;
-    for (let fi = 0; fi < mapped.length; fi++) {
-      const file = mapped[fi].file; let offset = 0; let ci = 0;
-      while (offset < file.size) {
-        const end = Math.min(offset + LOCAL_CHUNK, file.size);
-        const chunkBuf = await file.slice(offset, end).arrayBuffer();
-        const plainLen = chunkBuf.byteLength;
-        const enc = new Uint8Array(await encryptChunkAsync(chunkBuf, lKeyHex.value));
-        // 帧头：fi u16 + ci u32 + plainLen u32
-        const frame = new Uint8Array(FRAME_HDR + enc.length);
-        const dv = new DataView(frame.buffer);
-        dv.setUint16(0, fi); dv.setUint32(2, ci); dv.setUint32(6, plainLen);
-        frame.set(enc, FRAME_HDR);
-        pending.push(encodeMsg(frame));
-        pendingBytes += frame.length + 4;
-        // 本片攒够上限 → 立即发送这个 POST（数据走 /stream/:room），开启下一个片
-        if (pendingBytes >= POST_LIMIT) await flushData();
-        offset += plainLen; ci++; sent += plainLen;
-        lProgress.value = total ? sent / total : 1;
-      }
-    }
 
-    // 3. 发送最后一片数据到 /stream/:room，再单独发 /close 关闭流（DO 关闭 writable → 接收端 EOF = 完成）
-    await flushData();
+    // 生产者：逐块加密入队（与 postOneChunk 并行）
+    const producer = (async () => {
+      let sent = 0;
+      for (let fi = 0; fi < mapped.length; fi++) {
+        const file = mapped[fi].file; let offset = 0; let ci = 0;
+        while (offset < file.size) {
+          const end = Math.min(offset + LOCAL_CHUNK, file.size);
+          const chunkBuf = await file.slice(offset, end).arrayBuffer();
+          const plainLen = chunkBuf.byteLength;
+          const enc = new Uint8Array(await encryptChunkAsync(chunkBuf, lKeyHex.value));
+          // 帧头：fi u16 + ci u32 + plainLen u32
+          const frame = new Uint8Array(FRAME_HDR + enc.length);
+          const dv = new DataView(frame.buffer);
+          dv.setUint16(0, fi); dv.setUint32(2, ci); dv.setUint32(6, plainLen);
+          frame.set(enc, FRAME_HDR);
+          pushFrame(encodeMsg(frame));
+          // 简单背压：在途帧过多则等待消费
+          while (pending.length > 300) { await new Promise<void>((r) => waiters.push(r)); }
+          offset += plainLen; ci++; sent += plainLen;
+          lProgress.value = total ? sent / total : 1;
+        }
+      }
+      producerDone = true;
+      notifyDrain();
+    })();
+
+    // 消费者：顺序发起每个分片流式 POST，直到 producer 完成且无待发帧
+    let more = true;
+    while (more) {
+      more = await postOneChunk();
+    }
+    await producer;
     await sendClose();
     lDone.value = true; lStatus.value = '传输完成';
   } catch (e: any) {
