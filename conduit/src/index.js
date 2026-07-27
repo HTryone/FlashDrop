@@ -35,8 +35,8 @@ export default {
       });
     }
 
-    // HTTP 流式中继：/stream/:room 或 /stream/:room/ready
-    if (url.pathname.startsWith('/stream/')) {
+    // HTTP 流式中继 + WebSocket 控制通道：/stream/:room /ws/:room
+    if (url.pathname.startsWith('/stream/') || url.pathname.startsWith('/ws/')) {
       const parts = url.pathname.split('/');
       const room = parts[2];
       if (!room) return new Response('need room', { status: 400 });

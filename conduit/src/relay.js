@@ -1,8 +1,16 @@
-// HTTP 流式中继 Durable Object。
-// 发送端分片 POST /stream/:room（body = ReadableStream，每片 <100MB 避开 CF 请求体限制），
-// 接收端 GET /stream/:room（返回流式 Response，整条传输期间一直开着）。
-// DO 用 TransformStream 把 POST body 直接 pipeTo 到 GET response——无逐帧转发开销，
-// 背压由 TransformStream + pipeTo + ByteLengthQueuingStrategy 原生处理。
+// HTTP 流式中继 Durable Object + WebSocket 控制通道（标准 API，不 hibernation）。
+//
+// 数据平面（HTTP 流式，快）：
+//   发送端 POST /stream/:room（body = ReadableStream，分片 <100MB）
+//   接收端 GET  /stream/:room（返回流式 Response，整条传输期间一直开着）
+//   DO 用 TransformStream 把 POST body 直接 pipeTo 到 GET response。
+//
+// 控制平面（WebSocket，保持 DO 活跃）：
+//   /ws/:room?role=sender|receiver
+//   接收端连上后发 {type:'ready'}，DO 转发给发送端。
+//   用 WebSocket 标准 API (server.accept()) 让 DO 不被 hibernation/eviction，
+//   从而 rooms 中的 TransformStream 内存状态得以保留。
+//
 // 不落盘：文件数据只在两端 HTTP 流间过内存。
 //
 // Cloudflare 请求体限制：Free/Pro 100MB / Business 200MB / Enterprise 500MB。
@@ -19,8 +27,7 @@ export class Relay {
   constructor(state, env) {
     this.state = state;
     this.env = env;
-    // room -> { readable, writable, ready }
-    // TransformStream 两端：readable 返回给 GET，writable 接收 POST body
+    // room -> { readable, writable, ready, consumed, wsSender, wsReceiver }
     this.rooms = new Map();
   }
 
@@ -42,20 +49,29 @@ export class Relay {
       });
     }
 
-    // 解析 /stream/:room 或 /stream/:room/ready 或 /stream/:room/close
+    // ---- WebSocket 控制通道 ----
+    const wsMatch = path.match(/^\/ws\/([^/]+)$/);
+    if (wsMatch && request.headers.get('Upgrade') === 'websocket') {
+      return this.handleWebSocket(request, wsMatch[1]);
+    }
+
+    // ---- HTTP 数据流 ----
     const m = path.match(/^\/stream\/([^/]+)(\/(ready|close))?$/);
-    if (!m) return new Response('not found', { status: 404 });
+    if (!m) return new Response('not found', { status: 404, headers: this.cors() });
     const room = m[1];
     const sub = m[3]; // 'ready' | 'close' | undefined
 
-    // ---- ready 信号（接收端建好 sinks 后通知发送端可以开始发数据）----
-    // POST /stream/:room/ready — 接收端标记就绪
+    // POST /stream/:room/ready — 兼容旧长轮询（保留，但新前端改用 ws）
     if (request.method === 'POST' && sub === 'ready') {
       const entry = this.rooms.get(room);
-      if (entry) entry.ready = true;
+      if (entry) {
+        entry.ready = true;
+        this.notifyReady(entry);
+      }
       return new Response('ok', { headers: this.cors() });
     }
-    // GET /stream/:room/ready — 发送端长轮询，等接收端就绪（最多 30 秒）
+
+    // GET /stream/:room/ready — 兼容旧长轮询
     if (request.method === 'GET' && sub === 'ready') {
       for (let i = 0; i < 600; i++) {
         const e = this.rooms.get(room);
@@ -66,7 +82,6 @@ export class Relay {
       return new Response('timeout', { status: 504, headers: this.cors() });
     }
 
-    // ---- close 信号（发送端全部数据发完后关闭 writable → GET 收到 EOF）----
     // POST /stream/:room/close — 发送端通知传输结束
     if (request.method === 'POST' && sub === 'close') {
       const entry = this.rooms.get(room);
@@ -74,6 +89,7 @@ export class Relay {
         try {
           const writer = entry.writable.getWriter();
           await writer.close();
+          writer.releaseLock();
         } catch (e) {
           // writable 可能已关闭（接收端断开等），忽略
         }
@@ -82,15 +98,10 @@ export class Relay {
       return new Response('closed', { headers: this.cors() });
     }
 
-    // ---- 数据流 ----
     // GET /stream/:room — 接收端下载流
     if (request.method === 'GET') {
       let entry = this.rooms.get(room);
-      if (!entry) {
-        entry = this.createRoom(room);
-      }
-      // readable 已被消费（上一个接收端拿走了）→ 重新创建
-      if (entry.consumed) {
+      if (!entry || entry.consumed) {
         entry = this.createRoom(room);
       }
       entry.consumed = true;
@@ -102,11 +113,10 @@ export class Relay {
       });
     }
 
-    // POST /stream/:room — 发送端分片上传（每片 <100MB）
-    // pipeTo + preventClose:true → 数据通过但不关 writable，后续 POST 继续追加
+    // POST /stream/:room — 发送端分片上传
     if (request.method === 'POST') {
       let entry = this.rooms.get(room);
-      if (!entry) {
+      if (!entry || entry.consumed) {
         entry = this.createRoom(room);
       }
       try {
@@ -115,11 +125,68 @@ export class Relay {
         console.error('[stream] pipe error:', e?.message || e);
         return new Response('error', { status: 500, headers: this.cors() });
       }
-      // 不删房间——等 /close 来关闭 writable
       return new Response('ok', { headers: this.cors() });
     }
 
     return new Response('not found', { status: 404, headers: this.cors() });
+  }
+
+  handleWebSocket(request, room) {
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair);
+    // 标准 API：保持 DO 活跃，rooms 内存状态不丢
+    server.accept();
+
+    let entry = this.rooms.get(room);
+    if (!entry) entry = this.createRoom(room);
+
+    const url = new URL(request.url);
+    const role = url.searchParams.get('role') || 'sender';
+
+    if (role === 'sender') {
+      entry.wsSender = server;
+      // 若接收端已就绪，立即通知
+      if (entry.ready) this.sendJSON(server, { type: 'ready' });
+    } else {
+      entry.wsReceiver = server;
+    }
+
+    server.addEventListener('message', (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'ready' && role === 'receiver') {
+          entry.ready = true;
+          this.notifyReady(entry);
+        }
+      } catch (e) {
+        console.error('[ws] parse error:', e?.message || e);
+      }
+    });
+
+    server.addEventListener('close', () => {
+      if (role === 'sender' && entry.wsSender === server) entry.wsSender = null;
+      if (role === 'receiver' && entry.wsReceiver === server) entry.wsReceiver = null;
+    });
+
+    server.addEventListener('error', (e) => {
+      console.error('[ws] error:', e?.message || e);
+    });
+
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  notifyReady(entry) {
+    if (entry.wsSender && entry.wsSender.readyState === 1) {
+      this.sendJSON(entry.wsSender, { type: 'ready' });
+    }
+  }
+
+  sendJSON(ws, obj) {
+    try {
+      ws.send(JSON.stringify(obj));
+    } catch (e) {
+      console.error('[ws] send error:', e?.message || e);
+    }
   }
 
   createRoom(room) {
@@ -128,7 +195,10 @@ export class Relay {
       new ByteLengthQueuingStrategy({ highWaterMark: 4 * 1024 * 1024 }),
       new ByteLengthQueuingStrategy({ highWaterMark: 4 * 1024 * 1024 }),
     );
-    const entry = { readable, writable, ready: false, consumed: false };
+    const entry = {
+      readable, writable, ready: false, consumed: false,
+      wsSender: null, wsReceiver: null,
+    };
     this.rooms.set(room, entry);
     return entry;
   }

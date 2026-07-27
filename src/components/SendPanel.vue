@@ -59,6 +59,7 @@ const lStatus = ref('');
 const lPeerOnline = ref(false);
 let lAbort: AbortController | null = null;
 let lPollTimer: ReturnType<typeof setTimeout> | null = null;
+let lWs: WebSocket | null = null;
 
 function resetLocalSender() {
   lSending.value = false; lDone.value = false;
@@ -75,6 +76,7 @@ function cancelLocalSend() {
 function closeLocalConn() {
   if (lAbort) { try { lAbort.abort(); } catch {} lAbort = null; }
   if (lPollTimer) { clearTimeout(lPollTimer); lPollTimer = null; }
+  if (lWs) { try { lWs.close(); } catch {} lWs = null; }
 }
 
 /** 长度前缀编码：[4B u32 长度][payload] */
@@ -95,24 +97,44 @@ function genRoom() {
   lRoom.value = s; lPassphrase.value = randomPassphrase();
   lSendLink.value = `${location.origin}/?tab=local&room=${s}#k=${lPassphrase.value}`;
   lStatus.value = '房间已生成，等待对方加入…';
-  void pollReceiverReady();
+  void connectControl();
 }
 
-/** 长轮询 GET /stream/:room/ready，等接收端连上并建好 sinks */
-async function pollReceiverReady() {
+/** WebSocket 控制通道：保持 DO 活跃 + 接收 ready 信号 */
+function connectControl() {
   if (!lRoom.value) return;
-  const base = resolveRelayBase();
+  const base = resolveRelayBase().replace(/^https:/, 'wss:');
   try {
-    const resp = await fetch(`${base}/stream/${lRoom.value}/ready?t=${Date.now()}`, { mode: 'cors' });
-    if (resp.ok) {
-      lPeerOnline.value = true;
-      lStatus.value = '对方已在线，可开始传输';
-      return;
-    }
-  } catch {}
-  // 继续轮询（3 秒间隔）
-  lPollTimer = setTimeout(() => void pollReceiverReady(), 3000);
+    const ws = new WebSocket(`${base}/ws/${lRoom.value}?role=sender`);
+    lWs = ws;
+    ws.onopen = () => {
+      lStatus.value = '控制通道已连接，等待对方加入…';
+    };
+    ws.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (data.type === 'ready' && !lPeerOnline.value) {
+          lPeerOnline.value = true;
+          lStatus.value = '对方已在线，可开始传输';
+        }
+      } catch {}
+    };
+    ws.onerror = () => {
+      lStatus.value = '控制通道出错，3秒后重连…';
+      lPollTimer = setTimeout(() => void connectControl(), 3000);
+    };
+    ws.onclose = () => {
+      if (lWs === ws) lWs = null;
+      if (!lPeerOnline.value && !lSending.value) {
+        lStatus.value = '控制通道断开，等待对方加入…';
+        lPollTimer = setTimeout(() => void connectControl(), 3000);
+      }
+    };
+  } catch (e: any) {
+    lStatus.value = `控制通道失败: ${e?.message || e}`;
+  }
 }
+
 
 async function startLocalSend() {
   if (!lRoom.value || !lPassphrase.value) { lStatus.value = '请先生成房间'; return; }

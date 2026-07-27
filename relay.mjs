@@ -1,25 +1,28 @@
-// 本地磁盘模式 —— HTTP 流式中继（不落盘）
+// 本地磁盘模式 —— HTTP 流式中继 + WebSocket 控制通道（不落盘）
 //
-// 协议（长度前缀分帧，HTTP 字节流）：
-//   GET  /stream/:room         — 接收端下载流（流式 Response，整条传输期间一直开）
+// 数据平面（HTTP 流式，快）：
+//   GET  /stream/:room         — 接收端下载流（流式 Response）
 //   POST /stream/:room         — 发送端分片上传（ReadableStream body，每片 <100MB）
-//   POST /stream/:room/ready   — 接收端标记就绪
-//   GET  /stream/:room/ready   — 发送端长轮询等就绪
 //   POST /stream/:room/close   — 发送端通知传输结束（关闭 pass → GET 收到 EOF）
+//
+// 控制平面（WebSocket，保持 DO 活跃）：
+//   /ws/:room?role=sender|receiver
+//   接收端连上后发 {type:'ready'}，服务器转发给发送端。
 //
 // 多片 POST：req.pipe(pass, {end:false}) 不关 pass，等 /close 来关。
 // 背压由 Node Stream pipe 原生处理。不落盘：文件数据只在两端 HTTP 流间过内存。
 
 import { PassThrough } from 'node:stream';
+import { WebSocketServer } from 'ws';
 
-export function attachRelay(app) {
-  // room -> { pass: PassThrough, ready: boolean }
+export function attachRelay(server, app) {
+  // room -> { pass: PassThrough, ready: boolean, wsSender: WebSocket|null, wsReceiver: WebSocket|null }
   const rooms = new Map();
 
   function getRoom(room) {
     let entry = rooms.get(room);
     if (!entry) {
-      entry = { pass: new PassThrough(), ready: false };
+      entry = { pass: new PassThrough(), ready: false, wsSender: null, wsReceiver: null };
       rooms.set(room, entry);
     }
     return entry;
@@ -27,8 +30,52 @@ export function attachRelay(app) {
 
   function cleanupRoom(room) {
     const e = rooms.get(room);
-    if (e) { e.pass.destroy(); rooms.delete(room); }
+    if (e) {
+      e.pass.destroy();
+      if (e.wsSender) { try { e.wsSender.close(); } catch {} e.wsSender = null; }
+      if (e.wsReceiver) { try { e.wsReceiver.close(); } catch {} e.wsReceiver = null; }
+      rooms.delete(room);
+    }
   }
+
+  function notifyReady(entry) {
+    if (entry.wsSender && entry.wsSender.readyState === 1) {
+      try { entry.wsSender.send(JSON.stringify({ type: 'ready' })); } catch {}
+    }
+  }
+
+  // WebSocket 控制通道
+  const wss = new WebSocketServer({ server, path: '/ws/' });
+  wss.on('connection', (ws, req) => {
+    const match = (req.url || '').match(/^\/ws\/([^/?]+)/);
+    if (!match) { ws.close(); return; }
+    const room = match[1];
+    const params = new URLSearchParams((req.url || '').split('?')[1] || '');
+    const role = params.get('role') || 'sender';
+    const entry = getRoom(room);
+
+    if (role === 'sender') {
+      entry.wsSender = ws;
+      if (entry.ready) notifyReady(entry);
+    } else {
+      entry.wsReceiver = ws;
+    }
+
+    ws.on('message', (data) => {
+      try {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === 'ready' && role === 'receiver') {
+          entry.ready = true;
+          notifyReady(entry);
+        }
+      } catch {}
+    });
+
+    ws.on('close', () => {
+      if (role === 'sender' && entry.wsSender === ws) entry.wsSender = null;
+      if (role === 'receiver' && entry.wsReceiver === ws) entry.wsReceiver = null;
+    });
+  });
 
   // GET /stream/:room — 接收端下载流
   app.get('/stream/:room', (req, res) => {
@@ -40,7 +87,6 @@ export function attachRelay(app) {
     });
     entry.pass.pipe(res);
     req.on('close', () => {
-      // 接收端断开，清理
       cleanupRoom(req.params.room);
     });
   });
@@ -48,7 +94,6 @@ export function attachRelay(app) {
   // POST /stream/:room — 发送端分片上传（多片，不关 pass）
   app.post('/stream/:room', (req, res) => {
     const entry = getRoom(req.params.room);
-    // { end: false } → req 结束时不关 pass，等 /close 来关
     req.pipe(entry.pass, { end: false });
     req.on('end', () => {
       res.status(200).send('ok');
@@ -70,21 +115,26 @@ export function attachRelay(app) {
     res.status(200).send('closed');
   });
 
-  // POST /stream/:room/ready — 接收端标记就绪
+  // POST /stream/:room/ready — 兼容旧长轮询
   app.post('/stream/:room/ready', (req, res) => {
     const entry = rooms.get(req.params.room);
-    if (entry) entry.ready = true;
+    if (entry) {
+      entry.ready = true;
+      notifyReady(entry);
+    }
     res.set({ 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache, no-store' });
     res.status(200).send('ok');
   });
 
-  // GET /stream/:room/ready — 发送端长轮询等就绪
+  // GET /stream/:room/ready — 兼容旧长轮询
   app.get('/stream/:room/ready', (req, res) => {
     res.set({ 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache, no-store' });
+    const start = Date.now();
     const check = () => {
       const entry = rooms.get(req.params.room);
       if (!entry) { res.status(410).send('gone'); return; }
       if (entry.ready) { res.status(200).send('ready'); return; }
+      if (Date.now() - start > 30000) { res.status(504).send('timeout'); return; }
       setTimeout(check, 100);
     };
     check();
