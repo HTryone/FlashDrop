@@ -13,7 +13,9 @@ export default {
       // 谷歌 STUN 在海外可用、国内常被墙，故并列国内可达 STUN 作备用。
       // TURN 暂留空（对称 NAT 兜底走现有 WebSocket 中继，比海外免费 TURN 更快）。
       // 若日后在国内 VPS 自部署 coturn，取消下方注释并填入凭据即可，前端无需改动。
-      return Response.json({
+      // 必须带 CORS 头：前端（pages.dev / localhost）跨域 fetch 此端点，
+      // 缺 CORS 浏览器会拦截并报 "TypeError: Failed to fetch"，导致 P2P 永远拿不到 ICE 配置。
+      const body = JSON.stringify({
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
@@ -23,6 +25,12 @@ export default {
           // { urls: 'turn:YOUR_TURN_HOST:3478?transport=udp', username: 'flashdrop', credential: 'change-me' },
           // { urls: 'turn:YOUR_TURN_HOST:3478?transport=tcp', username: 'flashdrop', credential: 'change-me' },
         ],
+      });
+      return new Response(body, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        },
       });
     }
     if (url.pathname === '/relay') {
