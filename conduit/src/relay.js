@@ -259,7 +259,7 @@ export class Relay {
     const entry = {};
     let ctrl = null;
     let ctrlResolve = null;
-    entry.controllerReady = new Promise<void>((res) => { ctrlResolve = res; });
+    entry.controllerReady = new Promise((res) => { ctrlResolve = res; });
     entry.readable = new ReadableStream(
       {
         start(c) {
