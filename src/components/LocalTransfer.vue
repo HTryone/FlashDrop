@@ -361,6 +361,10 @@ async function startRecv() {
       recvStatus.value = `初始化接收失败: ${e?.message || e}`; return;
     }
     recvReady.value = true;
+    // 声明：下载流已创建，通知发送端可以开始推数据（否则接收端 GET 已连但下载未建好 → DO 堆积 OOM）
+    if (recvWs && recvWs.readyState === WebSocket.OPEN) {
+      try { recvWs.send(JSON.stringify({ type: 'recv-ready' })); } catch {}
+    }
     recvStatus.value = recvFallback
       ? `收到 ${offer.files.length} 个文件，开始接收（当前为不安全连接，已切换为浏览器下载模式；大文件建议用 https 访问以获得流式写入）`
       : `收到 ${offer.files.length} 个文件，开始流式接收…`;

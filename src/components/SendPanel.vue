@@ -68,6 +68,7 @@ function resetLocalSender() {
   lProgress.value = 0; lPeerOnline.value = false;
   // 滑动窗口状态归零，避免重传时旧 ack/sent 残留导致闸门误判
   ackBytes = 0; sentBytes = 0; ackWaiters = [];
+  lRecvReady.value = false;
 }
 
 function cancelLocalSend() {
@@ -101,6 +102,7 @@ function genRoom() {
   let s = ''; const a = new Uint8Array(6); crypto.getRandomValues(a);
   for (let i = 0; i < 6; i++) s += cs[a[i] % cs.length];
   lRoom.value = s; lPassphrase.value = randomPassphrase();
+  lRecvReady.value = false;
   lSendLink.value = `${location.origin}/?tab=local&room=${s}#k=${lPassphrase.value}`;
   lStatus.value = '房间已生成，正在建立控制通道…';
   void connectControl();
@@ -113,6 +115,16 @@ let ackBytes = 0;                  // 接收端已写盘字节（来自 WS progr
 let sentBytes = 0;                 // 已 enqueue 进 POST body 流的字节
 let ackWaiters: Array<() => void> = [];
 function notifyAckWaiters() { const w = ackWaiters.shift(); if (w) w(); }
+
+// 接收端「创建下载」闸门：接收端建好下载流(StreamSaver sink)后才允许发数据帧，
+// 否则接收端 GET 已连但下载流未就绪 → 数据在 DO 堆积 → OOM。offer 首帧不受限（接收端要先读它来建下载）。
+const lRecvReady = ref(false);
+let recvReadyResolve: (() => void) | null = null;
+let recvReadyPromise: Promise<void> = Promise.resolve();
+function armRecvReady() {
+  if (lRecvReady.value) return;               // 已收到 recv-ready 则无需重等
+  recvReadyPromise = new Promise<void>((res) => { recvReadyResolve = res; });
+}
 
 /** WebSocket 控制通道：保持 DO 活跃，避免 HTTP 请求间 hibernate 丢失 room */
 function connectControl() {
@@ -133,6 +145,11 @@ function connectControl() {
           lWsReadyNotified = true;
           lPeerOnline.value = true;
           lStatus.value = '对方已在线，可开始传输';
+        } else if (data.type === 'recv-ready') {
+          // 接收端已建好下载流 → 放行数据帧推送（在此之前只发 offer 首帧，避免 DO 堆积 OOM）
+          lRecvReady.value = true;
+          recvReadyResolve?.();
+          recvReadyResolve = null;
         } else if (data.type === 'progress') {
           // 接收端真实已收进度（明文口径，与发送端 total 同源，比例零偏差）
           const t = data.total || 1;
@@ -197,6 +214,9 @@ async function startLocalSend() {
   lSending.value = true; lProgress.value = 0;
   lStatus.value = '正在确认控制通道…';
   lAbort = new AbortController();
+  // 重置滑动窗口 + 接收端就绪闸门（防上一次传输残留导致闸门误判；recv-ready 已到则保持无需重等）
+  ackBytes = 0; sentBytes = 0; ackWaiters = [];
+  armRecvReady();
 
   // 关键：确保 WebSocket 控制通道还活着（DO 靠 WS 保活，否则 hibernate 会丢 rooms 状态，
   // 导致 POST 和 GET 连到不同的 TransformStream 实例 → 接收端 EOF at header）
@@ -244,6 +264,11 @@ async function startLocalSend() {
     chunkBytes = 0;
     const rs = new ReadableStream({
       async pull(ctrl) {
+        // 接收端「创建下载」(recv-ready) 前只放行 offer 首帧；数据帧须等对方下载就绪再推，避免 DO 堆积 OOM
+        while (!lRecvReady.value && sentBytes > 0) {
+          await Promise.race([recvReadyPromise, new Promise<void>((r) => setTimeout(r, 20000))]);
+          if (!lRecvReady.value) lRecvReady.value = true; // 超时兜底，防 WS 异常死锁（WINDOW 闸门仍保 DO 不爆）
+        }
         // 滑动窗口闸门：在途量超窗则等待接收端 ack（字节累计量不过期，不会像速率信号那样相位错）
         while (sentBytes - ackBytes > WINDOW) {
           await new Promise<void>((res) => ackWaiters.push(res));

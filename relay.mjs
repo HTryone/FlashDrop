@@ -72,6 +72,11 @@ export function attachRelay(server, app) {
         if (msg.type === 'ready' && role === 'receiver') {
           entry.ready = true;
           notifyReady(entry);
+        } else if (role === 'receiver' && (msg.type === 'progress' || msg.type === 'recv-done' || msg.type === 'recv-ready')) {
+          // 接收端进度/完成/就绪回传 → 转发给发送端（recv-ready 用于「下载建好才发数据」闸门）
+          if (entry.wsSender && entry.wsSender.readyState === 1) {
+            try { entry.wsSender.send(JSON.stringify(msg)); } catch {}
+          }
         }
       } catch {}
     });

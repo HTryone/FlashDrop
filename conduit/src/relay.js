@@ -182,7 +182,7 @@ export class Relay {
         if (data.type === 'ready' && role === 'receiver') {
           entry.ready = true;
           this.notifyReady(entry);
-        } else if (role === 'receiver' && (data.type === 'progress' || data.type === 'recv-done')) {
+        } else if (role === 'receiver' && (data.type === 'progress' || data.type === 'recv-done' || data.type === 'recv-ready')) {
           // 接收端进度/完成回传 → 转发给发送端，由其驱动进度条与完成态
           if (entry.wsSender) this.sendJSON(entry.wsSender, data);
         }
