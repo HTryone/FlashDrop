@@ -325,6 +325,24 @@ async function startRecv() {
   }
   const dirHandle = picked; // null = 非 Chromium，下方走 StreamSaver 兜底
 
+  // 关键：showDirectoryPicker 必须在用户手势内调用；随后立刻在同一手势内申请持久读写权限。
+  // 否则等异步读到 offer 后再调用 dirHandle.getFileHandle() 时，user activation 已过期，
+  // Chrome 会抛 SecurityError: "User activation is required to request permissions."。
+  if (dirHandle) {
+    try {
+      const perm = await (dirHandle as any).requestPermission({ mode: 'readwrite' });
+      if (perm !== 'granted') {
+        recvStatus.value = '需要目录读写权限才能保存文件';
+        receiving.value = false;
+        return;
+      }
+    } catch (e: any) {
+      recvStatus.value = `目录授权失败: ${e?.message || e}`;
+      receiving.value = false;
+      return;
+    }
+  }
+
   try {
     recvKey = await deriveKey(recvPass.value, LOCAL_SALT);
   } catch (e: any) {
