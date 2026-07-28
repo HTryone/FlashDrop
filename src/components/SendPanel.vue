@@ -345,7 +345,10 @@ async function startLocalSend() {
     }
 
     // 等接收端读完 offer、建好下载流后发送 recv-ready（经 WS 回传，见 onmessage）
-    await recvReadyPromise;
+    // 15s 超时兜底：极端情况下（如 SW 注册失败）接收端未发 recv-ready，也不永久挂起；
+    // 超时后继续推数据，发送端被 24MB 滑动窗口闸门压住，DO 最多堆 24MB 不会 OOM。
+    await Promise.race([recvReadyPromise, new Promise<void>((r) => setTimeout(r, 15000))]);
+    if (!lRecvReady.value) console.warn('[send] 等待 recv-ready 超时，直接推数据（DO 由滑动窗口兜底）');
     lStatus.value = '对方已就绪，开始传输数据…';
 
     // 生产者：逐块加密入队（与 postOneChunk 并行）

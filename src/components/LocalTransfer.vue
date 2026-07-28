@@ -47,22 +47,22 @@ function isSecureContextForSW(): boolean {
     (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1');
 }
 
-// 关键：在下载前主动注册并让 SW 接管本页面，使 StreamSaver 走「SW 直连通道」而非脆弱的 mitm iframe 兜底。
-// mitm 兜底要求每条消息带 MessageChannel 端口，否则抛 "You didn't send a messageChannel" 且下载 setup 永远完不成。
+// 在下载前确认 SW 已接管本页面（app 启动已在 main.ts 提前注册 /sw.js，这里只需等待 controller 就绪）。
+// StreamSaver 走「SW 直连通道」而非脆弱的 mitm iframe 兜底。
 async function ensureSWControlled(): Promise<void> {
   if (!('serviceWorker' in navigator)) return;
-  try {
-    await navigator.serviceWorker.register('/sw.js');
-  } catch { /* 已注册或失败都无所谓，下面看 controller 是否就绪 */ }
   if (navigator.serviceWorker.controller) return;
-  // 等待 SW 激活并 claim 本页面（sw.js 的 activate 里已 clients.claim()）
+  // 等 SW active（register 可能还在 install/activate）
+  try { await navigator.serviceWorker.ready; } catch { /* ignore */ }
+  if (navigator.serviceWorker.controller) return;
+  // 等待 activate 中的 clients.claim() 触发 controllerchange（sw.js 已 clients.claim()）
   await new Promise<void>((resolve) => {
     const done = () => { clearInterval(timer); resolve(); };
     const timer = setInterval(() => {
       if (navigator.serviceWorker.controller) done();
     }, 100);
     navigator.serviceWorker.addEventListener('controllerchange', done, { once: true });
-    setTimeout(done, 3000); // 最多等 3s，超时则退回 mitm/blob 兜底，绝不阻塞下载
+    setTimeout(done, 5000); // 延长到 5s 兜底，超时则退回 mitm/blob，绝不阻塞下载
   });
 }
 
