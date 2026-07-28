@@ -259,6 +259,7 @@ async function startLocalSend() {
         const frame = pending.shift()!;
         notifyDrain();
         ctrl.enqueue(frame);
+        sentBytes += frame.length;   // 修复：累加已发字节，使滑动窗口闸门真正生效
         chunkBytes += frame.length;
         if (chunkBytes >= POST_LIMIT) { ctrl.close(); return; }
       },
