@@ -357,31 +357,31 @@ async function startLocalSend() {
       } as any);
       if (!resp.ok) throw new Error(`上传 offer 失败 HTTP ${resp.status}`);
     }
-    await postOffer();
-    lStatus.value = '已发送文件清单，等待对方创建下载…';
 
-    const mapped = files.value.map(f => ({ file: f.file }));
-    const total = mapped.reduce((s, f) => s + f.file.size, 0);
-    if (total === 0) {
-      await sendClose();
-      lDone.value = true; lStatus.value = '传输完成（空）'; lSending.value = false;
-      return;
-    }
+      const mapped = files.value.map(f => ({ file: f.file }));
+      const total = mapped.reduce((s, f) => s + f.file.size, 0);
+      if (total === 0) {
+        await sendClose();
+        lDone.value = true; lStatus.value = '传输完成（空）'; lSending.value = false;
+        return;
+      }
 
-    // 等接收端 GET 连上（relay 发 pull 权威信号）或接收端应用层 recv-ready 备份信号。
-    // 二者任一即放行——此时接收端 GET 一定已就绪，推送数据不会成孤儿。
-    // 超时（默认 20s）则直接报错终止：对方多半未点「连接接收」或页面已关，盲推只会造孤儿。
-    try {
-      await Promise.race([
-        recvReadyPromise,
-        new Promise<void>((_, rej) => setTimeout(() => rej(new Error('对方未开始接收（20s 超时）')), 20000)),
-      ]);
-    } catch (e: any) {
-      lStatus.value = `无法开始传输：${e?.message || e}。请确认对方已点「连接接收」且页面未关闭。`;
-      lSending.value = false;
-      return;
-    }
-    lStatus.value = '对方已就绪，开始传输数据…';
+      // 等接收端 GET 连上（relay 发 pull 权威信号）或接收端应用层 recv-ready 备份信号。
+      // 二者任一即放行——此时接收端 GET 一定已就绪，推送数据不会成孤儿。
+      // 超时（默认 20s）则直接报错终止：对方多半未点「连接接收」或页面已关，盲推只会造孤儿。
+      try {
+        await Promise.race([
+          recvReadyPromise,
+          new Promise<void>((_, rej) => setTimeout(() => rej(new Error('对方未开始接收（20s 超时）')), 20000)),
+        ]);
+      } catch (e: any) {
+        lStatus.value = `无法开始传输：${e?.message || e}。请确认对方已点「连接接收」且页面未关闭。`;
+        lSending.value = false;
+        return;
+      }
+      lStatus.value = '对方已就绪，发送文件清单…';
+      await postOffer();
+      lStatus.value = '已发送文件清单，开始传输数据…';
 
     // 生产者：逐块加密入队
     let frameLogCount = 0;

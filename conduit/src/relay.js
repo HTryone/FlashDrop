@@ -152,23 +152,35 @@ export class Relay {
       console.log(`[stream] POST ${room}, entry exists=${!!entry}`);
       if (!entry) entry = this.createRoom(room);
       try {
-        // 等 controller 就绪（GET 的 ReadableStream.start 异步设置），否则 enqueue 会抛 500
+        // 等 controller 就绪（GET 的 ReadableStream.start 设置），否则 enqueue 会抛 500
         await entry.controllerReady;
-        const reader = request.body.getReader();
-        for (;;) {
-          // 背压：可读流缓冲满则等接收端拉取（pull 回调会唤醒）
-          while (entry.controller && entry.controller.desiredSize !== null && entry.controller.desiredSize <= 0) {
-            await new Promise((res) => { entry.pullWaiter = res; });
+        const pump = async () => {
+          const reader = request.body.getReader();
+          try {
+            for (;;) {
+              // 背压：可读流缓冲满则等接收端拉取（pull 回调唤醒所有等待者）
+              while (entry.controller.desiredSize !== null && entry.controller.desiredSize <= 0) {
+                await new Promise((res) => { entry.pullWaiters.push(res); });
+              }
+              const { done, value } = await reader.read();
+              if (done) break;
+              // 同步 enqueue：当前 POST 字节整段连续入队（writeChain 已保证跨 POST 不交叉）
+              entry.controller.enqueue(value);
+            }
+          } finally {
+            reader.releaseLock();
           }
-          const { done, value } = await reader.read();
-          if (done) break;
-          entry.controller.enqueue(value);
-        }
-        reader.releaseLock();
-        console.log(`[stream] POST ${room}, pumped`);
+          console.log(`[stream] POST ${room}, pumped`);
+        };
+        // writeChain 串行化各 POST 的 enqueue，保证帧字节连续不交叉（并发上传前提）
+        entry.writeChain = entry.writeChain.then(pump).catch((e) => {
+          console.error('[stream] POST pump error:', e?.message || e);
+          throw e;
+        });
+        await entry.writeChain;
       } catch (e) {
-        console.error('[stream] POST pump error:', e?.message || e);
-        return new Response('error', { status: 500, headers: this.cors() });
+        console.error('[stream] POST error:', e?.message || e);
+        return new Response('error: ' + (e?.message || e), { status: 500, headers: this.cors() });
       }
       return new Response('ok', { headers: this.cors() });
     }
@@ -243,20 +255,31 @@ export class Relay {
   createRoom(room) {
     // 用 ReadableStream + controller 取代 TransformStream：支持多个 POST 并发写入同一流。
     // controller.desiredSize 驱动背压（接收端读不动时暂停读 POST body）。
+    // 关键：controller 由 start() 设置；用闭包局部变量捕获 resolver，避免「构造后才赋值」导致的竞态。
     const entry = {};
+    let ctrl = null;
+    let ctrlResolve = null;
+    entry.controllerReady = new Promise<void>((res) => { ctrlResolve = res; });
     entry.readable = new ReadableStream(
       {
-        start(c) { entry.controller = c; entry._resolveController(); },
+        start(c) {
+          ctrl = c;
+          entry.controller = c;
+          if (ctrlResolve) ctrlResolve();
+        },
         pull() {
-          // 消费方拉取 → 唤醒因背压暂停的 POST 写入
-          if (entry.pullWaiter) { const w = entry.pullWaiter; entry.pullWaiter = null; w(); }
+          // 消费方拉取 → 唤醒因背压暂停的所有 POST 写入（并发下不能用单一 waiter）
+          const ws = entry.pullWaiters;
+          if (ws && ws.length) {
+            entry.pullWaiters = [];
+            for (const w of ws) w();
+          }
         },
       },
       new ByteLengthQueuingStrategy({ highWaterMark: 8 * 1024 * 1024 }),
     );
-    entry.controller = null;
-    entry.controllerReady = new Promise<void>((res) => { entry._resolveController = res; });
-    entry.pullWaiter = null;
+    entry.pullWaiters = [];        // 背压等待者数组（pull 时全部唤醒）
+    entry.writeChain = Promise.resolve();  // 串行化各 POST 的 enqueue，保证帧连续不交叉
     entry.ready = false;
     entry.getConnected = false;
     entry.wsSender = null;
