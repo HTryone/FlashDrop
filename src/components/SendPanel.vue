@@ -247,9 +247,13 @@ async function startLocalSend() {
   let producerDone = false;
   let waiters: Array<() => void> = [];
   let chunkBytes = 0;
+  let firstFrameResolve: (() => void) | null = null;
+  let firstFrameReject: ((e: any) => void) | null = null;
 
   function pushFrame(f: Uint8Array) {
+    const wasEmpty = pending.length === 0;
     pending.push(f);
+    if (wasEmpty && firstFrameResolve) { firstFrameResolve(); firstFrameResolve = null; }
     const w = waiters.shift(); if (w) w();
   }
   function notifyDrain() {
@@ -264,17 +268,34 @@ async function startLocalSend() {
   async function postOneChunk(): Promise<boolean> {
     chunkBytes = 0;
     const rs = new ReadableStream({
+      start(ctrl) {
+        // 关键：duplex:'half' 的 body 必须创建时就有数据，Chrome 才会立即发起 HTTP 请求。
+        // 若等第一次 pull 再 enqueue，可能形成死锁：浏览器不发起请求 → 不 pull → 没数据。
+        if (pending.length === 0) {
+          console.warn('[send] postOneChunk start with empty pending');
+          return;
+        }
+        const frame = pending.shift()!;
+        notifyDrain();
+        ctrl.enqueue(frame);
+        sentBytes += frame.length;
+        chunkBytes += frame.length;
+        console.log('[send] first frame enqueued', frame.length, 'chunkBytes', chunkBytes);
+      },
       async pull(ctrl) {
         // 滑动窗口闸门：在途量超窗则等待接收端 ack（字节累计量不过期，不会像速率信号那样相位错）
         while (sentBytes - ackBytes > WINDOW) {
+          console.log('[send] window gate', sentBytes, ackBytes, sentBytes - ackBytes);
           await new Promise<void>((res) => ackWaiters.push(res));
         }
         if (pending.length === 0) {
           if (producerDone) { ctrl.close(); return; }
+          console.log('[send] pull waiting for frame');
           await waitFrame();
           if (pending.length === 0) {
             if (producerDone) { ctrl.close(); return; }
-            return; // 再等一轮
+            console.log('[send] pull still no frame, return');
+            return; // 浏览器会再次调用 pull
           }
         }
         const frame = pending.shift()!;
@@ -282,6 +303,7 @@ async function startLocalSend() {
         ctrl.enqueue(frame);
         sentBytes += frame.length;   // 修复：累加已发字节，使滑动窗口闸门真正生效
         chunkBytes += frame.length;
+        console.log('[send] frame enqueued', frame.length, 'chunkBytes', chunkBytes, 'pending', pending.length);
         if (chunkBytes >= POST_LIMIT) { ctrl.close(); return; }
       },
     });
@@ -360,34 +382,56 @@ async function startLocalSend() {
     }
     lStatus.value = '对方已就绪，开始传输数据…';
 
-    // 生产者：逐块加密入队（与 postOneChunk 并行）
+    // 生产者：逐块加密入队
+    let frameLogCount = 0;
     const producer = (async () => {
+      console.log('[send] producer start');
+      try {
       for (let fi = 0; fi < mapped.length; fi++) {
         const file = mapped[fi].file; let offset = 0; let ci = 0;
         while (offset < file.size) {
           const end = Math.min(offset + LOCAL_CHUNK, file.size);
+          console.log('[send] slicing', file.name, offset, end);
           const chunkBuf = await file.slice(offset, end).arrayBuffer();
+          console.log('[send] slice ok', chunkBuf.byteLength);
           const plainLen = chunkBuf.byteLength;
+          console.log('[send] encrypting...');
           const enc = new Uint8Array(await encryptChunkAsync(chunkBuf, lKeyHex.value));
+          console.log('[send] encrypted', enc.length);
           // 帧头：fi u16 + ci u32 + plainLen u32
           const frame = new Uint8Array(FRAME_HDR + enc.length);
           const dv = new DataView(frame.buffer);
           dv.setUint16(0, fi); dv.setUint32(2, ci); dv.setUint32(6, plainLen);
           frame.set(enc, FRAME_HDR);
           pushFrame(encodeMsg(frame));
+          frameLogCount++;
+          if (frameLogCount <= 3) console.log('[send] pushed frame', fi, ci, 'pending', pending.length);
           // 简单背压：在途帧过多则等待消费
           while (pending.length > 300) { await new Promise<void>((r) => waiters.push(r)); }
           offset += plainLen; ci++;
-          // 进度改由接收端 WS 回传的 progress 事件驱动（见 onmessage），不再用本地生产进度
         }
       }
       producerDone = true;
       notifyDrain();
+      console.log('[send] producer done');
+      } catch (e: any) {
+        console.error('[send] producer error:', e);
+        if (firstFrameReject) { firstFrameReject(e); firstFrameReject = null; }
+        throw e;
+      }
     })();
+
+    // 关键：等 producer 生产出第一帧，再启动 consumer。
+    // 这样 ReadableStream 的 start() 能立即 enqueue 数据，触发 Chrome 立即发起 HTTP 请求。
+    console.log('[send] waiting for first frame');
+    await new Promise<void>((res, rej) => { firstFrameResolve = res; firstFrameReject = rej; });
+    firstFrameReject = null;
+    console.log('[send] first frame ready, start consumer');
 
     // 消费者：顺序发起每个分片流式 POST，直到 producer 完成且无待发帧
     let more = true;
     while (more) {
+      console.log('[send] postOneChunk loop, pending', pending.length, 'producerDone', producerDone);
       more = await postOneChunk();
     }
     await producer;
