@@ -128,9 +128,7 @@ let nextWriteSeq = 0;
 const readyBuf = new Map<number, { fi: number; plain: Uint8Array }>();
 let drainRunning = false;
 let pendingDone = false;
-// 本地背压：已收未写盘积压超阈值时暂停读流，等写盘追上（替代 WS 的 PAUSE/RESUME 信令）
-const RECV_PAUSE_BYTES = 16 * 1024 * 1024;
-let recvReceived = 0;
+  let recvReceived = 0;
 let lastProgressAt = 0;     // 进度回传节流时间戳
 let recvDoneSent = false;   // recv-done 是否已发送给发送端（防重复）
 
@@ -349,11 +347,8 @@ async function startRecv() {
     let frameCount = 0;
     while (true) {
       if (recvAborted) break;
-      // 本地背压：已收未写盘积压过多时暂停读流（TCP 流控自动反压到发送端）
-      while (recvReceived - recvBytes > RECV_PAUSE_BYTES) {
-        if (recvAborted) break;
-        await new Promise(r => setTimeout(r, 10));
-      }
+      // 不再本地睡眠暂停读流：发送端已用端到端滑动窗口(WINDOW=24MB)兜底在途量，
+      // 接收端全速读+写即可，积压天然 ≤ WINDOW，避免「暂停读→TCP反压过时信号→发送端减速」的锯齿。
       const payload = await readMsg(reader);
       if (!payload) break; // EOF = 发送端完成
       // 容忍偶发的过短帧（如 DO 开场帧落在数据段），跳过不报错

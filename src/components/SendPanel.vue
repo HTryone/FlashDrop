@@ -66,6 +66,8 @@ let lWsReadyNotified = false;
 function resetLocalSender() {
   lSending.value = false; lDone.value = false;
   lProgress.value = 0; lPeerOnline.value = false;
+  // 滑动窗口状态归零，避免重传时旧 ack/sent 残留导致闸门误判
+  ackBytes = 0; sentBytes = 0; ackWaiters = [];
 }
 
 function cancelLocalSend() {
@@ -104,6 +106,14 @@ function genRoom() {
   void connectControl();
 }
 
+// 端到端滑动窗口状态（顶层作用域：控制通道 onmessage 与发送流 pull 共享）
+// 只控「在途字节量」(已发-已确认)，绝不控速率，天然免疫 ~8s 速率信号异位 → 消除震荡
+const WINDOW = 24 * 1024 * 1024;   // 在途上限 24MB：覆盖开场建下载延迟 T，又不回归「猛灌几十MB」
+let ackBytes = 0;                  // 接收端已写盘字节（来自 WS progress.received）
+let sentBytes = 0;                 // 已 enqueue 进 POST body 流的字节
+let ackWaiters: Array<() => void> = [];
+function notifyAckWaiters() { const w = ackWaiters.shift(); if (w) w(); }
+
 /** WebSocket 控制通道：保持 DO 活跃，避免 HTTP 请求间 hibernate 丢失 room */
 function connectControl() {
   if (!lRoom.value || lWs) return;
@@ -127,6 +137,9 @@ function connectControl() {
           // 接收端真实已收进度（明文口径，与发送端 total 同源，比例零偏差）
           const t = data.total || 1;
           lProgress.value = Math.min(1, (data.received || 0) / t);
+          // 滑动窗口：用接收端已写盘字节更新 ack，唤醒被闸门挡住的 pull
+          ackBytes = data.received || 0;
+          notifyAckWaiters();
         } else if (data.type === 'recv-done' && !lDone.value) {
           // 接收端确已收齐写盘 → 发送端才标记完成（两端状态一致）
           lDone.value = true;
@@ -231,6 +244,10 @@ async function startLocalSend() {
     chunkBytes = 0;
     const rs = new ReadableStream({
       async pull(ctrl) {
+        // 滑动窗口闸门：在途量超窗则等待接收端 ack（字节累计量不过期，不会像速率信号那样相位错）
+        while (sentBytes - ackBytes > WINDOW) {
+          await new Promise<void>((res) => ackWaiters.push(res));
+        }
         if (pending.length === 0) {
           if (producerDone) { ctrl.close(); return; }
           await waitFrame();
