@@ -104,7 +104,9 @@ class FSAccessSink {
   private writable: any = null;
   constructor(handle: any) { this.handle = handle; }
   async write(p: Uint8Array) {
-    if (!this.writable) this.writable = await this.handle.createWritable();
+    // getFileHandle() 返回 Promise，必须先 await 拿到真实句柄再 createWritable
+    const h = await this.handle;
+    if (!this.writable) this.writable = await h.createWritable();
     await this.writable.write(p);
   }
   async close() {
@@ -118,10 +120,14 @@ async function pickSaveDir(): Promise<any | null> {
   const w = window as any;
   if (typeof w.showDirectoryPicker !== 'function') return null;
   try {
-    return await w.showDirectoryPicker();
+    const dir = await w.showDirectoryPicker();
+    console.log('[recv] showDirectoryPicker ok');
+    return dir;
   } catch (e: any) {
     // 用户取消(Esc)或拒绝授权 → 上层据此放弃本次接收
-    return { __cancelled: true };
+    // 其他错误也包成 __cancelled，但打印出来便于诊断
+    console.log('[recv] showDirectoryPicker error:', e?.name, e?.message);
+    return { __cancelled: true, __error: e?.name || String(e) };
   }
 }
 
@@ -319,11 +325,15 @@ async function startRecv() {
   // 不出现浏览器「下载」、不被扩展污染的 mitm iframe 干扰。取消选择则放弃本次接收。
   const picked = await pickSaveDir();
   if (picked && (picked as any).__cancelled) {
-    recvStatus.value = '已取消选择保存目录';
+    const errName = (picked as any).__error || '';
+    recvStatus.value = errName
+      ? `选择保存目录失败: ${errName}。请检查浏览器是否禁用了文件选择器，或换用 localhost/https 访问。`
+      : '已取消选择保存目录';
     receiving.value = false;
     return;
   }
   const dirHandle = picked; // null = 非 Chromium，下方走 StreamSaver 兜底
+  console.log('[recv] dirHandle acquired, requesting permission...');
 
   // 关键：showDirectoryPicker 必须在用户手势内调用；随后立刻在同一手势内申请持久读写权限。
   // 否则等异步读到 offer 后再调用 dirHandle.getFileHandle() 时，user activation 已过期，
@@ -331,16 +341,17 @@ async function startRecv() {
   if (dirHandle) {
     try {
       const perm = await (dirHandle as any).requestPermission({ mode: 'readwrite' });
-      if (perm !== 'granted') {
-        recvStatus.value = '需要目录读写权限才能保存文件';
-        receiving.value = false;
-        return;
-      }
-    } catch (e: any) {
-      recvStatus.value = `目录授权失败: ${e?.message || e}`;
+    if (perm !== 'granted') {
+      recvStatus.value = '需要目录读写权限才能保存文件';
       receiving.value = false;
       return;
     }
+    console.log('[recv] directory permission granted');
+  } catch (e: any) {
+    recvStatus.value = `目录授权失败: ${e?.message || e}`;
+    receiving.value = false;
+    return;
+  }
   }
 
   try {
@@ -355,7 +366,9 @@ async function startRecv() {
   const base = resolveRelayBase();
 
   // 1. 先连 WebSocket 控制通道，保持 DO 活跃并通知发送端 ready
+  console.log('[recv] connecting control ws...');
   await connectRecvControl(base);
+  console.log('[recv] control ws connected, starting GET...');
 
   let resp: Response;
   try {
@@ -428,8 +441,10 @@ async function startRecv() {
     recvChunks = 0;
 
     try { await makeSinks(offer.files, dirHandle); } catch (e: any) {
+      console.error('[recv] makeSinks failed:', e);
       recvStatus.value = `初始化接收失败: ${e?.message || e}`; return;
     }
+    console.log('[recv] makeSinks ok, sending recv-ready');
     recvReady.value = true;
     // 声明：下载流已创建，通知发送端可以开始推数据（否则接收端 GET 已连但下载未建好 → DO 堆积 OOM）
     if (recvWs && recvWs.readyState === WebSocket.OPEN) {
