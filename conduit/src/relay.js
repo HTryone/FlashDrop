@@ -91,13 +91,12 @@ export class Relay {
     // POST /stream/:room/close — 发送端通知传输结束
     if (request.method === 'POST' && sub === 'close') {
       const entry = this.rooms.get(room);
-      if (entry) {
+      if (entry && entry.controller) {
         try {
-          const writer = entry.writable.getWriter();
-          await writer.close();
-          writer.releaseLock();
+          // 关闭可读流 → 接收端 GET 收到 EOF = 传输完成
+          entry.controller.close();
         } catch (e) {
-          // writable 可能已关闭（接收端断开等），忽略
+          // 流可能已关闭（接收端断开等），忽略
         }
         this.rooms.delete(room);
       }
@@ -117,16 +116,14 @@ export class Relay {
         console.log(`[stream] GET ${room}, created new room`);
       }
       // 关键修复：立即往流里写 1 字节「开场帧」，防止 Cloudflare 缓冲空响应体。
-      // 现象：接收端先连 GET 时 DO 的 TransformStream 还是空的，Cloudflare 边缘会
+      // 现象：接收端先连 GET 时 DO 的流还是空的，Cloudflare 边缘会
       // 一直等、把响应缓存到发送端 /close（上传完成）才整体下发，表现为
       // 「下载在上传完成后才开始、且只有 ~200KB/s」。写开场帧后响应立即开始流式下发。
       // 接收端会跳过这个非 offer 帧（见 LocalTransfer.vue）。
       try {
-        const ow = entry.writable.getWriter();
-        await ow.write(new Uint8Array([0, 0, 0, 1, 0x00])); // [4B 长度前缀=1][1字节 0x00]
-        ow.releaseLock();
+        entry.controller.enqueue(new Uint8Array([0, 0, 0, 1, 0x00])); // [4B 长度前缀=1][1字节 0x00]
       } catch (e) {
-        // writable 可能已被关闭，忽略
+        // 流可能已被关闭，忽略
       }
       // 权威「拉取」信号：接收端 GET 已连上、可读流已建立 → 立即通知发送端可以推数据。
       // 取代依赖应用层 recv-ready WS 消息的脆弱握手：pull 由 relay 自身在 GET 连上时发出，
@@ -143,17 +140,30 @@ export class Relay {
       });
     }
 
-    // POST /stream/:room — 发送端分片上传（复用 GET 创建的同一个 room）
+    // POST /stream/:room — 发送端分片上传（并发多 POST 合并进同一条可读流）
+    // 旧逻辑用 entry.writable 单写者 pipeTo：并发 POST 会抢锁失败、只能串行。
+    // 新逻辑：每个 POST 把自己的请求体逐块 enqueue 进 room 的 ReadableStream controller，
+    // 多个 POST 并发写入同一 controller（JS 单线程，enqueue 原子），由接收端 GET 顺序读出。
+    // 背压：controller.desiredSize<=0（接收端读不动）时暂停读 request.body → 反向传导到发送端。
     if (request.method === 'POST') {
       let entry = this.rooms.get(room);
       console.log(`[stream] POST ${room}, entry exists=${!!entry}`);
       if (!entry) entry = this.createRoom(room);
       try {
-        console.log(`[stream] POST ${room}, starting pipeTo`);
-        await request.body.pipeTo(entry.writable, { preventClose: true });
-        console.log(`[stream] POST ${room}, pipeTo completed`);
+        const reader = request.body.getReader();
+        for (;;) {
+          // 背压：可读流缓冲满则等接收端拉取（pull 回调会唤醒）
+          while (entry.controller && entry.controller.desiredSize !== null && entry.controller.desiredSize <= 0) {
+            await new Promise((res) => { entry.pullWaiter = res; });
+          }
+          const { done, value } = await reader.read();
+          if (done) break;
+          entry.controller.enqueue(value);
+        }
+        reader.releaseLock();
+        console.log(`[stream] POST ${room}, pumped`);
       } catch (e) {
-        console.error('[stream] pipe error:', e?.message || e);
+        console.error('[stream] POST pump error:', e?.message || e);
         return new Response('error', { status: 500, headers: this.cors() });
       }
       return new Response('ok', { headers: this.cors() });
@@ -227,15 +237,25 @@ export class Relay {
   }
 
   createRoom(room) {
-    const { readable, writable } = new TransformStream(
-      {},
-      new ByteLengthQueuingStrategy({ highWaterMark: 4 * 1024 * 1024 }),
-      new ByteLengthQueuingStrategy({ highWaterMark: 4 * 1024 * 1024 }),
+    // 用 ReadableStream + controller 取代 TransformStream：支持多个 POST 并发写入同一流。
+    // controller.desiredSize 驱动背压（接收端读不动时暂停读 POST body）。
+    const entry = {};
+    entry.readable = new ReadableStream(
+      {
+        start(c) { entry.controller = c; },
+        pull() {
+          // 消费方拉取 → 唤醒因背压暂停的 POST 写入
+          if (entry.pullWaiter) { const w = entry.pullWaiter; entry.pullWaiter = null; w(); }
+        },
+      },
+      new ByteLengthQueuingStrategy({ highWaterMark: 8 * 1024 * 1024 }),
     );
-    const entry = {
-      readable, writable, ready: false, getConnected: false,
-      wsSender: null, wsReceiver: null,
-    };
+    entry.controller = null;
+    entry.pullWaiter = null;
+    entry.ready = false;
+    entry.getConnected = false;
+    entry.wsSender = null;
+    entry.wsReceiver = null;
     this.rooms.set(room, entry);
     console.log(`[room] created ${room}, total rooms=${this.rooms.size}`);
     return entry;
