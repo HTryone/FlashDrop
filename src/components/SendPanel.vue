@@ -264,11 +264,6 @@ async function startLocalSend() {
     chunkBytes = 0;
     const rs = new ReadableStream({
       async pull(ctrl) {
-        // 接收端「创建下载」(recv-ready) 前只放行 offer 首帧；数据帧须等对方下载就绪再推，避免 DO 堆积 OOM
-        while (!lRecvReady.value && sentBytes > 0) {
-          await Promise.race([recvReadyPromise, new Promise<void>((r) => setTimeout(r, 20000))]);
-          if (!lRecvReady.value) lRecvReady.value = true; // 超时兜底，防 WS 异常死锁（WINDOW 闸门仍保 DO 不爆）
-        }
         // 滑动窗口闸门：在途量超窗则等待接收端 ack（字节累计量不过期，不会像速率信号那样相位错）
         while (sentBytes - ackBytes > WINDOW) {
           await new Promise<void>((res) => ackWaiters.push(res));
@@ -317,24 +312,41 @@ async function startLocalSend() {
   }
 
   try {
-    // 1. offer（文件清单）作为第一个帧，立即入队
+    // 1. 单独发 offer（文件清单）POST；必须在 ReadableStream 之外等 recv-ready，
+    //    否则在 pull 里阻塞等 recv-ready 会导致 HTTP body 长时间不流动，浏览器/Cloudflare 直接 abort fetch → Failed to fetch。
     const offerJson = JSON.stringify({
       type: 'offer',
       files: files.value.map(f => ({ name: f.file.name, size: f.file.size })),
     });
     const offerBytes = new TextEncoder().encode(offerJson);
-    pushFrame(encodeMsg(offerBytes));
-    lStatus.value = '已发送文件清单，开始传输数据…';
+    const offerFrame = encodeMsg(offerBytes);
+    async function postOffer() {
+      const rs = new ReadableStream({
+        start(ctrl) { ctrl.enqueue(offerFrame); ctrl.close(); }
+      });
+      const resp = await fetch(`${base}/stream/${lRoom.value}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: rs,
+        duplex: 'half',
+        signal: lAbort!.signal,
+      } as any);
+      if (!resp.ok) throw new Error(`上传 offer 失败 HTTP ${resp.status}`);
+    }
+    await postOffer();
+    lStatus.value = '已发送文件清单，等待对方创建下载…';
 
     const mapped = files.value.map(f => ({ file: f.file }));
     const total = mapped.reduce((s, f) => s + f.file.size, 0);
     if (total === 0) {
-      producerDone = true; notifyDrain();
-      let more = true; while (more) more = await postOneChunk();
       await sendClose();
       lDone.value = true; lStatus.value = '传输完成（空）'; lSending.value = false;
       return;
     }
+
+    // 等接收端读完 offer、建好下载流后发送 recv-ready（经 WS 回传，见 onmessage）
+    await recvReadyPromise;
+    lStatus.value = '对方已就绪，开始传输数据…';
 
     // 生产者：逐块加密入队（与 postOneChunk 并行）
     const producer = (async () => {
