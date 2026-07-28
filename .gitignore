@@ -23,3 +23,7 @@ dist/
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# 临时大文件测试样本（勿入库）
+test_*.bin
+*.bin
