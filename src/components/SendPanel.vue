@@ -145,8 +145,9 @@ function connectControl() {
           lWsReadyNotified = true;
           lPeerOnline.value = true;
           lStatus.value = '对方已在线，可开始传输';
-        } else if (data.type === 'recv-ready') {
-          // 接收端已建好下载流 → 放行数据帧推送（在此之前只发 offer 首帧，避免 DO 堆积 OOM）
+        } else if (data.type === 'pull' || data.type === 'recv-ready') {
+          // pull = relay 权威信号：接收端 GET 已连上，可安全推数据（不会成孤儿）
+          // recv-ready = 接收端应用层备份信号（GET 连上后由接收端发出）。二者任一即放行。
           lRecvReady.value = true;
           recvReadyResolve?.();
           recvReadyResolve = null;
@@ -344,11 +345,19 @@ async function startLocalSend() {
       return;
     }
 
-    // 等接收端读完 offer、建好下载流后发送 recv-ready（经 WS 回传，见 onmessage）
-    // 15s 超时兜底：极端情况下（如 SW 注册失败）接收端未发 recv-ready，也不永久挂起；
-    // 超时后继续推数据，发送端被 24MB 滑动窗口闸门压住，DO 最多堆 24MB 不会 OOM。
-    await Promise.race([recvReadyPromise, new Promise<void>((r) => setTimeout(r, 15000))]);
-    if (!lRecvReady.value) console.warn('[send] 等待 recv-ready 超时，直接推数据（DO 由滑动窗口兜底）');
+    // 等接收端 GET 连上（relay 发 pull 权威信号）或接收端应用层 recv-ready 备份信号。
+    // 二者任一即放行——此时接收端 GET 一定已就绪，推送数据不会成孤儿。
+    // 超时（默认 20s）则直接报错终止：对方多半未点「连接接收」或页面已关，盲推只会造孤儿。
+    try {
+      await Promise.race([
+        recvReadyPromise,
+        new Promise<void>((_, rej) => setTimeout(() => rej(new Error('对方未开始接收（20s 超时）')), 20000)),
+      ]);
+    } catch (e: any) {
+      lStatus.value = `无法开始传输：${e?.message || e}。请确认对方已点「连接接收」且页面未关闭。`;
+      lSending.value = false;
+      return;
+    }
     lStatus.value = '对方已就绪，开始传输数据…';
 
     // 生产者：逐块加密入队（与 postOneChunk 并行）

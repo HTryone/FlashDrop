@@ -128,6 +128,13 @@ export class Relay {
       } catch (e) {
         // writable 可能已被关闭，忽略
       }
+      // 权威「拉取」信号：接收端 GET 已连上、可读流已建立 → 立即通知发送端可以推数据。
+      // 取代依赖应用层 recv-ready WS 消息的脆弱握手：pull 由 relay 自身在 GET 连上时发出，
+      // 保证发送端推数据前接收端 GET 一定已就绪 → 消灭「死锁(GET 连了没人推)」「孤儿(推了没人拉)」。
+      entry.getConnected = true;
+      if (entry.wsSender && entry.wsSender.readyState === 1) {
+        this.sendJSON(entry.wsSender, { type: 'pull' });
+      }
       return new Response(entry.readable, {
         headers: this.cors({
           'Content-Type': 'application/octet-stream',
@@ -170,6 +177,8 @@ export class Relay {
 
     if (role === 'sender') {
       entry.wsSender = server;
+      // 接收端 GET 已连上则立即驱动发送端推数据（即使 pull 在 GET 时因 WS 未连而没发出）
+      if (entry.getConnected) this.sendJSON(server, { type: 'pull' });
       // 若接收端已就绪，立即通知
       if (entry.ready) this.sendJSON(server, { type: 'ready' });
     } else {
@@ -224,7 +233,7 @@ export class Relay {
       new ByteLengthQueuingStrategy({ highWaterMark: 4 * 1024 * 1024 }),
     );
     const entry = {
-      readable, writable, ready: false,
+      readable, writable, ready: false, getConnected: false,
       wsSender: null, wsReceiver: null,
     };
     this.rooms.set(room, entry);
