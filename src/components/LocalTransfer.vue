@@ -47,6 +47,25 @@ function isSecureContextForSW(): boolean {
     (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1');
 }
 
+// 关键：在下载前主动注册并让 SW 接管本页面，使 StreamSaver 走「SW 直连通道」而非脆弱的 mitm iframe 兜底。
+// mitm 兜底要求每条消息带 MessageChannel 端口，否则抛 "You didn't send a messageChannel" 且下载 setup 永远完不成。
+async function ensureSWControlled(): Promise<void> {
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    await navigator.serviceWorker.register('/sw.js');
+  } catch { /* 已注册或失败都无所谓，下面看 controller 是否就绪 */ }
+  if (navigator.serviceWorker.controller) return;
+  // 等待 SW 激活并 claim 本页面（sw.js 的 activate 里已 clients.claim()）
+  await new Promise<void>((resolve) => {
+    const done = () => { clearInterval(timer); resolve(); };
+    const timer = setInterval(() => {
+      if (navigator.serviceWorker.controller) done();
+    }, 100);
+    navigator.serviceWorker.addEventListener('controllerchange', done, { once: true });
+    setTimeout(done, 3000); // 最多等 3s，超时则退回 mitm/blob 兜底，绝不阻塞下载
+  });
+}
+
 function triggerDownload(blob: Blob, name: string) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -83,7 +102,10 @@ async function makeSinks(files: any[]) {
   recvFallback = false;
   let ss: any = null;
   if (isSecureContextForSW()) {
-    try { ss = await ensureStreamSaver(); } catch (e: any) {
+    try {
+      await ensureSWControlled();   // 让 SW 接管页面 → StreamSaver 走直连通道，避开脆弱的 mitm iframe
+      ss = await ensureStreamSaver();
+    } catch (e: any) {
       ss = null;
     }
   }
