@@ -96,10 +96,52 @@ class BlobSink {
   abort() { this.chunks = []; }
 }
 
+// Chromium 专用：File System Access API 直接流式落盘，无需 SW / iframe / MessageChannel。
+// StreamSaver 的 mitm iframe 在装了扩展的 Chrome 上结构性不可靠（扩展消息污染 → "didn't send a messageChannel" 崩溃），
+// 我们的环境正是如此，故 Chromium 优先走此路径，从根上消除该崩溃。
+class FSAccessSink {
+  private handle: any;
+  private writable: any = null;
+  constructor(handle: any) { this.handle = handle; }
+  async write(p: Uint8Array) {
+    if (!this.writable) this.writable = await this.handle.createWritable();
+    await this.writable.write(p);
+  }
+  async close() {
+    if (this.writable) { await this.writable.close(); this.writable = null; }
+  }
+  abort() { try { this.writable?.abort(); } catch { /* ignore */ } }
+}
+
+// 必须在用户手势内调用（连接接收按钮触发），拿到目录句柄；非 Chromium 返回 null 走 StreamSaver 兜底。
+async function pickSaveDir(): Promise<any | null> {
+  const w = window as any;
+  if (typeof w.showDirectoryPicker !== 'function') return null;
+  try {
+    return await w.showDirectoryPicker();
+  } catch (e: any) {
+    // 用户取消(Esc)或拒绝授权 → 上层据此放弃本次接收
+    return { __cancelled: true };
+  }
+}
+
 let recvFallback = false;
-async function makeSinks(files: any[]) {
+async function makeSinks(files: any[], dirHandle?: any) {
   writers = [];
   recvFallback = false;
+  // 优先：Chromium File System Access API（直写磁盘，无 SW/iframe，扩展无从干扰）
+  if (dirHandle && !(dirHandle as any).__cancelled) {
+    try {
+      writers = files.map((f: any) => {
+        const safeName = String(f.name).replace(/[\\/]/g, '_');
+        return new FSAccessSink(dirHandle.getFileHandle(safeName, { create: true }));
+      });
+      return;
+    } catch (e: any) {
+      writers = [];
+      // 落盘句柄异常 → 退回 StreamSaver 兜底
+    }
+  }
   let ss: any = null;
   if (isSecureContextForSW()) {
     try {
@@ -273,6 +315,16 @@ async function startRecv() {
   resetReceiver();
   recvBuf = new Uint8Array(0);
 
+  // 在用户手势内先弹目录选择器（Chromium File System Access API）：拿到句柄后数据直接流式写盘，
+  // 不出现浏览器「下载」、不被扩展污染的 mitm iframe 干扰。取消选择则放弃本次接收。
+  const picked = await pickSaveDir();
+  if (picked && (picked as any).__cancelled) {
+    recvStatus.value = '已取消选择保存目录';
+    receiving.value = false;
+    return;
+  }
+  const dirHandle = picked; // null = 非 Chromium，下方走 StreamSaver 兜底
+
   try {
     recvKey = await deriveKey(recvPass.value, LOCAL_SALT);
   } catch (e: any) {
@@ -357,7 +409,7 @@ async function startRecv() {
     perFileChunks = offer.files.map((f: any) => Math.max(1, Math.ceil((f.size || 0) / CHUNK)));
     recvChunks = 0;
 
-    try { await makeSinks(offer.files); } catch (e: any) {
+    try { await makeSinks(offer.files, dirHandle); } catch (e: any) {
       recvStatus.value = `初始化接收失败: ${e?.message || e}`; return;
     }
     recvReady.value = true;
