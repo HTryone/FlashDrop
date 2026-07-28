@@ -236,7 +236,12 @@ async function startLocalSend() {
 
   const base = resolveRelayBase();
   // Cloudflare POST 请求体限制 100MB，每片留余量用 80MB；本地 relay 无此限制但保持一致分片
-  const POST_LIMIT = 80 * 1024 * 1024;
+  // 实测证据（2026-07-29 浏览器打线上 relay 隔离实验）：这条 Chrome→CF 链路对流式 POST 请求体
+  // 是「整段缓冲、POST 关闭才向 DO 转发」——发 5MB 挂住不关 8 秒接收端 0 字节，一关全到。
+  // 因此 POST 分片必须显著小于 24MB 滑动窗口，否则互锁死：窗口等 ack → ack 要数据到 →
+  // 数据到要 POST 关 → POST 要攒满分片才关 → 卡死（100MB 卡死、20MB 能过的根因）。
+  // 8MB 分片已实测：4 连发 32MB 全部实时到达接收端。
+  const POST_LIMIT = 8 * 1024 * 1024;
 
   // ---- 流式分片 POST（核心修复）----
   // 旧逻辑：攒满 80MB 一次性 fetch POST 大 body → 大请求体在代理/Cloudflare 链路上被丢弃，
