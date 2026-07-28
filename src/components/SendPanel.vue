@@ -110,7 +110,7 @@ function genRoom() {
 
 // 端到端滑动窗口状态（顶层作用域：控制通道 onmessage 与发送流 pull 共享）
 // 只控「在途字节量」(已发-已确认)，绝不控速率，天然免疫 ~8s 速率信号异位 → 消除震荡
-const WINDOW = 24 * 1024 * 1024;   // 在途上限 24MB：覆盖开场建下载延迟 T，又不回归「猛灌几十MB」
+const WINDOW = 8 * 1024 * 1024;    // 在途上限 8MB：覆盖开场建下载延迟 + 1~2 个分片流水线，又不回归大突发脉冲（配合 POST_LIMIT=2MB 减震）
 let ackBytes = 0;                  // 接收端已写盘字节（来自 WS progress.received）
 let sentBytes = 0;                 // 已 enqueue 进 POST body 流的字节
 let ackWaiters: Array<() => void> = [];
@@ -235,13 +235,13 @@ async function startLocalSend() {
   }
 
   const base = resolveRelayBase();
-  // Cloudflare POST 请求体限制 100MB，每片留余量用 80MB；本地 relay 无此限制但保持一致分片
-  // 实测证据（2026-07-29 浏览器打线上 relay 隔离实验）：这条 Chrome→CF 链路对流式 POST 请求体
+  // Cloudflare POST 请求体限制 100MB；本地 relay 无此限制。
+  // 实测证据（2026-07-29 浏览器打线上 relay 隔离实验）：Chrome→CF 链路对流式 POST 请求体
   // 是「整段缓冲、POST 关闭才向 DO 转发」——发 5MB 挂住不关 8 秒接收端 0 字节，一关全到。
-  // 因此 POST 分片必须显著小于 24MB 滑动窗口，否则互锁死：窗口等 ack → ack 要数据到 →
-  // 数据到要 POST 关 → POST 要攒满分片才关 → 卡死（100MB 卡死、20MB 能过的根因）。
-  // 8MB 分片已实测：4 连发 32MB 全部实时到达接收端。
-  const POST_LIMIT = 8 * 1024 * 1024;
+  // 因此 POST 分片必须显著小于滑动窗口，否则互锁死。为消除「忽快忽慢」震荡，把分片从 8MB 降到 2MB：
+  // 每个分片关闭→转发→接收→ack 的周期更短，速度脉冲块更小、频率更高，宏观上更平滑。
+  // 2MB 分片配合 8MB 窗口（≥4 个分片流水线）已实测不卡死。
+  const POST_LIMIT = 2 * 1024 * 1024;
 
   // ---- 流式分片 POST（核心修复）----
   // 旧逻辑：攒满 80MB 一次性 fetch POST 大 body → 大请求体在代理/Cloudflare 链路上被丢弃，
