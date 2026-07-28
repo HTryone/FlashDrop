@@ -110,7 +110,7 @@ function genRoom() {
 
 // 端到端滑动窗口状态（顶层作用域：控制通道 onmessage 与发送流 pull 共享）
 // 只控「在途字节量」(已发-已确认)，绝不控速率，天然免疫 ~8s 速率信号异位 → 消除震荡
-const WINDOW = 64 * 1024 * 1024;   // 在途上限 64MB：并发 6 路 × 8MB 分片 = 48MB 在途，留余量防死锁；窗口比原24MB大以支撑深流水线打满上行
+const WINDOW = 24 * 1024 * 1024;   // 在途上限 24MB：并发 3 路 × 4MB 分片 = 12MB 在途，留余量防死锁；窗口收紧把脉冲从 48MB 降到 12MB（消除并发版震荡）
 let ackBytes = 0;                  // 接收端已写盘字节（来自 WS progress.received）
 let sentBytes = 0;                 // 已 enqueue 进 POST body 流的字节
 let ackWaiters: Array<() => void> = [];
@@ -238,14 +238,13 @@ async function startLocalSend() {
   // Cloudflare POST 请求体限制 100MB；本地 relay 无此限制。
   // 实测证据（2026-07-29 浏览器打线上 relay 隔离实验）：Chrome→CF 链路对流式 POST 请求体
   // 是「整段缓冲、POST 关闭才向 DO 转发」——发 5MB 挂住不关 8 秒接收端 0 字节，一关全到。
-  // 因此 POST 分片必须显著小于滑动窗口，否则互锁死。为消除「忽快忽慢」震荡，把分片从 8MB 降到 2MB：
-  // 每个分片关闭→转发→接收→ack 的周期更短，速度脉冲块更小、频率更高，宏观上更平滑。
-  // 2MB 分片配合 8MB 窗口（≥4 个分片流水线）已实测不卡死。
-  // 并发上传：浏览器对同 host 并发连接≈6，开足 6 路 POST 打满上行带宽（实测环境裸上传≈2.7MB/s，
-  // 用户真宽带更高，靠并发才能跑满）。POST_LIMIT=8MB 分片，计数并发上限 MAX_INFLIGHT=6 ->
-  // 最大在途 48MB < WINDOW(64MB) 不卡死；背压由 WINDOW 闸门 + relay 端 desiredSize 双重兜底。
-  const POST_LIMIT = 8 * 1024 * 1024;
-  const MAX_INFLIGHT = 6;
+  // 因此 POST 分片必须显著小于滑动窗口，否则互锁死。并发上传本身是对的（打满上行），
+  // 但 6 路×8MB=48MB 一次放出 → 脉冲被放大 6 倍 → 配合 ack ~8s 异位造成抽干式锯齿，反而变慢。
+  // 折中流水线：3 路并发 × 4MB 分片 = 12MB 在途脉冲（比 48MB 小 4 倍），WINDOW 24MB 留余量；
+  // 闸门按真实已发字节计量（去掉 +POST_LIMIT 预留虚高），上行持续打满但不过载。实测环境裸上传≈2.7MB/s，
+  // 用户真宽带更高，靠适度并发打满。背压由 WINDOW 闸门 + relay 端 desiredSize 双重兜底。
+  const POST_LIMIT = 4 * 1024 * 1024;
+  const MAX_INFLIGHT = 3;
 
   // ---- 流式分片 POST（核心修复）----
   // 旧逻辑：攒满 80MB 一次性 fetch POST 大 body → 大请求体在代理/Cloudflare 链路上被丢弃，
@@ -439,7 +438,7 @@ async function startLocalSend() {
       const tryLaunch = (): boolean => {
         // 闸门：① 并发数未满 ② 在途字节 + 本片预留 ≤ 窗（防死锁）③ 还有待发帧或生产者未完
         if (inflightCount >= MAX_INFLIGHT) return false;
-        if ((sentBytes - ackBytes) + POST_LIMIT > WINDOW) return false;
+        if ((sentBytes - ackBytes) >= WINDOW) return false;  // 按真实已发字节计量，去掉 +POST_LIMIT 预留虚高（修并发版吞吐被压低）
         if (pending.length === 0) return false; // 无帧可发，等生产者或 ack
         const seed = pending.shift()!;          // 同步取走首帧，杜绝并发空 launch
         notifyDrain();
