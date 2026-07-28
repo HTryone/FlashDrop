@@ -120,7 +120,9 @@ export class Relay {
       // 一直等、把响应缓存到发送端 /close（上传完成）才整体下发，表现为
       // 「下载在上传完成后才开始、且只有 ~200KB/s」。写开场帧后响应立即开始流式下发。
       // 接收端会跳过这个非 offer 帧（见 LocalTransfer.vue）。
+      // 必须等 controller 就绪（ReadableStream.start 回调异步设置），否则 enqueue 会抛错 500。
       try {
+        await entry.controllerReady;
         entry.controller.enqueue(new Uint8Array([0, 0, 0, 1, 0x00])); // [4B 长度前缀=1][1字节 0x00]
       } catch (e) {
         // 流可能已被关闭，忽略
@@ -150,6 +152,8 @@ export class Relay {
       console.log(`[stream] POST ${room}, entry exists=${!!entry}`);
       if (!entry) entry = this.createRoom(room);
       try {
+        // 等 controller 就绪（GET 的 ReadableStream.start 异步设置），否则 enqueue 会抛 500
+        await entry.controllerReady;
         const reader = request.body.getReader();
         for (;;) {
           // 背压：可读流缓冲满则等接收端拉取（pull 回调会唤醒）
@@ -242,7 +246,7 @@ export class Relay {
     const entry = {};
     entry.readable = new ReadableStream(
       {
-        start(c) { entry.controller = c; },
+        start(c) { entry.controller = c; entry._resolveController(); },
         pull() {
           // 消费方拉取 → 唤醒因背压暂停的 POST 写入
           if (entry.pullWaiter) { const w = entry.pullWaiter; entry.pullWaiter = null; w(); }
@@ -251,6 +255,7 @@ export class Relay {
       new ByteLengthQueuingStrategy({ highWaterMark: 8 * 1024 * 1024 }),
     );
     entry.controller = null;
+    entry.controllerReady = new Promise<void>((res) => { entry._resolveController = res; });
     entry.pullWaiter = null;
     entry.ready = false;
     entry.getConnected = false;
