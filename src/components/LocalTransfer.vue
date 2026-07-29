@@ -567,7 +567,7 @@ async function drainWrites() {
       recvProgress.value = recvTotal ? recvBytes / recvTotal : 1;
       // 节流回传进度给发送端（~200ms 一次，避免高频 WS 消息压垮控制通道）
       const _now = Date.now();
-      if (recvWs && recvWs.readyState === WebSocket.OPEN && _now - lastProgressAt >= 50) {
+      if (recvWs && recvWs.readyState === WebSocket.OPEN && _now - lastProgressAt >= 200) {
         lastProgressAt = _now;
         try { recvWs.send(JSON.stringify({ type: 'progress', received: recvBytes, total: recvTotal })); } catch {}
       }

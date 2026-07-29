@@ -110,7 +110,7 @@ function genRoom() {
 
 // 端到端滑动窗口状态（顶层作用域：控制通道 onmessage 与发送流 pull 共享）
 // 只控「在途字节量」(已发-已确认)，绝不控速率，天然免疫 ~8s 速率信号异位 → 消除震荡
-const WINDOW = 24 * 1024 * 1024;   // 在途上限 24MB：并发 3 路 × 4MB 分片 = 12MB 在途，留余量防死锁；窗口收紧把脉冲从 48MB 降到 12MB（消除并发版震荡）
+const WINDOW = 24 * 1024 * 1024;   // 在途上限 24MB：覆盖开场建下载延迟 T，又不回归「猛灌几十MB」
 let ackBytes = 0;                  // 接收端已写盘字节（来自 WS progress.received）
 let sentBytes = 0;                 // 已 enqueue 进 POST body 流的字节
 let ackWaiters: Array<() => void> = [];
@@ -235,16 +235,13 @@ async function startLocalSend() {
   }
 
   const base = resolveRelayBase();
-  // Cloudflare POST 请求体限制 100MB；本地 relay 无此限制。
-  // 实测证据（2026-07-29 浏览器打线上 relay 隔离实验）：Chrome→CF 链路对流式 POST 请求体
+  // Cloudflare POST 请求体限制 100MB，每片留余量用 80MB；本地 relay 无此限制但保持一致分片
+  // 实测证据（2026-07-29 浏览器打线上 relay 隔离实验）：这条 Chrome→CF 链路对流式 POST 请求体
   // 是「整段缓冲、POST 关闭才向 DO 转发」——发 5MB 挂住不关 8 秒接收端 0 字节，一关全到。
-  // 因此 POST 分片必须显著小于滑动窗口，否则互锁死。并发上传本身是对的（打满上行），
-  // 但 6 路×8MB=48MB 一次放出 → 脉冲被放大 6 倍 → 配合 ack ~8s 异位造成抽干式锯齿，反而变慢。
-  // 折中流水线：3 路并发 × 4MB 分片 = 12MB 在途脉冲（比 48MB 小 4 倍），WINDOW 24MB 留余量；
-  // 闸门按真实已发字节计量（去掉 +POST_LIMIT 预留虚高），上行持续打满但不过载。实测环境裸上传≈2.7MB/s，
-  // 用户真宽带更高，靠适度并发打满。背压由 WINDOW 闸门 + relay 端 desiredSize 双重兜底。
-  const POST_LIMIT = 4 * 1024 * 1024;
-  const MAX_INFLIGHT = 3;
+  // 因此 POST 分片必须显著小于 24MB 滑动窗口，否则互锁死：窗口等 ack → ack 要数据到 →
+  // 数据到要 POST 关 → POST 要攒满分片才关 → 卡死（100MB 卡死、20MB 能过的根因）。
+  // 8MB 分片已实测：4 连发 32MB 全部实时到达接收端。
+  const POST_LIMIT = 8 * 1024 * 1024;
 
   // ---- 流式分片 POST（核心修复）----
   // 旧逻辑：攒满 80MB 一次性 fetch POST 大 body → 大请求体在代理/Cloudflare 链路上被丢弃，
@@ -272,22 +269,30 @@ async function startLocalSend() {
     await new Promise<void>((res) => waiters.push(res));
   }
 
-  // 发送一个分片（一个 ReadableStream POST）。seed = 启动时必须立即入队的首帧
-  // （同步取出，避免并发 launch 抢空 pending 造成空 POST）。返回 false 表示全部发完
-  async function postOneChunk(seed: Uint8Array): Promise<boolean> {
+  // 发送一个分片（一个 ReadableStream POST）；返回 false 表示全部发完
+  async function postOneChunk(): Promise<boolean> {
     chunkBytes = 0;
     const rs = new ReadableStream({
       start(ctrl) {
         // 关键：duplex:'half' 的 body 必须创建时就有数据，Chrome 才会立即发起 HTTP 请求。
         // 若等第一次 pull 再 enqueue，可能形成死锁：浏览器不发起请求 → 不 pull → 没数据。
-        ctrl.enqueue(seed);
-        sentBytes += seed.length;
-        chunkBytes += seed.length;
-        console.log('[send] first frame enqueued', seed.length, 'chunkBytes', chunkBytes);
+        if (pending.length === 0) {
+          console.warn('[send] postOneChunk start with empty pending');
+          return;
+        }
+        const frame = pending.shift()!;
+        notifyDrain();
+        ctrl.enqueue(frame);
+        sentBytes += frame.length;
+        chunkBytes += frame.length;
+        console.log('[send] first frame enqueued', frame.length, 'chunkBytes', chunkBytes);
       },
       async pull(ctrl) {
-        // 滑动窗口闸门已上移到「并发池 launch 阶段」（预留 POST_LIMIT 字节），
-        // 此处只管从 pending 取帧入队，不再各自 await 闸门，避免并发下重复等待。
+        // 滑动窗口闸门：在途量超窗则等待接收端 ack（字节累计量不过期，不会像速率信号那样相位错）
+        while (sentBytes - ackBytes > WINDOW) {
+          console.log('[send] window gate', sentBytes, ackBytes, sentBytes - ackBytes);
+          await new Promise<void>((res) => ackWaiters.push(res));
+        }
         if (pending.length === 0) {
           if (producerDone) { ctrl.close(); return; }
           console.log('[send] pull waiting for frame');
@@ -301,7 +306,7 @@ async function startLocalSend() {
         const frame = pending.shift()!;
         notifyDrain();
         ctrl.enqueue(frame);
-        sentBytes += frame.length;
+        sentBytes += frame.length;   // 修复：累加已发字节，使滑动窗口闸门真正生效
         chunkBytes += frame.length;
         console.log('[send] frame enqueued', frame.length, 'chunkBytes', chunkBytes, 'pending', pending.length);
         if (chunkBytes >= POST_LIMIT) { ctrl.close(); return; }
@@ -356,31 +361,31 @@ async function startLocalSend() {
       } as any);
       if (!resp.ok) throw new Error(`上传 offer 失败 HTTP ${resp.status}`);
     }
+    await postOffer();
+    lStatus.value = '已发送文件清单，等待对方创建下载…';
 
-      const mapped = files.value.map(f => ({ file: f.file }));
-      const total = mapped.reduce((s, f) => s + f.file.size, 0);
-      if (total === 0) {
-        await sendClose();
-        lDone.value = true; lStatus.value = '传输完成（空）'; lSending.value = false;
-        return;
-      }
+    const mapped = files.value.map(f => ({ file: f.file }));
+    const total = mapped.reduce((s, f) => s + f.file.size, 0);
+    if (total === 0) {
+      await sendClose();
+      lDone.value = true; lStatus.value = '传输完成（空）'; lSending.value = false;
+      return;
+    }
 
-      // 等接收端 GET 连上（relay 发 pull 权威信号）或接收端应用层 recv-ready 备份信号。
-      // 二者任一即放行——此时接收端 GET 一定已就绪，推送数据不会成孤儿。
-      // 超时（默认 20s）则直接报错终止：对方多半未点「连接接收」或页面已关，盲推只会造孤儿。
-      try {
-        await Promise.race([
-          recvReadyPromise,
-          new Promise<void>((_, rej) => setTimeout(() => rej(new Error('对方未开始接收（20s 超时）')), 20000)),
-        ]);
-      } catch (e: any) {
-        lStatus.value = `无法开始传输：${e?.message || e}。请确认对方已点「连接接收」且页面未关闭。`;
-        lSending.value = false;
-        return;
-      }
-      lStatus.value = '对方已就绪，发送文件清单…';
-      await postOffer();
-      lStatus.value = '已发送文件清单，开始传输数据…';
+    // 等接收端 GET 连上（relay 发 pull 权威信号）或接收端应用层 recv-ready 备份信号。
+    // 二者任一即放行——此时接收端 GET 一定已就绪，推送数据不会成孤儿。
+    // 超时（默认 20s）则直接报错终止：对方多半未点「连接接收」或页面已关，盲推只会造孤儿。
+    try {
+      await Promise.race([
+        recvReadyPromise,
+        new Promise<void>((_, rej) => setTimeout(() => rej(new Error('对方未开始接收（20s 超时）')), 20000)),
+      ]);
+    } catch (e: any) {
+      lStatus.value = `无法开始传输：${e?.message || e}。请确认对方已点「连接接收」且页面未关闭。`;
+      lSending.value = false;
+      return;
+    }
+    lStatus.value = '对方已就绪，开始传输数据…';
 
     // 生产者：逐块加密入队
     let frameLogCount = 0;
@@ -428,41 +433,12 @@ async function startLocalSend() {
     firstFrameReject = null;
     console.log('[send] first frame ready, start consumer');
 
-    // 消费者：并发池发起分片流式 POST（深流水线打满上行），窗口 + 并发数双闸门
-    const inflightWaiters: Array<() => void> = [];
-    const wakeInflight = () => { let w: (() => void) | undefined; while ((w = inflightWaiters.shift())) w(); };
-    let inflightCount = 0;
-
-    async function pumpPool() {
-      const active = new Set<Promise<unknown>>();
-      const tryLaunch = (): boolean => {
-        // 闸门：① 并发数未满 ② 在途字节 + 本片预留 ≤ 窗（防死锁）③ 还有待发帧或生产者未完
-        if (inflightCount >= MAX_INFLIGHT) return false;
-        if ((sentBytes - ackBytes) >= WINDOW) return false;  // 按真实已发字节计量，去掉 +POST_LIMIT 预留虚高（修并发版吞吐被压低）
-        if (pending.length === 0) return false; // 无帧可发，等生产者或 ack
-        const seed = pending.shift()!;          // 同步取走首帧，杜绝并发空 launch
-        notifyDrain();
-        inflightCount++;
-        const p = postOneChunk(seed)
-          .catch((e) => { throw e; })
-          .finally(() => { inflightCount--; wakeInflight(); });
-        active.add(p);
-        p.finally(() => active.delete(p));
-        return true;
-      };
-      for (;;) {
-        let launched = false;
-        while (tryLaunch()) launched = true;
-        if (!launched) {
-          // 不能发射：并发满 / 窗口满 / 已发完
-          if (inflightCount === 0 && producerDone && pending.length === 0) break; // 全部发完
-          // 等 ack（窗口释放）或某片完成（槽位释放）
-          await new Promise<void>((res) => { ackWaiters.push(res); inflightWaiters.push(res); });
-        }
-      }
-      await Promise.all([...active]);
+    // 消费者：顺序发起每个分片流式 POST，直到 producer 完成且无待发帧
+    let more = true;
+    while (more) {
+      console.log('[send] postOneChunk loop, pending', pending.length, 'producerDone', producerDone);
+      more = await postOneChunk();
     }
-    await pumpPool();
     await producer;
     await sendClose();
     // 不立即标记完成：真正完成以接收端 recv-done 为准（见 onmessage 的 recv-done 分支），

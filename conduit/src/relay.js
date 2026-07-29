@@ -91,12 +91,13 @@ export class Relay {
     // POST /stream/:room/close — 发送端通知传输结束
     if (request.method === 'POST' && sub === 'close') {
       const entry = this.rooms.get(room);
-      if (entry && entry.controller) {
+      if (entry) {
         try {
-          // 关闭可读流 → 接收端 GET 收到 EOF = 传输完成
-          entry.controller.close();
+          const writer = entry.writable.getWriter();
+          await writer.close();
+          writer.releaseLock();
         } catch (e) {
-          // 流可能已关闭（接收端断开等），忽略
+          // writable 可能已关闭（接收端断开等），忽略
         }
         this.rooms.delete(room);
       }
@@ -116,16 +117,16 @@ export class Relay {
         console.log(`[stream] GET ${room}, created new room`);
       }
       // 关键修复：立即往流里写 1 字节「开场帧」，防止 Cloudflare 缓冲空响应体。
-      // 现象：接收端先连 GET 时 DO 的流还是空的，Cloudflare 边缘会
+      // 现象：接收端先连 GET 时 DO 的 TransformStream 还是空的，Cloudflare 边缘会
       // 一直等、把响应缓存到发送端 /close（上传完成）才整体下发，表现为
       // 「下载在上传完成后才开始、且只有 ~200KB/s」。写开场帧后响应立即开始流式下发。
       // 接收端会跳过这个非 offer 帧（见 LocalTransfer.vue）。
-      // 必须等 controller 就绪（ReadableStream.start 回调异步设置），否则 enqueue 会抛错 500。
       try {
-        await entry.controllerReady;
-        entry.controller.enqueue(new Uint8Array([0, 0, 0, 1, 0x00])); // [4B 长度前缀=1][1字节 0x00]
+        const ow = entry.writable.getWriter();
+        await ow.write(new Uint8Array([0, 0, 0, 1, 0x00])); // [4B 长度前缀=1][1字节 0x00]
+        ow.releaseLock();
       } catch (e) {
-        // 流可能已被关闭，忽略
+        // writable 可能已被关闭，忽略
       }
       // 权威「拉取」信号：接收端 GET 已连上、可读流已建立 → 立即通知发送端可以推数据。
       // 取代依赖应用层 recv-ready WS 消息的脆弱握手：pull 由 relay 自身在 GET 连上时发出，
@@ -142,45 +143,18 @@ export class Relay {
       });
     }
 
-    // POST /stream/:room — 发送端分片上传（并发多 POST 合并进同一条可读流）
-    // 旧逻辑用 entry.writable 单写者 pipeTo：并发 POST 会抢锁失败、只能串行。
-    // 新逻辑：每个 POST 把自己的请求体逐块 enqueue 进 room 的 ReadableStream controller，
-    // 多个 POST 并发写入同一 controller（JS 单线程，enqueue 原子），由接收端 GET 顺序读出。
-    // 背压：controller.desiredSize<=0（接收端读不动）时暂停读 request.body → 反向传导到发送端。
+    // POST /stream/:room — 发送端分片上传（复用 GET 创建的同一个 room）
     if (request.method === 'POST') {
       let entry = this.rooms.get(room);
       console.log(`[stream] POST ${room}, entry exists=${!!entry}`);
       if (!entry) entry = this.createRoom(room);
       try {
-        // 等 controller 就绪（GET 的 ReadableStream.start 设置），否则 enqueue 会抛 500
-        await entry.controllerReady;
-        const pump = async () => {
-          const reader = request.body.getReader();
-          try {
-            for (;;) {
-              // 背压：可读流缓冲满则等接收端拉取（pull 回调唤醒所有等待者）
-              while (entry.controller.desiredSize !== null && entry.controller.desiredSize <= 0) {
-                await new Promise((res) => { entry.pullWaiters.push(res); });
-              }
-              const { done, value } = await reader.read();
-              if (done) break;
-              // 同步 enqueue：当前 POST 字节整段连续入队（writeChain 已保证跨 POST 不交叉）
-              entry.controller.enqueue(value);
-            }
-          } finally {
-            reader.releaseLock();
-          }
-          console.log(`[stream] POST ${room}, pumped`);
-        };
-        // writeChain 串行化各 POST 的 enqueue，保证帧字节连续不交叉（并发上传前提）
-        entry.writeChain = entry.writeChain.then(pump).catch((e) => {
-          console.error('[stream] POST pump error:', e?.message || e);
-          throw e;
-        });
-        await entry.writeChain;
+        console.log(`[stream] POST ${room}, starting pipeTo`);
+        await request.body.pipeTo(entry.writable, { preventClose: true });
+        console.log(`[stream] POST ${room}, pipeTo completed`);
       } catch (e) {
-        console.error('[stream] POST error:', e?.message || e);
-        return new Response('error: ' + (e?.message || e), { status: 500, headers: this.cors() });
+        console.error('[stream] pipe error:', e?.message || e);
+        return new Response('error', { status: 500, headers: this.cors() });
       }
       return new Response('ok', { headers: this.cors() });
     }
@@ -253,37 +227,15 @@ export class Relay {
   }
 
   createRoom(room) {
-    // 用 ReadableStream + controller 取代 TransformStream：支持多个 POST 并发写入同一流。
-    // controller.desiredSize 驱动背压（接收端读不动时暂停读 POST body）。
-    // 关键：controller 由 start() 设置；用闭包局部变量捕获 resolver，避免「构造后才赋值」导致的竞态。
-    const entry = {};
-    let ctrl = null;
-    let ctrlResolve = null;
-    entry.controllerReady = new Promise((res) => { ctrlResolve = res; });
-    entry.readable = new ReadableStream(
-      {
-        start(c) {
-          ctrl = c;
-          entry.controller = c;
-          if (ctrlResolve) ctrlResolve();
-        },
-        pull() {
-          // 消费方拉取 → 唤醒因背压暂停的所有 POST 写入（并发下不能用单一 waiter）
-          const ws = entry.pullWaiters;
-          if (ws && ws.length) {
-            entry.pullWaiters = [];
-            for (const w of ws) w();
-          }
-        },
-      },
-      new ByteLengthQueuingStrategy({ highWaterMark: 8 * 1024 * 1024 }),
+    const { readable, writable } = new TransformStream(
+      {},
+      new ByteLengthQueuingStrategy({ highWaterMark: 4 * 1024 * 1024 }),
+      new ByteLengthQueuingStrategy({ highWaterMark: 4 * 1024 * 1024 }),
     );
-    entry.pullWaiters = [];        // 背压等待者数组（pull 时全部唤醒）
-    entry.writeChain = Promise.resolve();  // 串行化各 POST 的 enqueue，保证帧连续不交叉
-    entry.ready = false;
-    entry.getConnected = false;
-    entry.wsSender = null;
-    entry.wsReceiver = null;
+    const entry = {
+      readable, writable, ready: false, getConnected: false,
+      wsSender: null, wsReceiver: null,
+    };
     this.rooms.set(room, entry);
     console.log(`[room] created ${room}, total rooms=${this.rooms.size}`);
     return entry;
