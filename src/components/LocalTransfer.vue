@@ -199,6 +199,7 @@ const readyBuf = new Map<number, { fi: number; plain: Uint8Array }>();
 let drainRunning = false;
 let pendingDone = false;
   let recvReceived = 0;
+let recvWireBytes = 0;      // 帧到达即计的累计线上字节（含帧头，不等解密/写盘）——ack.rb 回报给 relay 结算在途量
 let lastProgressAt = 0;     // 进度回传节流时间戳
 let recvDoneSent = false;   // recv-done 是否已发送给发送端（防重复）
 let recvAckTimer: ReturnType<typeof setInterval> | null = null;  // 周期性回报 ack(含缺口 NACK) 的定时器
@@ -217,6 +218,7 @@ function resetReceiver() {
   writers = [];
   recvKey = '';
   recvReceived = 0;
+  recvWireBytes = 0;
   lastProgressAt = 0; recvDoneSent = false;
   if (recvAckTimer) { clearInterval(recvAckTimer); recvAckTimer = null; }
   perFileChunks = []; nextWriteSeq = 0; readyBuf.clear(); drainRunning = false;
@@ -427,7 +429,8 @@ function sendAck() {
   for (const s of readyBuf.keys()) if (s > maxBuf) maxBuf = s;
   const missing: number[] = [];
   for (let s = nextWriteSeq; s <= maxBuf; s++) if (!readyBuf.has(s)) missing.push(s);
-  try { recvWs.send(JSON.stringify({ type: 'ack', acked, missing })); } catch {}
+  // rb = 帧到达即计的累计线上字节：relay 据此结算「relay→接收端」在途量，驱动其回压转发闸门
+  try { recvWs.send(JSON.stringify({ type: 'ack', acked, missing, rb: recvWireBytes })); } catch {}
 }
 
 /** (fi, ci) → 全局递增序号 */
@@ -440,6 +443,7 @@ function frameSeq(fi: number, ci: number): number {
 /** 收到一帧的入口：立即并发解密，不阻塞后续帧 */
 function handleDataFrame(data: ArrayBuffer) {
   if (recvAborted) return;
+  recvWireBytes += data.byteLength;   // 到达即计（不等解密/写盘），ack.rb 用
   const frame = new Uint8Array(data);
   if (frame.length < FRAME_HDR) { recvStatus.value = '收到过短的数据帧'; return; }
   const dv = new DataView(frame.buffer);

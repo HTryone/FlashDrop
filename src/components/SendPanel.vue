@@ -75,7 +75,7 @@ function resetLocalSender() {
   lSending.value = false; lDone.value = false;
   lProgress.value = 0; lPeerOnline.value = false;
   // 滑动窗口状态归零，避免重传时旧 ack/sent 残留导致闸门误判
-  ackBytes = 0; sentBytes = 0; ackWaiters = []; lFatal = null;
+  ackBytes = 0; sentBytes = 0; ackWaiters = []; lFatal = null; lThrottled = false;
   frameCache.clear(); cacheLen.clear(); ackedSeq = -1; inflightBytes = 0;
   resendQueue.clear(); highestSentSeq = -1; totalChunks = 0; sendingDone = false; lastAckAt = 0;
   if (resendTimer) { clearInterval(resendTimer); resendTimer = null; }
@@ -123,6 +123,7 @@ let ackBytes = 0;                  // 兼容旧 progress 分支（仍用于进�
 let sentBytes = 0;
 let ackWaiters: Array<() => void> = [];
 let lFatal: string | null = null;  // relay 回报的致命错误（如 recv-gone），发送循环见之即中止
+let lThrottled = false;            // relay 回压信号：接收端队列高水位 → 暂停推新帧（resume 恢复）
 function notifyAckWaiters() { const w = ackWaiters.shift(); if (w) w(); }
 
 // ---- 重传核心状态 ----
@@ -171,6 +172,11 @@ function handleControlMsg(ev: MessageEvent) {
     } else if (data.type === 'recv-gone') {
       // relay 报告：接收端 WS 不在，数据帧无处转发 → 中止发送防静默丢帧
       lFatal = '接收端连接已断开';
+    } else if (data.type === 'throttle') {
+      // relay 回压：接收端下发队列高水位 → 暂停推新帧（重传不受此限，缺口帧优先补）
+      lThrottled = true;
+    } else if (data.type === 'resume') {
+      lThrottled = false;
     } else if (data.type === 'ack') {
       // 接收端累计确认 acked + 缺口 missing（NACK）：回收已确认帧缓存，重传缺口帧
       if (typeof data.acked === 'number') {
@@ -296,7 +302,7 @@ async function startLocalSend() {
   lStatus.value = '正在确认控制通道…';
   lAbort = new AbortController();
   // 重置滑动窗口 + 接收端就绪闸门（防上一次传输残留导致闸门误判；recv-ready 已到则保持无需重等）
-  ackBytes = 0; sentBytes = 0; ackWaiters = []; lFatal = null;
+  ackBytes = 0; sentBytes = 0; ackWaiters = []; lFatal = null; lThrottled = false;
   armRecvReady();
 
   // 关键：确保 WebSocket 控制通道还活着（DO 靠 WS 保活，否则 hibernate 会丢 rooms 状态，
@@ -405,6 +411,14 @@ async function startLocalSend() {
           if (lAbort!.signal.aborted) throw new Error('已取消');
           if (lFatal) throw new Error(lFatal);
           await new Promise((r) => setTimeout(r, 10));
+        }
+        // relay 回压闸门（2026-07-29 根因修复）：接收端下发队列高水位时 relay 广播 throttle，
+        // 发送端暂停推新帧直到 resume —— 上传速率自动匹配 relay→接收端 转发能力，
+        // 消灭「3→1 扇入溢出静默丢帧 → 下载塌成涓流」（之前上传满速里 29%+ 是在喂丢帧黑洞）。
+        while (lThrottled) {
+          if (lAbort!.signal.aborted) throw new Error('已取消');
+          if (lFatal) throw new Error(lFatal);
+          await new Promise((r) => setTimeout(r, 20));
         }
         // 背压：每流 WS 发送缓冲（bufferedAmount 越低越不易触发 Chrome 静默丢帧）
         const sock = lDataSocks[assign % lDataSocks.length]; assign++;

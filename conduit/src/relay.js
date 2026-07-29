@@ -24,6 +24,17 @@
 //   后续：数据帧 [FRAME_HDR 12B: fi u16 + ci u32 + plainLen u32][加密体 IV+ct+HMAC]
 //   POST /close 关闭流 → 接收端收到 EOF 即完成。
 
+// ---- WS 数据道 · 接收端回压参数（2026-07-29 根因修复）----
+// 铁证（Node 探针）：3 路发送 WS → 1 路接收 WS 扇入时，直接 wsReceiver.send() 无背压，
+// 溢出即静默丢帧（即时消费者 sent=108/recv=77，丢 29%），NACK 重传也撞同一瓶颈 → 下载塌成涓流。
+// 修复：转发一律先入有界队列、由 flushRecv 串行下发；闸门 = 端到端在途字节
+// （fwdBytes - 接收端 ack.rb 回报的已收字节），不依赖运行时是否暴露 bufferedAmount。
+const RECV_INFLIGHT_LIMIT = 4 * 1024 * 1024;  // relay→接收端 在途字节上限
+const RECV_BUF_HIGH = 1 * 1024 * 1024;        // wsReceiver.bufferedAmount 高水位（运行时暴露该属性才生效）
+const QUEUE_SOFT = 8 * 1024 * 1024;           // 队列超此值 → 广播 throttle 让发送端暂停
+const QUEUE_LOW = 2 * 1024 * 1024;            // 队列降到此值 → 广播 resume
+const QUEUE_HARD = 48 * 1024 * 1024;          // 队列硬上限（护 DO 内存；新版发送端被 throttle 拦住走不到这里）
+
 export class Relay {
   constructor(state, env) {
     this.state = state;
@@ -207,19 +218,23 @@ export class Relay {
       if (entry.ready) this.broadcastJSON(entry, { type: 'ready' });
     } else {
       entry.wsReceiver = server;
+      // 新接收端连上（含刷新重连）：在途记账归零（旧连接的在途已随连接消亡），并立即下发积压帧
+      entry.recvInflight = 0;
+      entry.lastRb = 0;
+      entry.sawRb = false;
+      this.flushRecv(entry);
     }
 
     server.addEventListener('message', (event) => {
-      // ---- WS 数据通道（2026-07-29 新增）----
-      // 发送端二进制消息 = 一个 E2EE 数据帧（≤1MiB，CF WS 单消息上限），
-      // relay 收到即转发给接收端 WS —— 帧级即时转发，无 POST 整段缓冲，根治分片脉冲。
-      // 绝不缓冲、绝不解析二进制内容，只透传。
+      // ---- WS 数据通道（2026-07-29 新增；同日加接收端回压修复）----
+      // 发送端二进制消息 = 一个 E2EE 数据帧（≤1MiB，CF WS 单消息上限）。
+      // 旧版直接 wsReceiver.send() 无背压 → 3→1 扇入溢出静默丢帧（丢 29%，下载塌成涓流）。
+      // 新版：一律入有界队列 recvQueue，由 flushRecv 按在途字节闸门串行下发，帧零丢失；
+      // 队列超软水位广播 throttle 让发送端暂停。绝不解析二进制内容，只透传。
       if (typeof event.data !== 'string') {
         if (role === 'sender') {
           if (entry.wsReceiver && entry.wsReceiver.readyState === 1) {
-            try { entry.wsReceiver.send(event.data); } catch (e) {
-              console.error('[ws] data forward error:', e?.message || e);
-            }
+            this.enqueueRecv(entry, event.data);
           } else {
             // 接收端 WS 不在：数据帧无处可去 → 立即告知所有发送端中止，防静默丢帧致文件损坏
             this.broadcastJSON(entry, { type: 'recv-gone' });
@@ -232,13 +247,26 @@ export class Relay {
         if (data.type === 'ready' && role === 'receiver') {
           entry.ready = true;
           this.notifyReady(entry);
-        } else if (role === 'sender' && (data.type === 'offer' || data.type === 'data-eof')) {
-          // WS 数据通道控制帧：文件清单 / 数据结束 → 透传给接收端
+        } else if (role === 'sender' && data.type === 'offer') {
+          // 文件清单 → 透传给接收端（不排队：offer 在数据帧之前，且接收端幂等）
           if (entry.wsReceiver && entry.wsReceiver.readyState === 1) {
             this.sendJSON(entry.wsReceiver, data);
           }
+        } else if (role === 'sender' && data.type === 'data-eof') {
+          // 数据结束帧必须排在所有已排队数据帧之后下发，否则接收端会在队列尚未清空时误判缺帧
+          this.enqueueRecv(entry, JSON.stringify(data));
         } else if (role === 'receiver' && (data.type === 'progress' || data.type === 'recv-done' || data.type === 'recv-ready' || data.type === 'ack')) {
           // 接收端进度/完成回传 → 转发给所有发送端，由其驱动进度条与完成态
+          if (data.type === 'ack' && typeof data.rb === 'number') {
+            // ack.rb = 接收端已收到的转发字节累计（收到即计，与解密/写盘无关）。
+            // 差量结算 relay→接收端 在途字节；rb 回退（接收端刷新重连）则重置基准。
+            if (data.rb < entry.lastRb) entry.lastRb = 0;
+            const delta = data.rb - entry.lastRb;
+            entry.lastRb = data.rb;
+            if (delta > 0) entry.recvInflight = Math.max(0, entry.recvInflight - delta);
+            entry.sawRb = true;
+            this.flushRecv(entry);
+          }
           this.broadcastJSON(entry, data);
         }
       } catch (e) {
@@ -260,6 +288,65 @@ export class Relay {
 
   notifyReady(entry) {
     this.broadcastJSON(entry, { type: 'ready' });
+  }
+
+  // ---- 接收端回压转发（2026-07-29）----
+  // 数据帧（ArrayBuffer）与 data-eof（string）统一入队，flushRecv 串行下发保证顺序。
+  enqueueRecv(entry, payload) {
+    const size = typeof payload === 'string' ? 0 : (payload.byteLength || 0);
+    if (entry.recvQueueBytes + size > QUEUE_HARD) {
+      // 硬上限护 DO 内存：新版发送端会被 throttle 拦住，正常到不了这里；
+      // 真到了（旧版发送端狂灌）宁可断流也不静默丢帧损坏文件。
+      console.error(`[ws] recvQueue hard limit hit (${entry.recvQueueBytes}), aborting senders`);
+      this.broadcastJSON(entry, { type: 'recv-gone' });
+      return;
+    }
+    entry.recvQueue.push(payload);
+    entry.recvQueueBytes += size;
+    if (!entry.throttled && entry.recvQueueBytes > QUEUE_SOFT) {
+      entry.throttled = true;
+      this.broadcastJSON(entry, { type: 'throttle' });
+    }
+    this.flushRecv(entry);
+  }
+
+  flushRecv(entry) {
+    const ws = entry.wsReceiver;
+    if (!ws || ws.readyState !== 1) return;
+    while (entry.recvQueue.length > 0) {
+      // 闸门 1：端到端在途字节（fwd - 接收端 ack.rb 已结算），不依赖 bufferedAmount。
+      // 接收端尚未回报过 rb（旧版前端/首批帧）则不启用该闸门，避免直接卡死；
+      // 首批帧受闸门 2 + 队列水位保护。
+      if (entry.sawRb && entry.recvInflight >= RECV_INFLIGHT_LIMIT) break;
+      // 闸门 2：运行时若暴露 bufferedAmount，则作为第二道水位（不可用时恒 undefined 跳过）
+      const buf = ws.bufferedAmount;
+      if (typeof buf === 'number' && buf > RECV_BUF_HIGH) {
+        // 无事件可等：50ms 后重试（DO 单线程，setTimeout 安全）
+        if (!entry.flushTimer) {
+          entry.flushTimer = setTimeout(() => { entry.flushTimer = null; this.flushRecv(entry); }, 50);
+        }
+        break;
+      }
+      const payload = entry.recvQueue[0];
+      const size = typeof payload === 'string' ? 0 : (payload.byteLength || 0);
+      try {
+        ws.send(payload);
+      } catch (e) {
+        // send 失败：帧留在队头，稍后重试 —— 绝不丢帧
+        console.error('[ws] flushRecv send error:', e?.message || e);
+        if (!entry.flushTimer) {
+          entry.flushTimer = setTimeout(() => { entry.flushTimer = null; this.flushRecv(entry); }, 50);
+        }
+        break;
+      }
+      entry.recvQueue.shift();
+      entry.recvQueueBytes -= size;
+      entry.recvInflight += size;
+    }
+    if (entry.throttled && entry.recvQueueBytes <= QUEUE_LOW) {
+      entry.throttled = false;
+      this.broadcastJSON(entry, { type: 'resume' });
+    }
   }
 
   sendJSON(ws, obj) {
@@ -309,6 +396,14 @@ export class Relay {
     entry.getConnected = false;
     entry.wsSenders = new Set();   // 支持并发多发送端 WS 流（单房间可有多条数据流打满上行）
     entry.wsReceiver = null;
+    // ---- 接收端回压转发状态（2026-07-29）----
+    entry.recvQueue = [];          // 待下发给接收端的帧队列（ArrayBuffer 数据帧 / string 控制帧）
+    entry.recvQueueBytes = 0;      // 队列字节数（水位判断）
+    entry.recvInflight = 0;        // relay→接收端 在途字节（已 send、未被 ack.rb 结算）
+    entry.lastRb = 0;              // 接收端最近回报的累计已收字节
+    entry.sawRb = false;           // 是否收到过 rb 回报（旧版前端不带 rb 则不启用在途闸门）
+    entry.throttled = false;       // 是否已向发送端广播 throttle
+    entry.flushTimer = null;       // bufferedAmount/send 失败的重试定时器
     this.rooms.set(room, entry);
     console.log(`[room] created ${room}, total rooms=${this.rooms.size}`);
     return entry;
