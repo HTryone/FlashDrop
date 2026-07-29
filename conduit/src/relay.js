@@ -31,9 +31,9 @@
 // （fwdBytes - 接收端 ack.rb 回报的已收字节），不依赖运行时是否暴露 bufferedAmount。
 const RECV_INFLIGHT_LIMIT = 4 * 1024 * 1024;  // relay→接收端 在途字节上限
 const RECV_BUF_HIGH = 1 * 1024 * 1024;        // wsReceiver.bufferedAmount 高水位（运行时暴露该属性才生效）
-const QUEUE_SOFT = 8 * 1024 * 1024;           // 队列超此值 → 广播 throttle 让发送端暂停
-const QUEUE_LOW = 2 * 1024 * 1024;            // 队列降到此值 → 广播 resume
-const QUEUE_HARD = 48 * 1024 * 1024;          // 队列硬上限（护 DO 内存；新版发送端被 throttle 拦住走不到这里）
+const QUEUE_SOFT = 1 * 1024 * 1024;           // 队列超此值 → 广播 throttle 让发送端暂停（极小，极早压住突发，避免冲到硬上限）
+const QUEUE_LOW = 256 * 1024;                 // 队列降到此值 → 广播 resume
+const QUEUE_HARD = 64 * 1024 * 1024;          // 队列硬上限（仅真 OOM 兜底；正常 throttle 生效走不到这里，不再因慢消费 abort 整次传输）
 
 export class Relay {
   constructor(state, env) {
