@@ -28,7 +28,7 @@ export class Relay {
   constructor(state, env) {
     this.state = state;
     this.env = env;
-    // room -> { readable, writable, ready, consumed, wsSender, wsReceiver }
+    // room -> { readable, writable, ready, consumed, wsSenders, wsReceiver }
     this.rooms = new Map();
   }
 
@@ -127,13 +127,11 @@ export class Relay {
       } catch (e) {
         // 流可能已被关闭，忽略
       }
-      // 权威「拉取」信号：接收端 GET 已连上、可读流已建立 → 立即通知发送端可以推数据。
-      // 取代依赖应用层 recv-ready WS 消息的脆弱握手：pull 由 relay 自身在 GET 连上时发出，
-      // 保证发送端推数据前接收端 GET 一定已就绪 → 消灭「死锁(GET 连了没人推)」「孤儿(推了没人拉)」。
-      entry.getConnected = true;
-      if (entry.wsSender && entry.wsSender.readyState === 1) {
-        this.sendJSON(entry.wsSender, { type: 'pull' });
-      }
+    // 权威「拉取」信号：接收端 GET 已连上、可读流已建立 → 立即通知所有发送端可以推数据。
+    // 取代依赖应用层 recv-ready WS 消息的脆弱握手：pull 由 relay 自身在 GET 连上时发出，
+    // 保证发送端推数据前接收端 GET 一定已就绪 → 消灭「死锁(GET 连了没人推)」「孤儿(推了没人拉)」。
+    entry.getConnected = true;
+    this.broadcastJSON(entry, { type: 'pull' });
       return new Response(entry.readable, {
         headers: this.cors({
           'Content-Type': 'application/octet-stream',
@@ -202,11 +200,11 @@ export class Relay {
     const role = url.searchParams.get('role') || 'sender';
 
     if (role === 'sender') {
-      entry.wsSender = server;
-      // 接收端 GET 已连上则立即驱动发送端推数据（即使 pull 在 GET 时因 WS 未连而没发出）
-      if (entry.getConnected) this.sendJSON(server, { type: 'pull' });
-      // 若接收端已就绪，立即通知
-      if (entry.ready) this.sendJSON(server, { type: 'ready' });
+      entry.wsSenders.add(server);
+      // 接收端 GET 已连上则立即驱动所有发送端推数据（即使 pull 在 GET 时因 WS 未连而没发出）
+      if (entry.getConnected) this.broadcastJSON(entry, { type: 'pull' });
+      // 若接收端已就绪，立即通知所有发送端
+      if (entry.ready) this.broadcastJSON(entry, { type: 'ready' });
     } else {
       entry.wsReceiver = server;
     }
@@ -223,8 +221,8 @@ export class Relay {
               console.error('[ws] data forward error:', e?.message || e);
             }
           } else {
-            // 接收端 WS 不在：数据帧无处可去 → 立即告知发送端中止，防静默丢帧致文件损坏
-            this.sendJSON(server, { type: 'recv-gone' });
+            // 接收端 WS 不在：数据帧无处可去 → 立即告知所有发送端中止，防静默丢帧致文件损坏
+            this.broadcastJSON(entry, { type: 'recv-gone' });
           }
         }
         return;
@@ -240,8 +238,8 @@ export class Relay {
             this.sendJSON(entry.wsReceiver, data);
           }
         } else if (role === 'receiver' && (data.type === 'progress' || data.type === 'recv-done' || data.type === 'recv-ready')) {
-          // 接收端进度/完成回传 → 转发给发送端，由其驱动进度条与完成态
-          if (entry.wsSender) this.sendJSON(entry.wsSender, data);
+          // 接收端进度/完成回传 → 转发给所有发送端，由其驱动进度条与完成态
+          this.broadcastJSON(entry, data);
         }
       } catch (e) {
         console.error('[ws] parse error:', e?.message || e);
@@ -249,7 +247,7 @@ export class Relay {
     });
 
     server.addEventListener('close', () => {
-      if (role === 'sender' && entry.wsSender === server) entry.wsSender = null;
+      if (role === 'sender') entry.wsSenders.delete(server);
       if (role === 'receiver' && entry.wsReceiver === server) entry.wsReceiver = null;
     });
 
@@ -261,9 +259,7 @@ export class Relay {
   }
 
   notifyReady(entry) {
-    if (entry.wsSender && entry.wsSender.readyState === 1) {
-      this.sendJSON(entry.wsSender, { type: 'ready' });
-    }
+    this.broadcastJSON(entry, { type: 'ready' });
   }
 
   sendJSON(ws, obj) {
@@ -271,6 +267,13 @@ export class Relay {
       ws.send(JSON.stringify(obj));
     } catch (e) {
       console.error('[ws] send error:', e?.message || e);
+    }
+  }
+
+  // 向房间内所有发送端 WS 流广播控制帧（并发多数据流时，pull/ready/recv-gone/进度/完成都需告知每一条流）
+  broadcastJSON(entry, obj) {
+    for (const ws of entry.wsSenders) {
+      if (ws.readyState === 1) this.sendJSON(ws, obj);
     }
   }
 
@@ -304,7 +307,7 @@ export class Relay {
     entry.writeChain = Promise.resolve();  // 串行化各 POST 的 enqueue，保证帧连续不交叉
     entry.ready = false;
     entry.getConnected = false;
-    entry.wsSender = null;
+    entry.wsSenders = new Set();   // 支持并发多发送端 WS 流（单房间可有多条数据流打满上行）
     entry.wsReceiver = null;
     this.rooms.set(room, entry);
     console.log(`[room] created ${room}, total rooms=${this.rooms.size}`);

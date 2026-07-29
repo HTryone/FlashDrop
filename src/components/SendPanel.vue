@@ -62,6 +62,7 @@ let lPollTimer: ReturnType<typeof setTimeout> | null = null;
 let lWs: WebSocket | null = null;
 let lWsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let lWsReadyNotified = false;
+let lDataSocks: WebSocket[] = [];   // 并发数据 WS 流（含主 lWs），用于打满上行带宽
 
 function resetLocalSender() {
   lSending.value = false; lDone.value = false;
@@ -82,6 +83,11 @@ function closeLocalConn() {
   if (lAbort) { try { lAbort.abort(); } catch {} lAbort = null; }
   if (lPollTimer) { clearTimeout(lPollTimer); lPollTimer = null; }
   if (lWsReconnectTimer) { clearTimeout(lWsReconnectTimer); lWsReconnectTimer = null; }
+  // 关闭所有并发数据 WS 流（索引 1.. 为额外流；索引 0 = 主 lWs 已单独关闭）
+  for (let i = 1; i < lDataSocks.length; i++) {
+    try { lDataSocks[i].close(); } catch {}
+  }
+  lDataSocks = [];
   if (lWs) { try { lWs.close(); } catch {} lWs = null; }
   lWsReadyNotified = false;
 }
@@ -117,6 +123,54 @@ function armRecvReady() {
   recvReadyPromise = new Promise<void>((res) => { recvReadyResolve = res; });
 }
 
+/** 控制/数据帧的统一处理（主 lWs 与额外并发数据流共用）：握手信号、进度、完成、对端掉线 */
+function handleControlMsg(ev: MessageEvent) {
+  try {
+    const data = JSON.parse(ev.data as string);
+    if (data.type === 'ready' && !lWsReadyNotified) {
+      lWsReadyNotified = true;
+      lPeerOnline.value = true;
+      lStatus.value = '对方已在线，可开始传输';
+    } else if (data.type === 'pull' || data.type === 'recv-ready') {
+      // pull = relay 权威信号：接收端 GET 已连上，可安全推数据（不会成孤儿）
+      // recv-ready = 接收端应用层备份信号（GET 连上后由接收端发出）。二者任一即放行。
+      lRecvReady.value = true;
+      recvReadyResolve?.();
+      recvReadyResolve = null;
+    } else if (data.type === 'progress') {
+      // 接收端真实已收进度（明文口径，与发送端 total 同源，比例零偏差）
+      const t = data.total || 1;
+      lProgress.value = Math.min(1, (data.received || 0) / t);
+      // 仅用于 UI 进度；发送端不再据此闸门（已改为每流 bufferedAmount 背压，解耦收发速度）
+      ackBytes = data.received || 0;
+    } else if (data.type === 'recv-gone') {
+      // relay 报告：接收端 WS 不在，数据帧无处转发 → 中止发送防静默丢帧
+      lFatal = '接收端连接已断开';
+    } else if (data.type === 'recv-done' && !lDone.value) {
+      // 接收端确已收齐写盘 → 发送端才标记完成（两端状态一致）
+      lDone.value = true;
+      lProgress.value = 1;
+      lSending.value = false;
+      lStatus.value = '传输完成';
+    }
+  } catch {}
+}
+
+/** 打开一条额外的并发数据 WS 流（role=sender，ch 仅用于调试），共用 handleControlMsg */
+function openDataSock(ch: number): Promise<WebSocket> {
+  return new Promise((resolve, reject) => {
+    const wsUrl = resolveRelayBase().replace(/^https:/, 'wss:') + `/ws/${lRoom.value}?role=sender&ch=${ch}`;
+    const ws = new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = () => resolve(ws);
+    ws.onmessage = handleControlMsg;
+    ws.onerror = () => { /* 失败时由主通道兜底，不在此 reject 以免卡握手 */ };
+    ws.onclose = () => {};
+    // 5s 内未连上则视为失败
+    setTimeout(() => { if (ws.readyState !== WebSocket.OPEN) { try { ws.close(); } catch {} reject(new Error('数据流超时')); } }, 5000);
+  });
+}
+
 /** WebSocket 控制通道：保持 DO 活跃，避免 HTTP 请求间 hibernate 丢失 room */
 function connectControl() {
   if (!lRoom.value || lWs) return;
@@ -129,39 +183,7 @@ function connectControl() {
       opened = true;
       lStatus.value = '控制通道已连接，等待对方加入…';
     };
-    ws.onmessage = (ev) => {
-      try {
-        const data = JSON.parse(ev.data);
-        if (data.type === 'ready' && !lWsReadyNotified) {
-          lWsReadyNotified = true;
-          lPeerOnline.value = true;
-          lStatus.value = '对方已在线，可开始传输';
-        } else if (data.type === 'pull' || data.type === 'recv-ready') {
-          // pull = relay 权威信号：接收端 GET 已连上，可安全推数据（不会成孤儿）
-          // recv-ready = 接收端应用层备份信号（GET 连上后由接收端发出）。二者任一即放行。
-          lRecvReady.value = true;
-          recvReadyResolve?.();
-          recvReadyResolve = null;
-        } else if (data.type === 'progress') {
-          // 接收端真实已收进度（明文口径，与发送端 total 同源，比例零偏差）
-          const t = data.total || 1;
-          lProgress.value = Math.min(1, (data.received || 0) / t);
-          // 滑动窗口：用接收端已写盘字节更新 ack，唤醒被闸门挡住的 pull
-          ackBytes = data.received || 0;
-          notifyAckWaiters();
-        } else if (data.type === 'recv-gone') {
-          // relay 报告：接收端 WS 不在，数据帧无处转发 → 中止发送防静默丢帧
-          lFatal = '接收端连接已断开';
-          notifyAckWaiters();
-        } else if (data.type === 'recv-done' && !lDone.value) {
-          // 接收端确已收齐写盘 → 发送端才标记完成（两端状态一致）
-          lDone.value = true;
-          lProgress.value = 1;
-          lSending.value = false;
-          lStatus.value = '传输完成';
-        }
-      } catch {}
-    };
+    ws.onmessage = handleControlMsg;
     ws.onerror = (ev) => {
       if (!lWsReadyNotified) {
         lStatus.value = '控制通道出错，尝试 HTTP 兼容通道…';
@@ -237,7 +259,11 @@ async function startLocalSend() {
   //   896KB 明文块加密后 ≈ 897KB < 1MiB（Cloudflare WS 单消息上限，e2ee.ts 当初即为此设计）。
   // 背压双闸门：① 端到端在途 sentBytes-ackBytes ≤ WINDOW（ack=接收端已写盘字节）
   //            ② 本地 socket 缓冲 ws.bufferedAmount ≤ BUF_LIMIT（防整文件塞进内存缓冲）
-  const BUF_LIMIT = 8 * 1024 * 1024;
+  // 并发数据 WS 流数：对标旧 POST 版 MAX_INFLIGHT=3，用多条 WS 流打满上行带宽
+  // （单条 WS 流在用户链路仅能跑 ~1.6MB/s，3 路并发可恢复到 ~6MB/s 上行上限）。
+  const N_STREAMS = 3;
+  const BUF_LIMIT = 8 * 1024 * 1024;            // 本地 WS 发送缓冲总上限
+  const perStreamLimit = BUF_LIMIT / N_STREAMS;  // 每流背压上限（总量仍 ≈8MB）
 
   try {
     const mapped = files.value.map(f => ({ file: f.file }));
@@ -277,8 +303,22 @@ async function startLocalSend() {
     });
     lStatus.value = '对方已就绪，开始传输数据…';
 
-    // 3. 真流式发送：逐块 读→加密→WS send（无分片 POST、无并发池、无关流空窗）。
-    //    加密期间 socket 靠 BUF_LIMIT 内已缓冲的帧持续发送，流水线不空转。
+    // 3. 真流式并发发送：N 条 WS 数据流轮询发送（无分片 POST、无关流空窗）。
+    //    背压仅用每流 bufferedAmount（本地 socket 缓冲上限），不再等接收端写盘 ack ——
+    //    彻底解耦发送端与接收端磁盘速度（旧版 WINDOW 闸门会把发送端拖到接收端写盘速率，
+    //    是 WS 版比 POST 版慢 3.7 倍的根因）。多流并发打满上行，恢复 ~6MB/s。
+    //    主 lWs 即流 0；并发打开 N-1 条额外数据流（开不起来则降级单流，不致命）。
+    lDataSocks = [lWs];
+    try {
+      const extra = await Promise.all(
+        Array.from({ length: N_STREAMS - 1 }, (_, k) => openDataSock(k + 1)),
+      );
+      lDataSocks.push(...extra);
+    } catch {
+      lStatus.value = '并发数据流建立失败，降级为单流传输';
+    }
+
+    let assign = 0;   // 轮询分配到各数据流（接收端按帧内 seq 保序写盘，分配顺序无关）
     for (let fi = 0; fi < mapped.length; fi++) {
       const file = mapped[fi].file; let offset = 0; let ci = 0;
       while (offset < file.size) {
@@ -293,28 +333,24 @@ async function startLocalSend() {
         const dv = new DataView(frame.buffer);
         dv.setUint16(0, fi); dv.setUint32(2, ci); dv.setUint32(6, plainLen);
         frame.set(enc, FRAME_HDR);
-        // 闸门①：端到端在途 ≤ WINDOW（ack 由接收端 progress.received 驱动；500ms 兜底防 ack 丢失挂死）
-        while ((sentBytes - ackBytes) >= WINDOW) {
+        // 背压：仅本流 WS 发送缓冲（bufferedAmount 无事件可订阅，20ms 轮询）
+        const sock = lDataSocks[assign % lDataSocks.length]; assign++;
+        while (sock.readyState === WebSocket.OPEN && sock.bufferedAmount > perStreamLimit) {
           if (lAbort!.signal.aborted) throw new Error('已取消');
           if (lFatal) throw new Error(lFatal);
-          await new Promise<void>((res) => { ackWaiters.push(res); setTimeout(res, 500); });
-        }
-        // 闸门②：本地 WS 发送缓冲（bufferedAmount 无事件可订阅，20ms 轮询）
-        while (lWs && lWs.readyState === WebSocket.OPEN && lWs.bufferedAmount > BUF_LIMIT) {
-          if (lAbort!.signal.aborted) throw new Error('已取消');
           await new Promise((r) => setTimeout(r, 20));
         }
-        if (!lWs || lWs.readyState !== WebSocket.OPEN) throw new Error('数据通道断开');
+        if (sock.readyState !== WebSocket.OPEN) throw new Error('数据通道断开');
         if (lFatal) throw new Error(lFatal);
-        lWs.send(frame);
-        sentBytes += frame.length;
+        sock.send(frame);
+        offset += plainLen; ci++;
         offset += plainLen; ci++;
       }
     }
 
-    // 4. 数据结束控制帧（接收端以「收齐全部帧」为完成判据，此帧仅兜底触发收尾/状态提示）
-    if (lWs && lWs.readyState === WebSocket.OPEN) {
-      lWs.send(JSON.stringify({ type: 'data-eof' }));
+    // 4. 数据结束控制帧：所有数据流都发一份（接收端以「收齐全部帧」为完成判据，此帧仅兜底触发收尾）
+    for (const s of lDataSocks) {
+      if (s.readyState === WebSocket.OPEN) s.send(JSON.stringify({ type: 'data-eof' }));
     }
     // 不立即标记完成：真正完成以接收端 recv-done 为准（见 onmessage 的 recv-done 分支），
     // 这样发送端「完成态」= 接收端确已收齐写盘，两端状态永远一致。
