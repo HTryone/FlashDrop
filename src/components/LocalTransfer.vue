@@ -475,6 +475,22 @@ async function drainWrites() {
         }
       }
       await finishRecv();
+    } else if (pendingDone && nextWriteSeq < recvTotalChunks) {
+      // 发送端已声明数据结束(data-eof)，但序号仍有缺口 → 帧永久丢失。
+      // 旧逻辑会卡在缺失序号处死等：recvBytes 不再增长 → 发送端窗口闸门锁死 → 双方无提示。
+      // 给 2s 宽限容纳迟到帧（relay 可能仍在转发最后几帧），仍缺口则明确报错并中止，
+      // 同时通知发送端(recv-gone) 触发其 lFatal 中止，避免对端无限等待。
+      setTimeout(() => {
+        if (nextWriteSeq >= recvTotalChunks) return;          // 宽限内补齐，正常完成
+        const missing = recvTotalChunks - nextWriteSeq;
+        recvStatus.value = `传输不完整：缺失 ${missing} 个数据帧，文件可能损坏，请重试`;
+        receiving.value = false;
+        for (const w of writers) { try { w.abort(); } catch {} }
+        writers = [];
+        if (recvWs && recvWs.readyState === WebSocket.OPEN) {
+          try { recvWs.send(JSON.stringify({ type: 'recv-gone' })); } catch {}
+        }
+      }, 2000);
     }
   } finally {
     drainRunning = false;
