@@ -397,7 +397,7 @@ async function recvSegment(base: string, seg: number, dirHandle: any): Promise<b
       reader.cancel();
       const r2 = await fetch(`${base}/stream/${room}`, { signal: recvAbort!.signal, headers: { 'Accept': 'application/octet-stream' } });
       if (!r2.ok || !r2.body) { recvStatus.value = `连接失败(重试${attempt}): HTTP ${r2.status}`; receiving.value = false; return false; }
-      resp = r2; reader = resp.body.getReader();
+      resp = r2; reader = r2.body.getReader();
       await new Promise((r) => setTimeout(r, 1000 * attempt));
     }
     for (let guard = 0; guard < 8 && !offerPayload; guard++) {

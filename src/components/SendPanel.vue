@@ -365,12 +365,11 @@ async function transferSegment(ctx: SegCtx) {
   let producerDone = false;
   let waiters: Array<() => void> = [];
   let chunkBytes = 0;
-  let firstFrameResolve: (() => void) | null = null;
-  let firstFrameReject: ((e: any) => void) | null = null;
+  const frameGate: { resolve: (() => void) | null; reject: ((e: any) => void) | null } = { resolve: null, reject: null };
   function pushFrame(f: Uint8Array) {
     const wasEmpty = pending.length === 0;
     pending.push(f);
-    if (wasEmpty && firstFrameResolve) { firstFrameResolve(); firstFrameResolve = null; }
+    if (wasEmpty && frameGate.resolve) frameGate.resolve();
     const w = waiters.shift(); if (w) w();
   }
   function notifyDrain() { const w = waiters.shift(); if (w) w(); }
@@ -449,12 +448,12 @@ async function transferSegment(ctx: SegCtx) {
         }
         producerDone = true; notifyDrain();
       } catch (e: any) {
-        if (firstFrameReject) { firstFrameReject(e); firstFrameReject = null; }
+        if (frameGate.reject) frameGate.reject(e);
         throw e;
       }
     })();
-    await new Promise<void>((res, rej) => { firstFrameResolve = res; firstFrameReject = rej; });
-    firstFrameReject = null;
+    await new Promise<void>((res, rej) => { frameGate.resolve = res; frameGate.reject = rej; });
+    frameGate.reject = null;
 
     // 消费者：并发池发起分片流式 POST（深流水线），窗口 + 并发数双闸门
     const inflightWaiters: Array<() => void> = [];
