@@ -242,55 +242,67 @@ function parsePastedLink() {
 }
 
 // ================================================================
-//  HTTP 流式读取：长度前缀分帧
+//  WS 数据通道（2026-07-29 真流式架构）：数据帧经同一条 receiver WS 到达。
+//  二进制消息 = 一个 E2EE 数据帧 [12B FRAME_HDR][IV+密文+HMAC]（≤1MiB，无长度前缀）；
+//  JSON 消息 = 控制帧（offer 文件清单 / data-eof 数据结束）。
+//  relay 帧级即时转发（无 POST 整段缓冲），根治分片脉冲。
 // ================================================================
-let recvBuf = new Uint8Array(0);
+let recvDirHandle: any = null;   // startRecv 用户手势内选好的目录句柄，offer 到达时建 sink 用
 
-/** 从 reader 累积读取恰好 n 字节，返回切出的 Uint8Array，不足返回 null（EOF） */
-async function readExact(reader: ReadableStreamDefaultReader<Uint8Array>, n: number): Promise<Uint8Array | null> {
-  while (recvBuf.length < n) {
-    const { done, value } = await reader.read();
-    if (done) return null;
-    const tmp = new Uint8Array(recvBuf.length + value.length);
-    tmp.set(recvBuf, 0);
-    tmp.set(value, recvBuf.length);
-    recvBuf = tmp;
+/** 收到 offer（文件清单）：建落盘句柄并回发 recv-ready 放行发送端 */
+async function onOffer(offer: any) {
+  if (recvFiles.value.length) return; // 幂等：发送端每 5s 重发 offer 防 WS 竞态丢失，重复到达直接忽略
+  if (!Array.isArray(offer.files) || offer.files.length === 0) {
+    recvStatus.value = '收到无效的文件清单'; return;
   }
-  const out = recvBuf.slice(0, n);
-  recvBuf = recvBuf.slice(n);
-  return out;
+  senderOnline.value = true;
+  recvFiles.value = offer.files;
+  recvTotal = offer.files.reduce((s: number, f: any) => s + (f.size || 0), 0);
+  recvTotalChunks = offer.files.reduce((s: number, f: any) => s + Math.max(1, Math.ceil((f.size || 0) / CHUNK)), 0);
+  perFileChunks = offer.files.map((f: any) => Math.max(1, Math.ceil((f.size || 0) / CHUNK)));
+  recvChunks = 0;
+  try { await makeSinks(offer.files, recvDirHandle); } catch (e: any) {
+    console.error('[recv] makeSinks failed:', e);
+    recvStatus.value = `初始化接收失败: ${e?.message || e}`;
+    receiving.value = false;
+    return;
+  }
+  console.log('[recv] makeSinks ok, sending recv-ready');
+  recvReady.value = true;
+  // 声明：落盘句柄已就绪，通知发送端可以开始推数据帧
+  if (recvWs && recvWs.readyState === WebSocket.OPEN) {
+    try { recvWs.send(JSON.stringify({ type: 'recv-ready' })); } catch {}
+  }
+  recvStatus.value = recvFallback
+    ? `收到 ${offer.files.length} 个文件，开始接收（当前为不安全连接，已切换为浏览器下载模式）`
+    : `收到 ${offer.files.length} 个文件，开始流式接收…`;
 }
 
-/** 读一条长度前缀消息 [4B u32 长度][payload] */
-async function readMsg(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<Uint8Array | null> {
-  const hdr = await readExact(reader, 4);
-  if (!hdr) {
-    console.log('[recv] readMsg EOF at header');
-    return null;
-  }
-  const len = new DataView(hdr.buffer, hdr.byteOffset, 4).getUint32(0, false);
-  if (len === 0) {
-    console.log('[recv] readMsg zero length');
-    return null;
-  }
-  console.log(`[recv] readMsg expecting ${len} bytes`);
-  const payload = await readExact(reader, len);
-  console.log(`[recv] readMsg got ${payload?.length ?? 0} bytes`);
-  return payload;
-}
-
-/** WebSocket 控制通道：保持 DO 活跃，避免 Cloudflare DO 在 HTTP 请求间 hibernate 丢失 room */
+/** WebSocket 数据+控制通道：保持 DO 活跃，且承载 offer/数据帧/eof（不再有 HTTP GET 流） */
 function connectRecvControl(base: string): Promise<void> {
   return new Promise((resolve) => {
     const wsUrl = base.replace(/^https:/, 'wss:') + `/ws/${recvRoom.value}?role=receiver`;
     try {
       const ws = new WebSocket(wsUrl);
+      ws.binaryType = 'arraybuffer';   // 数据帧直接以 ArrayBuffer 交付，免 Blob 异步转换
       recvWs = ws;
       let opened = false;
       ws.onopen = () => {
         opened = true;
         try { ws.send(JSON.stringify({ type: 'ready' })); } catch {}
         resolve();
+      };
+      ws.onmessage = (ev) => {
+        if (typeof ev.data !== 'string') {
+          // 二进制 = 数据帧，布局与 handleDataFrame 期待的 [12B hdr][加密体] 完全一致
+          handleDataFrame(ev.data as ArrayBuffer);
+          return;
+        }
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'offer') { void onOffer(msg); }
+          else if (msg.type === 'data-eof') { pendingDone = true; void drainWrites(); }
+        } catch { /* 忽略非 JSON 控制消息 */ }
       };
       ws.onerror = () => {
         if (!opened) {
@@ -319,7 +331,6 @@ async function startRecv() {
   }
   closeReceiverConn();
   resetReceiver();
-  recvBuf = new Uint8Array(0);
 
   // 在用户手势内先弹目录选择器（Chromium File System Access API）：拿到句柄后数据直接流式写盘，
   // 不出现浏览器「下载」、不被扩展污染的 mitm iframe 干扰。取消选择则放弃本次接收。
@@ -361,137 +372,18 @@ async function startRecv() {
   }
 
   receiving.value = true;
-  recvStatus.value = '正在建立控制通道…';
+  recvStatus.value = '正在建立数据通道…';
   recvAbort = new AbortController();
+  recvDirHandle = dirHandle;   // offer 到达时（onOffer）建落盘句柄用
   const base = resolveRelayBase();
 
-  // 1. 先连 WebSocket 控制通道，保持 DO 活跃并通知发送端 ready
-  console.log('[recv] connecting control ws...');
+  // WS 真流式：连上 WS 发 ready 即完成初始化，其余全部事件驱动——
+  // offer(JSON)→onOffer 建 sink 回 recv-ready → 二进制帧→handleDataFrame 解密
+  // → drainWrites 保序写盘 → 收齐全部帧→finishRecv（data-eof 仅兜底触发收尾）。
+  console.log('[recv] connecting ws (data channel)...');
   await connectRecvControl(base);
-  console.log('[recv] control ws connected, starting GET...');
-
-  let resp: Response;
-  try {
-    resp = await fetch(`${base}/stream/${recvRoom.value}`, {
-      signal: recvAbort.signal,
-      headers: { 'Accept': 'application/octet-stream' },
-    });
-  } catch (e: any) {
-    recvStatus.value = `连接失败: ${e?.message || e}`;
-    receiving.value = false;
-    return;
-  }
-  if (!resp.ok || !resp.body) {
-    recvStatus.value = `连接失败: HTTP ${resp.status}`;
-    receiving.value = false;
-    return;
-  }
-
-  senderOnline.value = true;
-  recvStatus.value = '已连接，等待文件清单…';
-  let reader = resp.body.getReader();
-
-  try {
-    // 2. 读 offer（第一条消息）；如果立刻 EOF 说明 DO 可能 hibernate 导致房间丢失，
-    // 或者发送端 POST 还没到达——重试几次再放弃
-    let offerPayload = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (attempt > 0) {
-        reader.cancel();
-        resp = await fetch(`${base}/stream/${recvRoom.value}`, {
-          signal: recvAbort.signal,
-          headers: { 'Accept': 'application/octet-stream' },
-        });
-        if (!resp.ok || !resp.body) {
-          recvStatus.value = `连接失败(重试${attempt}): HTTP ${resp.status}`;
-          receiving.value = false; return;
-        }
-        reader = resp.body.getReader();
-        console.log(`[recv] retry GET #${attempt}, waiting for data...`);
-        await new Promise(r => setTimeout(r, 1000 * attempt));
-      }
-      // 跳过 DO 写的「开场帧」(非 JSON)，读到真正的 offer(JSON, type:'offer') 为止
-      let found = false;
-      for (let guard = 0; guard < 8 && !found; guard++) {
-        const m = await readMsg(reader);
-        if (!m) break; // EOF：交给外层重试或放弃
-        try {
-          const o = JSON.parse(new TextDecoder().decode(m));
-          if (o && o.type === 'offer') { offerPayload = m; found = true; }
-        } catch {
-          // 开场帧等非法 JSON，忽略继续读
-        }
-      }
-      if (offerPayload) break;
-      console.log(`[recv] offer EOF on attempt ${attempt}, will retry`);
-    }
-    if (!offerPayload) {
-      recvStatus.value = '未收到文件清单，对方可能已断开';
-      receiving.value = false;
-      return;
-    }
-    const offer = JSON.parse(new TextDecoder().decode(offerPayload));
-    if (!Array.isArray(offer.files) || offer.files.length === 0) {
-      recvStatus.value = '收到无效的文件清单'; return;
-    }
-    recvFiles.value = offer.files;
-    recvTotal = offer.files.reduce((s: number, f: any) => s + (f.size || 0), 0);
-    recvTotalChunks = offer.files.reduce((s: number, f: any) => s + Math.max(1, Math.ceil((f.size || 0) / CHUNK)), 0);
-    perFileChunks = offer.files.map((f: any) => Math.max(1, Math.ceil((f.size || 0) / CHUNK)));
-    recvChunks = 0;
-
-    try { await makeSinks(offer.files, dirHandle); } catch (e: any) {
-      console.error('[recv] makeSinks failed:', e);
-      recvStatus.value = `初始化接收失败: ${e?.message || e}`; return;
-    }
-    console.log('[recv] makeSinks ok, sending recv-ready');
-    recvReady.value = true;
-    // 声明：下载流已创建，通知发送端可以开始推数据（否则接收端 GET 已连但下载未建好 → DO 堆积 OOM）
-    if (recvWs && recvWs.readyState === WebSocket.OPEN) {
-      try { recvWs.send(JSON.stringify({ type: 'recv-ready' })); } catch {}
-    }
-    recvStatus.value = recvFallback
-      ? `收到 ${offer.files.length} 个文件，开始接收（当前为不安全连接，已切换为浏览器下载模式；大文件建议用 https 访问以获得流式写入）`
-      : `收到 ${offer.files.length} 个文件，开始流式接收…`;
-
-    // 3. 读数据帧直到 EOF
-    let frameCount = 0;
-    while (true) {
-      if (recvAborted) break;
-      // 不再本地睡眠暂停读流：发送端已用端到端滑动窗口(WINDOW=24MB)兜底在途量，
-      // 接收端全速读+写即可，积压天然 ≤ WINDOW，避免「暂停读→TCP反压过时信号→发送端减速」的锯齿。
-      const payload = await readMsg(reader);
-      if (!payload) break; // EOF = 发送端完成
-      // 容忍偶发的过短帧（如 DO 开场帧落在数据段），跳过不报错
-      if (payload.length < FRAME_HDR) {
-        console.log(`[recv] 跳过过短帧(${payload.length}B，疑似开场帧)`);
-        continue;
-      }
-      // 复制到独立 ArrayBuffer（TS 5.7 严格类型 + 防止 view 越界）
-      const frameBuf = new ArrayBuffer(payload.byteLength);
-      new Uint8Array(frameBuf).set(payload);
-      handleDataFrame(frameBuf);
-      frameCount++;
-    }
-    // 4. 流结束 → 等 drainWrites 收尾
-    pendingDone = true;
-    void drainWrites();
-  } catch (e: any) {
-    if (recvAbort?.signal.aborted) {
-      // 用户取消
-    } else {
-      recvStatus.value = `接收出错: ${e?.message || e}`;
-    }
-  } finally {
-    // 等 drainWrites 完成（如果有残余）
-    await new Promise(r => setTimeout(r, 100));
-    if (finishing || (recvTotalChunks > 0 && nextWriteSeq >= recvTotalChunks)) {
-      // 已由 drainWrites 收尾
-    } else if (!recvAborted && recvTotalChunks > 0 && nextWriteSeq < recvTotalChunks) {
-      recvStatus.value = receiving.value ? '连接意外关闭，接收可能不完整' : '已断开';
-    }
-    receiving.value = false;
-  }
+  console.log('[recv] ws connected, waiting for offer...');
+  recvStatus.value = '已连接，等待对方发送文件清单…';
 }
 
 async function finishRecv() {

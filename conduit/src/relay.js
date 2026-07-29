@@ -212,11 +212,33 @@ export class Relay {
     }
 
     server.addEventListener('message', (event) => {
+      // ---- WS 数据通道（2026-07-29 新增）----
+      // 发送端二进制消息 = 一个 E2EE 数据帧（≤1MiB，CF WS 单消息上限），
+      // relay 收到即转发给接收端 WS —— 帧级即时转发，无 POST 整段缓冲，根治分片脉冲。
+      // 绝不缓冲、绝不解析二进制内容，只透传。
+      if (typeof event.data !== 'string') {
+        if (role === 'sender') {
+          if (entry.wsReceiver && entry.wsReceiver.readyState === 1) {
+            try { entry.wsReceiver.send(event.data); } catch (e) {
+              console.error('[ws] data forward error:', e?.message || e);
+            }
+          } else {
+            // 接收端 WS 不在：数据帧无处可去 → 立即告知发送端中止，防静默丢帧致文件损坏
+            this.sendJSON(server, { type: 'recv-gone' });
+          }
+        }
+        return;
+      }
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'ready' && role === 'receiver') {
           entry.ready = true;
           this.notifyReady(entry);
+        } else if (role === 'sender' && (data.type === 'offer' || data.type === 'data-eof')) {
+          // WS 数据通道控制帧：文件清单 / 数据结束 → 透传给接收端
+          if (entry.wsReceiver && entry.wsReceiver.readyState === 1) {
+            this.sendJSON(entry.wsReceiver, data);
+          }
         } else if (role === 'receiver' && (data.type === 'progress' || data.type === 'recv-done' || data.type === 'recv-ready')) {
           // 接收端进度/完成回传 → 转发给发送端，由其驱动进度条与完成态
           if (entry.wsSender) this.sendJSON(entry.wsSender, data);
