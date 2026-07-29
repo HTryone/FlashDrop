@@ -427,8 +427,11 @@ function sendAck() {
   const acked = nextWriteSeq - 1;
   let maxBuf = nextWriteSeq - 1;
   for (const s of readyBuf.keys()) if (s > maxBuf) maxBuf = s;
+  // 尾帧缺口修复：data-eof 已到则缺口上界=总帧数-1，否则「全局最后 N 帧丢失」永远进不了
+  // missing（maxBuf 只到已收最高 seq）→ 无人重传 → 卡死在 99% 报「传输不完整」
+  if (pendingDone && recvTotalChunks > 0) maxBuf = recvTotalChunks - 1;
   const missing: number[] = [];
-  for (let s = nextWriteSeq; s <= maxBuf; s++) if (!readyBuf.has(s)) missing.push(s);
+  for (let s = nextWriteSeq; s <= maxBuf && missing.length < 500; s++) if (!readyBuf.has(s)) missing.push(s);
   // rb = 帧到达即计的累计线上字节：relay 据此结算「relay→接收端」在途量，驱动其回压转发闸门
   try { recvWs.send(JSON.stringify({ type: 'ack', acked, missing, rb: recvWireBytes })); } catch {}
 }
@@ -504,8 +507,9 @@ async function drainWrites() {
     } else if (pendingDone && nextWriteSeq < recvTotalChunks) {
       // 发送端已声明数据结束(data-eof)，但序号仍有缺口 → 帧永久丢失。
       // 旧逻辑会卡在缺失序号处死等：recvBytes 不再增长 → 发送端窗口闸门锁死 → 双方无提示。
-      // 给 2s 宽限容纳迟到帧（relay 可能仍在转发最后几帧），仍缺口则明确报错并中止，
-      // 同时通知发送端(recv-gone) 触发其 lFatal 中止，避免对端无限等待。
+      // 宽限 8s 容纳迟到帧 + 尾帧 NACK 重传往返（sendAck 已把缺口上界扩到总帧数-1，
+      // 缺失尾帧会被周期 ack 的 missing 驱动重传，正常在 1-2 个往返内补齐），
+      // 仍缺口则明确报错并中止，同时通知发送端(recv-gone) 触发其 lFatal 中止。
       setTimeout(() => {
         if (nextWriteSeq >= recvTotalChunks) return;          // 宽限内补齐，正常完成
         const missing = recvTotalChunks - nextWriteSeq;
@@ -516,7 +520,7 @@ async function drainWrites() {
         if (recvWs && recvWs.readyState === WebSocket.OPEN) {
           try { recvWs.send(JSON.stringify({ type: 'recv-gone' })); } catch {}
         }
-      }, 2000);
+      }, 8000);
     }
   } finally {
     drainRunning = false;
