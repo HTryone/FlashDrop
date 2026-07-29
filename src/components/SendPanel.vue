@@ -344,7 +344,6 @@ async function startLocalSend() {
         if (lFatal) throw new Error(lFatal);
         sock.send(frame);
         offset += plainLen; ci++;
-        offset += plainLen; ci++;
       }
     }
 
