@@ -233,12 +233,12 @@ export class Relay {
       // 队列超软水位广播 throttle 让发送端暂停。绝不解析二进制内容，只透传。
       if (typeof event.data !== 'string') {
         if (role === 'sender') {
-          if (entry.wsReceiver && entry.wsReceiver.readyState === 1) {
-            this.enqueueRecv(entry, event.data);
-          } else {
-            // 接收端 WS 不在：数据帧无处可去 → 立即告知所有发送端中止，防静默丢帧致文件损坏
-            this.broadcastJSON(entry, { type: 'recv-gone' });
-          }
+          // 接收端 WS 不在（瞬时断开 / 重连中 / 尚未连上）：帧入队暂存，不立即判 recv-gone。
+          // 浏览器 WS 比 Node 脆弱（DO 劣化 / 后台标签节流 / CF 缓冲超时均会偶发断开），
+          // 旧版直接 recv-gone 会把瞬时抖动升级成整次传输终止，过于脆弱——实测接收端一断开
+          // 仅 ~300ms 发送端就被判死。此处统一入队：接收端重连后 flushRecv 自动续发积压帧；
+          // 仅队列触硬上限(48MB)才由 enqueueRecv 广播 recv-gone 护 DO 内存。
+          this.enqueueRecv(entry, event.data);
         }
         return;
       }
