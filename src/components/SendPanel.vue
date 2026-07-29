@@ -202,13 +202,21 @@ function handleControlMsg(ev: MessageEvent) {
   } catch {}
 }
 
-/** 重传：把 resendQueue 中的缺口帧从缓存重发到缓冲最低的流（防并发重入） */
+/** 重传：把 resendQueue 中的缺口帧从缓存重发到缓冲最低的流（防并发重入）。
+ *  必须服从 relay 回压（lThrottled）：旧版重传绕过 throttle，在接收端抖动/慢消费时
+ *  把 recvQueue 冲到 64MB 硬上限 → recv-gone 整次传输 abort。 */
 async function flushResends() {
   if (resendRunning) return;
   resendRunning = true;
   try {
     while (resendQueue.size > 0) {
-      if (lAbort?.signal.aborted) break;
+      if (lAbort?.signal.aborted || lFatal) break;
+      // relay 已广播 throttle：暂停一切重传，等 resume（主发循环同步遵守）
+      while (lThrottled) {
+        if (lAbort?.signal.aborted || lFatal) break;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      if (lAbort?.signal.aborted || lFatal) break;
       let best: WebSocket | null = null; let bestBuf = Infinity;
       for (const s of lDataSocks) {
         if (s.readyState === WebSocket.OPEN && s.bufferedAmount < bestBuf) { bestBuf = s.bufferedAmount; best = s; }
@@ -446,13 +454,18 @@ async function startLocalSend() {
     // 重传守护：若 800ms 无新 ack 且仍有未确认帧（NACK 可能丢失），主动补发缓存中未确认帧
     if (resendTimer) clearInterval(resendTimer);
     resendTimer = setInterval(() => {
-      if (lDone.value || lAbort?.signal.aborted) {
+      if (lDone.value || lAbort?.signal.aborted || lFatal) {
         if (resendTimer) { clearInterval(resendTimer); resendTimer = null; }
         return;
       }
       const now = Date.now();
-      if (resendQueue.size === 0 && now - lastAckAt > 800 && ackedSeq < totalChunks - 1) {
-        for (const [s] of frameCache) if (s > ackedSeq) resendQueue.add(s);
+      // 兜底重传：仅当长期未收到任何 ack 且 NACK 队列空时才触发，避免接收端抖动/断连时
+      // 把整扇未确认窗口反复重灌进 relay。优先依赖接收端周期性 NACK（150ms）做精确补发。
+      if (resendQueue.size === 0 && now - lastAckAt > 3000 && ackedSeq < totalChunks - 1) {
+        let added = 0;
+        for (const [s] of frameCache) {
+          if (s > ackedSeq) { resendQueue.add(s); if (++added >= 100) break; }
+        }
       }
       void flushResends();
     }, 300);
