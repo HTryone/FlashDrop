@@ -48,6 +48,11 @@ function resolveRelayBase() {
   return `https://${host}`;
 }
 
+// 自动分房：按 SEGMENT_SIZE 字节切段，每段独立房间（独立 DO 实例），
+// 规避单 DO 长时间运行（>15min）缓冲堆积劣化。段房间码 = base-s{i}。
+const SEGMENT_SIZE = 2 * 1024 * 1024 * 1024; // 2GB
+function segRoom(base: string, i: number): string { return `${base}-s${i}`; }
+
 const lRoom = ref('');
 const lPassphrase = ref('');
 const lSendLink = ref('');
@@ -62,6 +67,8 @@ let lPollTimer: ReturnType<typeof setTimeout> | null = null;
 let lWs: WebSocket | null = null;
 let lWsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let lWsReadyNotified = false;
+const lSegIndex = ref(0);   // 当前段（0 基），用于 UI 展示
+const lSegCount = ref(1);  // 总段数
 
 function resetLocalSender() {
   lSending.value = false; lDone.value = false;
@@ -103,9 +110,12 @@ function genRoom() {
   for (let i = 0; i < 6; i++) s += cs[a[i] % cs.length];
   lRoom.value = s; lPassphrase.value = randomPassphrase();
   lRecvReady.value = false;
-  lSendLink.value = `${location.origin}/?tab=local&room=${s}#k=${lPassphrase.value}`;
-  lStatus.value = '房间已生成，正在建立控制通道…';
-  void connectControl();
+  // 段数按当前已选文件总大小估算（权威段数以发送端实际 offer 为准）
+  const totalNow = files.value.reduce((sum, f) => sum + f.file.size, 0);
+  const segN = Math.max(1, Math.ceil(totalNow / SEGMENT_SIZE));
+  lSegCount.value = segN;
+  lSendLink.value = `${location.origin}/?tab=local&room=${s}&seg=${segN}#k=${lPassphrase.value}`;
+  lStatus.value = '房间已生成，等待对方加入…';
 }
 
 // 端到端滑动窗口状态（顶层作用域：控制通道 onmessage 与发送流 pull 共享）
@@ -204,247 +214,261 @@ async function pollReceiverReady() {
 }
 
 
+/** 把多文件按 SEGMENT_SIZE 切成连续帧段；每段独立房间上传。
+ *  返回每段 chunk 清单与「段前累计明文字节偏移」（供滑动窗口换算本段 ack）。 */
+function buildSegments(filesList: { file: File }[]) {
+  type Chunk = { fi: number; ci: number; plainLen: number };
+  type Seg = { chunks: Chunk[]; plainBytes: number };
+  const segs: Seg[] = [];
+  let cur: Seg = { chunks: [], plainBytes: 0 };
+  for (let fi = 0; fi < filesList.length; fi++) {
+    const size = filesList[fi].file.size;
+    const nChunks = size === 0 ? 0 : Math.ceil(size / LOCAL_CHUNK);
+    for (let ci = 0; ci < nChunks; ci++) {
+      const plainLen = Math.min(LOCAL_CHUNK, size - ci * LOCAL_CHUNK);
+      // 当前段非空且加入本块会超阈值 → 另起一段（块原子，单段最多超出一个块）
+      if (cur.plainBytes > 0 && cur.plainBytes + plainLen > SEGMENT_SIZE) {
+        segs.push(cur);
+        cur = { chunks: [], plainBytes: 0 };
+      }
+      cur.chunks.push({ fi, ci, plainLen });
+      cur.plainBytes += plainLen;
+    }
+  }
+  if (cur.chunks.length > 0 || segs.length === 0) segs.push(cur);
+  const segOffsets: number[] = [];
+  let acc = 0;
+  for (const s of segs) { segOffsets.push(acc); acc += s.plainBytes; }
+  return { segs, segOffsets };
+}
+
 async function startLocalSend() {
   if (!lRoom.value || !lPassphrase.value) { lStatus.value = '请先生成房间'; return; }
-  if (!lPeerOnline.value) { lStatus.value = '对方尚未加入，请等待'; return; }
   if (!files.value.length) { lStatus.value = '没有待发送文件'; return; }
-
-  try { lKeyHex.value = await deriveKey(lPassphrase.value, LOCAL_SALT); }
+  // 不再强制要求对方先加入——第 0 段会等待接收端 GET（relay 发 pull），20s 超时兜底。
+  let lKeyHex: string;
+  try { lKeyHex = await deriveKey(lPassphrase.value, LOCAL_SALT); }
   catch (e: any) { lStatus.value = `密钥派生失败: ${e?.message || e}`; return; }
 
-  lSending.value = true; lProgress.value = 0;
-  lStatus.value = '正在确认控制通道…';
+  const filesList = files.value.map((f) => ({ file: f.file }));
+  const total = filesList.reduce((s, f) => s + f.file.size, 0);
+  const { segs, segOffsets } = buildSegments(filesList);
+  const segCount = segs.length;
+  lSegCount.value = segCount;
+
+  lSending.value = true; lProgress.value = 0; lDone.value = false;
+  lStatus.value = '正在建立控制通道…';
   lAbort = new AbortController();
-  // 重置滑动窗口 + 接收端就绪闸门（防上一次传输残留导致闸门误判；recv-ready 已到则保持无需重等）
-  ackBytes = 0; sentBytes = 0; ackWaiters = [];
-  armRecvReady();
 
-  // 关键：确保 WebSocket 控制通道还活着（DO 靠 WS 保活，否则 hibernate 会丢 rooms 状态，
-  // 导致 POST 和 GET 连到不同的 TransformStream 实例 → 接收端 EOF at header）
-  if (!lWs || lWs.readyState !== WebSocket.OPEN) {
-    lStatus.value = '控制通道已断开，正在重连…';
-    connectControl();
-    // 等待 WS 重连 + 对端 ready
-    await new Promise<void>((resolve) => {
-      const check = () => {
-        if (lWs && lWs.readyState === WebSocket.OPEN && lWsReadyNotified) resolve();
-        else setTimeout(check, 200);
-      };
-      setTimeout(check, 200);
-    });
+  try {
+    for (let seg = 0; seg < segCount; seg++) {
+      if (lAbort.signal.aborted) break;
+      lSegIndex.value = seg;
+      await transferSegment({ seg, segCount, segs, segOffsets, filesList, total, lKeyHex });
+    }
+    if (!lAbort.signal.aborted) {
+      lStatus.value = '文件已发送，等待对方接收完成…';
+      // 兜底超时：30s 内未收到 recv-done（如对方 WS 断开），也标记完成，避免发送端卡死
+      setTimeout(() => {
+        if (!lDone.value && lSending.value) {
+          lDone.value = true;
+          lStatus.value = '已完成（对方可能已离线，文件应已送达）';
+          lSending.value = false;
+          closeLocalConn();
+        }
+      }, 30000);
+    }
+  } catch (e: any) {
+    if (lAbort?.signal.aborted) { lStatus.value = '已取消发送'; }
+    else lStatus.value = `传输出错: ${e?.message || e}`;
+    lSending.value = false;
+    closeLocalConn();
+  } finally {
+    if (lAbort?.signal.aborted) lSending.value = false;
   }
+}
 
+type SegCtx = {
+  seg: number; segCount: number;
+  segs: { chunks: { fi: number; ci: number; plainLen: number }[]; plainBytes: number }[];
+  segOffsets: number[]; filesList: { file: File }[]; total: number; lKeyHex: string;
+};
+
+/** 单段传输：独立房间 + 独立控制通道 + 独立滑动窗口；段内逻辑与原单房间一致。 */
+async function transferSegment(ctx: SegCtx) {
+  const { seg, segCount, segs, segOffsets, filesList, total, lKeyHex } = ctx;
+  const room = segRoom(lRoom.value, seg);
+  const isLast = seg === segCount - 1;
   const base = resolveRelayBase();
-  // Cloudflare POST 请求体限制 100MB；本地 relay 无此限制。
-  // 实测证据（2026-07-29 浏览器打线上 relay 隔离实验）：Chrome→CF 链路对流式 POST 请求体
-  // 是「整段缓冲、POST 关闭才向 DO 转发」——发 5MB 挂住不关 8 秒接收端 0 字节，一关全到。
-  // 因此 POST 分片必须显著小于滑动窗口，否则互锁死。并发上传本身是对的（打满上行），
-  // 但 6 路×8MB=48MB 一次放出 → 脉冲被放大 6 倍 → 配合 ack ~8s 异位造成抽干式锯齿，反而变慢。
-  // 折中流水线：3 路并发 × 4MB 分片 = 12MB 在途脉冲（比 48MB 小 4 倍），WINDOW 24MB 留余量；
-  // 闸门按真实已发字节计量（去掉 +POST_LIMIT 预留虚高），上行持续打满但不过载。实测环境裸上传≈2.7MB/s，
-  // 用户真宽带更高，靠适度并发打满。背压由 WINDOW 闸门 + relay 端 desiredSize 双重兜底。
   const POST_LIMIT = 4 * 1024 * 1024;
   const MAX_INFLIGHT = 3;
 
-  // ---- 流式分片 POST（核心修复）----
-  // 旧逻辑：攒满 80MB 一次性 fetch POST 大 body → 大请求体在代理/Cloudflare 链路上被丢弃，
-  //         接收端只收到 OPTIONS 预检、永远收不到数据体（表现为「未收到文件清单 / EOF at header」）。
-  // 新逻辑：producer 异步加密产生帧入队，postOneChunk 顺序发起每个分片 ReadableStream POST，
-  //         边产生边上传（不再缓冲 80MB 大 body），浏览器原生背压限流，relay 端 req.pipe 原生转发。
+  lStatus.value = `正在传输第 ${seg + 1}/${segCount} 段（${fmt(segs[seg].plainBytes)}）…`;
+
+  // 每段独立滑动窗口 + 接收端就绪闸门（防上一段残留导致闸门误判）
+  ackBytes = 0; sentBytes = 0; ackWaiters = [];
+  lRecvReady.value = false;
+  armRecvReady();
+
+  // 本段控制通道（每段独立 room → 独立 DO，规避单 DO 长时劣化）
+  const ws = new WebSocket(base.replace(/^https:/, 'wss:') + `/ws/${room}?role=sender`);
+  lWs = ws;
+  let wsOpened = false;
+  await new Promise<void>((resolve, reject) => {
+    ws.onopen = () => { wsOpened = true; resolve(); };
+    ws.onerror = () => { if (!wsOpened) reject(new Error('控制通道连接失败')); };
+    ws.onclose = () => { if (lWs === ws) lWs = null; };
+  });
+  ws.onmessage = (ev) => {
+    try {
+      const data = JSON.parse(ev.data);
+      if (data.type === 'ready') {
+        lPeerOnline.value = true;
+        lStatus.value = '对方已在线，可开始传输';
+      } else if (data.type === 'pull' || data.type === 'recv-ready') {
+        lRecvReady.value = true; recvReadyResolve?.(); recvReadyResolve = null;
+      } else if (data.type === 'progress') {
+        const t = data.total || 1;
+        lProgress.value = Math.min(1, (data.received || 0) / t);
+        // 滑动窗口用「本段已确认字节」= 全局已收 - 本段之前字节偏移；绝不跨段累计，否则闸门虚高死锁
+        ackBytes = Math.max(0, (data.received || 0) - segOffsets[seg]);
+        notifyAckWaiters();
+      } else if (data.type === 'recv-done' && !lDone.value) {
+        lDone.value = true; lProgress.value = 1; lSending.value = false;
+        lStatus.value = '传输完成';
+        closeLocalConn();
+      }
+    } catch {}
+  };
+
+  // 等接收端 GET 连上（relay 权威 pull）或接收端 recv-ready
+  try {
+    await Promise.race([
+      recvReadyPromise,
+      new Promise<void>((_, rej) => setTimeout(() => rej(new Error(`第 ${seg + 1} 段：对方未开始接收（20s 超时）`)), 20000)),
+    ]);
+  } catch (e: any) {
+    lStatus.value = `无法开始传输：${e?.message || e}。请确认对方已点「连接接收」且页面未关闭。`;
+    lSending.value = false;
+    try { ws.close(); } catch {}
+    throw e;
+  }
+
+  lStatus.value = `第 ${seg + 1} 段：对方已就绪，发送文件清单…`;
+  await postOfferSeg();
+  lStatus.value = `第 ${seg + 1} 段：开始传输数据…`;
+
+  const chunkList = segs[seg].chunks;
+
+  // ---- 生产者：本段 chunk 加密入队 ----
   let pending: Uint8Array[] = [];
   let producerDone = false;
   let waiters: Array<() => void> = [];
   let chunkBytes = 0;
   let firstFrameResolve: (() => void) | null = null;
   let firstFrameReject: ((e: any) => void) | null = null;
-
   function pushFrame(f: Uint8Array) {
     const wasEmpty = pending.length === 0;
     pending.push(f);
     if (wasEmpty && firstFrameResolve) { firstFrameResolve(); firstFrameResolve = null; }
     const w = waiters.shift(); if (w) w();
   }
-  function notifyDrain() {
-    const w = waiters.shift(); if (w) w();
-  }
+  function notifyDrain() { const w = waiters.shift(); if (w) w(); }
   async function waitFrame(): Promise<void> {
     if (pending.length > 0) return;
     await new Promise<void>((res) => waiters.push(res));
   }
-
-  // 发送一个分片（一个 ReadableStream POST）。seed = 启动时必须立即入队的首帧
-  // （同步取出，避免并发 launch 抢空 pending 造成空 POST）。返回 false 表示全部发完
   async function postOneChunk(seed: Uint8Array): Promise<boolean> {
     chunkBytes = 0;
     const rs = new ReadableStream({
       start(ctrl) {
-        // 关键：duplex:'half' 的 body 必须创建时就有数据，Chrome 才会立即发起 HTTP 请求。
-        // 若等第一次 pull 再 enqueue，可能形成死锁：浏览器不发起请求 → 不 pull → 没数据。
-        ctrl.enqueue(seed);
-        sentBytes += seed.length;
-        chunkBytes += seed.length;
-        console.log('[send] first frame enqueued', seed.length, 'chunkBytes', chunkBytes);
+        ctrl.enqueue(seed); sentBytes += seed.length; chunkBytes += seed.length;
       },
       async pull(ctrl) {
-        // 滑动窗口闸门已上移到「并发池 launch 阶段」（预留 POST_LIMIT 字节），
-        // 此处只管从 pending 取帧入队，不再各自 await 闸门，避免并发下重复等待。
         if (pending.length === 0) {
           if (producerDone) { ctrl.close(); return; }
-          console.log('[send] pull waiting for frame');
           await waitFrame();
           if (pending.length === 0) {
             if (producerDone) { ctrl.close(); return; }
-            console.log('[send] pull still no frame, return');
-            return; // 浏览器会再次调用 pull
+            return;
           }
         }
-        const frame = pending.shift()!;
-        notifyDrain();
-        ctrl.enqueue(frame);
-        sentBytes += frame.length;
-        chunkBytes += frame.length;
-        console.log('[send] frame enqueued', frame.length, 'chunkBytes', chunkBytes, 'pending', pending.length);
+        const frame = pending.shift()!; notifyDrain();
+        ctrl.enqueue(frame); sentBytes += frame.length; chunkBytes += frame.length;
         if (chunkBytes >= POST_LIMIT) { ctrl.close(); return; }
       },
     });
-    const resp = await fetch(`${base}/stream/${lRoom.value}`, {
+    const resp = await fetch(`${base}/stream/${room}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },
-      body: rs,
-      duplex: 'half',
-      signal: lAbort!.signal,
+      body: rs, duplex: 'half', signal: lAbort!.signal,
     } as any);
-    if (!resp.ok) throw new Error(`上传失败 HTTP ${resp.status}`);
+    if (!resp.ok) throw new Error(`第 ${seg + 1} 段上传失败 HTTP ${resp.status}`);
     return !(producerDone && pending.length === 0);
   }
-
-  // 数据全部发完后，单独发一个空 POST 到 /close 关闭流
-  // （Worker 的 /close 处理器关闭 writable → 接收端 GET 流收到 EOF = 传输完成）
-  async function sendClose() {
+  async function postOfferSeg() {
+    const offerJson = JSON.stringify({
+      type: 'offer',
+      files: filesList.map((f) => ({ name: f.file.name, size: f.file.size })),
+      segIndex: seg, segCount,
+    });
+    const offerFrame = encodeMsg(new TextEncoder().encode(offerJson));
+    const rs = new ReadableStream({ start(ctrl) { ctrl.enqueue(offerFrame); ctrl.close(); } });
+    const resp = await fetch(`${base}/stream/${room}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/octet-stream' },
+      body: rs, duplex: 'half', signal: lAbort!.signal,
+    } as any);
+    if (!resp.ok) throw new Error(`第 ${seg + 1} 段上传 offer 失败 HTTP ${resp.status}`);
+  }
+  async function sendCloseSeg() {
     try {
-      await fetch(`${base}/stream/${lRoom.value}/close`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: new Uint8Array(0),
-        signal: lAbort!.signal,
+      await fetch(`${base}/stream/${room}/close`, {
+        method: 'POST', headers: { 'Content-Type': 'application/octet-stream' },
+        body: new Uint8Array(0), signal: lAbort!.signal,
       });
     } catch (e: any) {
       if (lAbort?.signal.aborted) throw e;
-      throw new Error(`关闭流失败: ${e?.message || e}`);
+      throw new Error(`第 ${seg + 1} 段关闭流失败: ${e?.message || e}`);
     }
   }
 
-  try {
-    // 1. 单独发 offer（文件清单）POST；必须在 ReadableStream 之外等 recv-ready，
-    //    否则在 pull 里阻塞等 recv-ready 会导致 HTTP body 长时间不流动，浏览器/Cloudflare 直接 abort fetch → Failed to fetch。
-    const offerJson = JSON.stringify({
-      type: 'offer',
-      files: files.value.map(f => ({ name: f.file.name, size: f.file.size })),
-    });
-    const offerBytes = new TextEncoder().encode(offerJson);
-    const offerFrame = encodeMsg(offerBytes);
-    async function postOffer() {
-      const rs = new ReadableStream({
-        start(ctrl) { ctrl.enqueue(offerFrame); ctrl.close(); }
-      });
-      const resp = await fetch(`${base}/stream/${lRoom.value}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: rs,
-        duplex: 'half',
-        signal: lAbort!.signal,
-      } as any);
-      if (!resp.ok) throw new Error(`上传 offer 失败 HTTP ${resp.status}`);
-    }
-
-      const mapped = files.value.map(f => ({ file: f.file }));
-      const total = mapped.reduce((s, f) => s + f.file.size, 0);
-      if (total === 0) {
-        await sendClose();
-        lDone.value = true; lStatus.value = '传输完成（空）'; lSending.value = false;
-        return;
-      }
-
-      // 等接收端 GET 连上（relay 发 pull 权威信号）或接收端应用层 recv-ready 备份信号。
-      // 二者任一即放行——此时接收端 GET 一定已就绪，推送数据不会成孤儿。
-      // 超时（默认 20s）则直接报错终止：对方多半未点「连接接收」或页面已关，盲推只会造孤儿。
-      try {
-        await Promise.race([
-          recvReadyPromise,
-          new Promise<void>((_, rej) => setTimeout(() => rej(new Error('对方未开始接收（20s 超时）')), 20000)),
-        ]);
-      } catch (e: any) {
-        lStatus.value = `无法开始传输：${e?.message || e}。请确认对方已点「连接接收」且页面未关闭。`;
-        lSending.value = false;
-        return;
-      }
-      lStatus.value = '对方已就绪，发送文件清单…';
-      await postOffer();
-      lStatus.value = '已发送文件清单，开始传输数据…';
-
-    // 生产者：逐块加密入队
-    let frameLogCount = 0;
+  if (chunkList.length > 0) {
     const producer = (async () => {
-      console.log('[send] producer start');
       try {
-      for (let fi = 0; fi < mapped.length; fi++) {
-        const file = mapped[fi].file; let offset = 0; let ci = 0;
-        while (offset < file.size) {
-          const end = Math.min(offset + LOCAL_CHUNK, file.size);
-          console.log('[send] slicing', file.name, offset, end);
-          const chunkBuf = await file.slice(offset, end).arrayBuffer();
-          console.log('[send] slice ok', chunkBuf.byteLength);
-          const plainLen = chunkBuf.byteLength;
-          console.log('[send] encrypting...');
-          const enc = new Uint8Array(await encryptChunkAsync(chunkBuf, lKeyHex.value));
-          console.log('[send] encrypted', enc.length);
-          // 帧头：fi u16 + ci u32 + plainLen u32
+        for (const c of chunkList) {
+          const file = filesList[c.fi].file;
+          const offset = c.ci * LOCAL_CHUNK;
+          const chunkBuf = await file.slice(offset, offset + c.plainLen).arrayBuffer();
+          const enc = new Uint8Array(await encryptChunkAsync(chunkBuf, lKeyHex));
           const frame = new Uint8Array(FRAME_HDR + enc.length);
           const dv = new DataView(frame.buffer);
-          dv.setUint16(0, fi); dv.setUint32(2, ci); dv.setUint32(6, plainLen);
+          dv.setUint16(0, c.fi); dv.setUint32(2, c.ci); dv.setUint32(6, c.plainLen);
           frame.set(enc, FRAME_HDR);
           pushFrame(encodeMsg(frame));
-          frameLogCount++;
-          if (frameLogCount <= 3) console.log('[send] pushed frame', fi, ci, 'pending', pending.length);
-          // 简单背压：在途帧过多则等待消费
           while (pending.length > 300) { await new Promise<void>((r) => waiters.push(r)); }
-          offset += plainLen; ci++;
         }
-      }
-      producerDone = true;
-      notifyDrain();
-      console.log('[send] producer done');
+        producerDone = true; notifyDrain();
       } catch (e: any) {
-        console.error('[send] producer error:', e);
         if (firstFrameReject) { firstFrameReject(e); firstFrameReject = null; }
         throw e;
       }
     })();
-
-    // 关键：等 producer 生产出第一帧，再启动 consumer。
-    // 这样 ReadableStream 的 start() 能立即 enqueue 数据，触发 Chrome 立即发起 HTTP 请求。
-    console.log('[send] waiting for first frame');
     await new Promise<void>((res, rej) => { firstFrameResolve = res; firstFrameReject = rej; });
     firstFrameReject = null;
-    console.log('[send] first frame ready, start consumer');
 
-    // 消费者：并发池发起分片流式 POST（深流水线打满上行），窗口 + 并发数双闸门
+    // 消费者：并发池发起分片流式 POST（深流水线），窗口 + 并发数双闸门
     const inflightWaiters: Array<() => void> = [];
     const wakeInflight = () => { let w: (() => void) | undefined; while ((w = inflightWaiters.shift())) w(); };
     let inflightCount = 0;
-
     async function pumpPool() {
       const active = new Set<Promise<unknown>>();
       const tryLaunch = (): boolean => {
-        // 闸门：① 并发数未满 ② 在途字节 + 本片预留 ≤ 窗（防死锁）③ 还有待发帧或生产者未完
         if (inflightCount >= MAX_INFLIGHT) return false;
-        if ((sentBytes - ackBytes) >= WINDOW) return false;  // 按真实已发字节计量，去掉 +POST_LIMIT 预留虚高（修并发版吞吐被压低）
-        if (pending.length === 0) return false; // 无帧可发，等生产者或 ack
-        const seed = pending.shift()!;          // 同步取走首帧，杜绝并发空 launch
-        notifyDrain();
+        if ((sentBytes - ackBytes) >= WINDOW) return false;
+        if (pending.length === 0) return false;
+        const seed = pending.shift()!; notifyDrain();
         inflightCount++;
-        const p = postOneChunk(seed)
-          .catch((e) => { throw e; })
+        const p = postOneChunk(seed).catch((e) => { throw e; })
           .finally(() => { inflightCount--; wakeInflight(); });
         active.add(p);
         p.finally(() => active.delete(p));
@@ -454,9 +478,7 @@ async function startLocalSend() {
         let launched = false;
         while (tryLaunch()) launched = true;
         if (!launched) {
-          // 不能发射：并发满 / 窗口满 / 已发完
-          if (inflightCount === 0 && producerDone && pending.length === 0) break; // 全部发完
-          // 等 ack（窗口释放）或某片完成（槽位释放）
+          if (inflightCount === 0 && producerDone && pending.length === 0) break;
           await new Promise<void>((res) => { ackWaiters.push(res); inflightWaiters.push(res); });
         }
       }
@@ -464,25 +486,10 @@ async function startLocalSend() {
     }
     await pumpPool();
     await producer;
-    await sendClose();
-    // 不立即标记完成：真正完成以接收端 recv-done 为准（见 onmessage 的 recv-done 分支），
-    // 这样发送端「完成态」= 接收端确已收齐写盘，两端状态永远一致。
-    lStatus.value = '文件已发送，等待对方接收完成…';
-    // 兜底超时：30s 内未收到 recv-done（如对方 WS 断开），也标记完成，避免发送端卡死
-    setTimeout(() => {
-      if (!lDone.value && lSending.value) {
-        lDone.value = true;
-        lStatus.value = '已完成（对方可能已离线，文件应已送达）';
-        lSending.value = false;
-      }
-    }, 30000);
-  } catch (e: any) {
-    if (lAbort?.signal.aborted) { lStatus.value = '已取消发送'; }
-    else lStatus.value = `传输出错: ${e?.message || e}`;
-    lSending.value = false;
-  } finally {
-    lAbort = null;
   }
+
+  await sendCloseSeg();
+  if (!isLast) { try { ws.close(); } catch {} }
 }
 
 function copyLocalLink() { navigator.clipboard?.writeText(lSendLink.value); lStatus.value = '链接已复制'; }
@@ -848,11 +855,12 @@ onUnmounted(() => { closeLocalConn(); });
           对方（接收端）：{{ lPeerOnline ? '已在线 ✓' : '等待加入…' }}
         </div>
         <div class="actions">
-          <button v-if="!lSending" class="btn primary" :disabled="lDone || !lPeerOnline" @click="startLocalSend">
-            {{ lDone ? '已完成' : (lPeerOnline ? '开始传输' : '等待对方加入…') }}
+          <button v-if="!lSending" class="btn primary" :disabled="lDone || !lRoom" @click="startLocalSend">
+            {{ lDone ? '已完成' : '开始传输' }}
           </button>
           <button v-else class="btn danger" @click="cancelLocalSend">取消发送</button>
         </div>
+        <div v-if="lSegCount > 1 && (lSending || lDone)" class="seg-info">分段传输：第 {{ lSegIndex + 1 }} / {{ lSegCount }} 段</div>
         <div v-if="lSending || lDone" class="bar">
           <div class="fill" :style="{ width: (lProgress * 100) + '%' }"></div>
         </div>
