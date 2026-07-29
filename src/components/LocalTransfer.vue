@@ -190,8 +190,11 @@ let recvKey = '';
 let finishing = false;
 let recvAborted = false;
 let recvAbort: AbortController | null = null;
-let recvWs: WebSocket | null = null;
+let recvSocks: WebSocket[] = [];   // 并发接收数据 WS 流（对称发送端 N_STREAMS，打满下行带宽）
 let recvWsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+// 接收端并发路数：与发送端 N_STREAMS 对称。多路 WS 让 relay→接收端 下行突破单路 ~700KB/s 上限。
+const RECV_STREAMS = 3;
+function recvPrimary(): WebSocket | null { return recvSocks.length ? recvSocks[0] : null; }
 // 并发解密 + 保序写盘
 let perFileChunks: number[] = [];
 let nextWriteSeq = 0;
@@ -223,14 +226,16 @@ function resetReceiver() {
   if (recvAckTimer) { clearInterval(recvAckTimer); recvAckTimer = null; }
   perFileChunks = []; nextWriteSeq = 0; readyBuf.clear(); drainRunning = false;
   pendingDone = false;
-  if (recvWs) { try { recvWs.close(); } catch {} recvWs = null; }
+  for (const s of recvSocks) { try { s.close(); } catch {} }
+  recvSocks = [];
 }
 
 function closeReceiverConn() {
   if (recvAbort) { try { recvAbort.abort(); } catch {} recvAbort = null; }
   if (recvWsReconnectTimer) { clearTimeout(recvWsReconnectTimer); recvWsReconnectTimer = null; }
   if (recvAckTimer) { clearInterval(recvAckTimer); recvAckTimer = null; }
-  if (recvWs) { try { recvWs.close(); } catch {} recvWs = null; }
+  for (const s of recvSocks) { try { s.close(); } catch {} }
+  recvSocks = [];
   finishing = false;
 }
 
@@ -275,57 +280,66 @@ async function onOffer(offer: any) {
   console.log('[recv] makeSinks ok, sending recv-ready');
   recvReady.value = true;
   // 声明：落盘句柄已就绪，通知发送端可以开始推数据帧
-  if (recvWs && recvWs.readyState === WebSocket.OPEN) {
-    try { recvWs.send(JSON.stringify({ type: 'recv-ready' })); } catch {}
+  const rp = recvPrimary();
+  if (rp && rp.readyState === WebSocket.OPEN) {
+    try { rp.send(JSON.stringify({ type: 'recv-ready' })); } catch {}
   }
   recvStatus.value = recvFallback
     ? `收到 ${offer.files.length} 个文件，开始接收（当前为不安全连接，已切换为浏览器下载模式）`
     : `收到 ${offer.files.length} 个文件，开始流式接收…`;
 }
 
-/** WebSocket 数据+控制通道：保持 DO 活跃，且承载 offer/数据帧/eof（不再有 HTTP GET 流） */
+/** WebSocket 数据+控制通道：保持 DO 活跃，且承载 offer/数据帧/eof（不再有 HTTP GET 流）。
+ *  接收端对称开 RECV_STREAMS 路并发 WS，打满下行带宽；所有 socket 共用同一 onmessage（按 seq 保序写盘），
+ *  仅在主 socket(recvSocks[0]) 回报 recv-ready/ack，避免重复控制消息。 */
 function connectRecvControl(base: string): Promise<void> {
   return new Promise((resolve) => {
     const wsUrl = base.replace(/^https:/, 'wss:') + `/ws/${recvRoom.value}?role=receiver`;
-    try {
-      const ws = new WebSocket(wsUrl);
-      ws.binaryType = 'arraybuffer';   // 数据帧直接以 ArrayBuffer 交付，免 Blob 异步转换
-      recvWs = ws;
-      let opened = false;
-      ws.onopen = () => {
-        opened = true;
-        try { ws.send(JSON.stringify({ type: 'ready' })); } catch {}
-        resolve();
-      };
-      ws.onmessage = (ev) => {
-        if (typeof ev.data !== 'string') {
-          // 二进制 = 数据帧，布局与 handleDataFrame 期待的 [12B hdr][加密体] 完全一致
-          handleDataFrame(ev.data as ArrayBuffer);
-          return;
-        }
-        try {
-          const msg = JSON.parse(ev.data);
-          if (msg.type === 'offer') { void onOffer(msg); }
-          else if (msg.type === 'data-eof') { pendingDone = true; void drainWrites(); }
-        } catch { /* 忽略非 JSON 控制消息 */ }
-      };
-      ws.onerror = () => {
-        if (!opened) {
-          // WebSocket 不可用（本地开发或网络限制），回退 HTTP POST /ready
-          void fetch(`${base}/stream/${recvRoom.value}/ready`, { method: 'POST' }).catch(() => {});
-          resolve();
-        }
-      };
-      ws.onclose = () => {
-        if (recvWs === ws) recvWs = null;
-        // 只有曾经成功打开过的连接才自动重连，避免初始失败时死循环
-        if (opened && receiving.value && !recvWs) {
-          recvWsReconnectTimer = setTimeout(() => void connectRecvControl(base), 3000);
-        }
-      };
-    } catch (e: any) {
-      recvStatus.value = `控制通道失败: ${e?.message || e}`;
-      resolve();
+    let resolved = false;
+    const tryResolve = () => { if (!resolved) { resolved = true; resolve(); } };
+    const onMessage = (ev: MessageEvent) => {
+      if (typeof ev.data !== 'string') {
+        // 二进制 = 数据帧，布局与 handleDataFrame 期待的 [12B hdr][加密体] 完全一致
+        handleDataFrame(ev.data as ArrayBuffer);
+        return;
+      }
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === 'offer') { void onOffer(msg); }
+        else if (msg.type === 'data-eof') { pendingDone = true; void drainWrites(); }
+      } catch { /* 忽略非 JSON 控制消息 */ }
+    };
+    for (let i = 0; i < RECV_STREAMS; i++) {
+      try {
+        const ws = new WebSocket(wsUrl + (i > 0 ? `&ch=${i}` : ''));
+        ws.binaryType = 'arraybuffer';   // 数据帧直接以 ArrayBuffer 交付，免 Blob 异步转换
+        recvSocks.push(ws);
+        const sockOpened = { v: false };
+        ws.onopen = () => {
+          sockOpened.v = true;
+          // 携带并发路数，让 relay 把在途上限放大 N×；offer/数据帧经 relay 扇出到各路
+          try { ws.send(JSON.stringify({ type: 'ready', streams: RECV_STREAMS })); } catch {}
+          tryResolve();
+        };
+        ws.onmessage = onMessage;
+        ws.onerror = () => {
+          if (!sockOpened.v) {
+            // WebSocket 不可用（本地开发或网络限制），回退 HTTP POST /ready（仅首路失败触发一次）
+            void fetch(`${base}/stream/${recvRoom.value}/ready`, { method: 'POST' }).catch(() => {});
+            tryResolve();
+          }
+        };
+        ws.onclose = () => {
+          const idx = recvSocks.indexOf(ws);
+          if (idx >= 0) recvSocks.splice(idx, 1);
+          // 全部 socket 断开且曾成功打开过 → 自动重连（避免初始失败死循环）
+          if (recvSocks.length === 0 && sockOpened.v && receiving.value) {
+            recvWsReconnectTimer = setTimeout(() => void connectRecvControl(base), 3000);
+          }
+        };
+      } catch (e: any) {
+        if (i === 0) { recvStatus.value = `控制通道失败: ${e?.message || e}`; tryResolve(); }
+      }
     }
   });
 }
@@ -423,7 +437,8 @@ async function finishRecv() {
 /** 回报累计确认 + 缺口（NACK）：acked = 已连续写盘最高 seq；missing = readyBuf 中高于 nextWriteSeq 却缺失的 seq。
  *  发送端据此回收缓存并补发缺失帧，根治 Chrome WS 静默丢帧导致的文件损坏。 */
 function sendAck() {
-  if (!recvWs || recvWs.readyState !== WebSocket.OPEN) return;
+  const rp = recvPrimary();
+  if (!rp || rp.readyState !== WebSocket.OPEN) return;
   const acked = nextWriteSeq - 1;
   let maxBuf = nextWriteSeq - 1;
   for (const s of readyBuf.keys()) if (s > maxBuf) maxBuf = s;
@@ -433,7 +448,7 @@ function sendAck() {
   const missing: number[] = [];
   for (let s = nextWriteSeq; s <= maxBuf && missing.length < 500; s++) if (!readyBuf.has(s)) missing.push(s);
   // rb = 帧到达即计的累计线上字节：relay 据此结算「relay→接收端」在途量，驱动其回压转发闸门
-  try { recvWs.send(JSON.stringify({ type: 'ack', acked, missing, rb: recvWireBytes })); } catch {}
+  try { rp.send(JSON.stringify({ type: 'ack', acked, missing, rb: recvWireBytes })); } catch {}
 }
 
 /** (fi, ci) → 全局递增序号 */
@@ -487,7 +502,8 @@ async function drainWrites() {
       recvProgress.value = recvTotal ? recvBytes / recvTotal : 1;
       // 节流回报 ack(累计确认 + 缺口 NACK) 给发送端（~100ms 一次，驱动重传）
       const _now = Date.now();
-      if (recvWs && recvWs.readyState === WebSocket.OPEN && _now - lastProgressAt >= 100) {
+      const rp = recvPrimary();
+      if (rp && rp.readyState === WebSocket.OPEN && _now - lastProgressAt >= 100) {
         lastProgressAt = _now;
         sendAck();
       }
@@ -499,8 +515,9 @@ async function drainWrites() {
       if (!recvDoneSent) {
         recvDoneSent = true;
         sendAck();   // 最终 ack：acked=total-1, missing=[]，发送端回收全部缓存
-        if (recvWs && recvWs.readyState === WebSocket.OPEN) {
-          try { recvWs.send(JSON.stringify({ type: 'recv-done' })); } catch {}
+        const rpDone = recvPrimary();
+        if (rpDone && rpDone.readyState === WebSocket.OPEN) {
+          try { rpDone.send(JSON.stringify({ type: 'recv-done' })); } catch {}
         }
       }
       await finishRecv();
@@ -517,8 +534,9 @@ async function drainWrites() {
         receiving.value = false;
         for (const w of writers) { try { w.abort(); } catch {} }
         writers = [];
-        if (recvWs && recvWs.readyState === WebSocket.OPEN) {
-          try { recvWs.send(JSON.stringify({ type: 'recv-gone' })); } catch {}
+        const rp3 = recvPrimary();
+        if (rp3 && rp3.readyState === WebSocket.OPEN) {
+          try { rp3.send(JSON.stringify({ type: 'recv-gone' })); } catch {}
         }
       }, 8000);
     }

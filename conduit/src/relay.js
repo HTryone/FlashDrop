@@ -39,7 +39,7 @@ export class Relay {
   constructor(state, env) {
     this.state = state;
     this.env = env;
-    // room -> { readable, writable, ready, consumed, wsSenders, wsReceiver }
+    // room -> { readable, writable, ready, consumed, wsSenders, wsReceivers }
     this.rooms = new Map();
   }
 
@@ -217,11 +217,15 @@ export class Relay {
       // 若接收端已就绪，立即通知所有发送端
       if (entry.ready) this.broadcastJSON(entry, { type: 'ready' });
     } else {
-      entry.wsReceiver = server;
-      // 新接收端连上（含刷新重连）：在途记账归零（旧连接的在途已随连接消亡），并立即下发积压帧
-      entry.recvInflight = 0;
-      entry.lastRb = 0;
-      entry.sawRb = false;
+      // 多路接收 WS：仅首条连接归零在途记账（避免逐条连入反复清零冲掉在途量）；
+      // 后续连接直接加入扇出集合，flushRecv 会把积压帧均衡分发到各路。
+      const isFirst = entry.wsReceivers.size === 0;
+      entry.wsReceivers.add(server);
+      if (isFirst) {
+        entry.recvInflight = 0;
+        entry.lastRb = 0;
+        entry.sawRb = false;
+      }
       this.flushRecv(entry);
     }
 
@@ -246,11 +250,15 @@ export class Relay {
         const data = JSON.parse(event.data);
         if (data.type === 'ready' && role === 'receiver') {
           entry.ready = true;
+          // 接收端携带并发路数 → 在途上限线性放大（N 路下行 = N× 单路缓冲容量），sender 据此被释放 N× 快
+          if (typeof data.streams === 'number' && data.streams > 0) {
+            entry.recvInflightLimit = data.streams * RECV_INFLIGHT_LIMIT;
+          }
           this.notifyReady(entry);
         } else if (role === 'sender' && data.type === 'offer') {
-          // 文件清单 → 透传给接收端（不排队：offer 在数据帧之前，且接收端幂等）
-          if (entry.wsReceiver && entry.wsReceiver.readyState === 1) {
-            this.sendJSON(entry.wsReceiver, data);
+          // 文件清单 → 透传给所有接收端 WS（多路场景每路都需 offer 初始化；接收端 onOffer 幂等）
+          for (const ws of entry.wsReceivers) {
+            if (ws.readyState === 1) this.sendJSON(ws, data);
           }
         } else if (role === 'sender' && data.type === 'data-eof') {
           // 数据结束帧必须排在所有已排队数据帧之后下发，否则接收端会在队列尚未清空时误判缺帧
@@ -276,7 +284,7 @@ export class Relay {
 
     server.addEventListener('close', () => {
       if (role === 'sender') entry.wsSenders.delete(server);
-      if (role === 'receiver' && entry.wsReceiver === server) entry.wsReceiver = null;
+      if (role === 'receiver') entry.wsReceivers.delete(server);
     });
 
     server.addEventListener('error', (e) => {
@@ -311,16 +319,25 @@ export class Relay {
   }
 
   flushRecv(entry) {
-    const ws = entry.wsReceiver;
-    if (!ws || ws.readyState !== 1) return;
+    if (entry.wsReceivers.size === 0) return;
+    // 在途上限随接收端路数线性放大：N 路下行 = N× 单路缓冲容量，sender 据此被释放 N× 快
+    const limit = entry.recvInflightLimit;
     while (entry.recvQueue.length > 0) {
       // 闸门 1：端到端在途字节（fwd - 接收端 ack.rb 已结算），不依赖 bufferedAmount。
       // 接收端尚未回报过 rb（旧版前端/首批帧）则不启用该闸门，避免直接卡死；
       // 首批帧受闸门 2 + 队列水位保护。
-      if (entry.sawRb && entry.recvInflight >= RECV_INFLIGHT_LIMIT) break;
+      if (entry.sawRb && entry.recvInflight >= limit) break;
+      // 选 bufferedAmount 最低且在 OPEN 的接收 socket（贪心均衡，避免某路堆积触发整窗回压）
+      let best = null, bestBuf = Infinity;
+      for (const ws of entry.wsReceivers) {
+        if (ws.readyState !== 1) continue;
+        const b = ws.bufferedAmount;
+        const buf = (typeof b === 'number') ? b : 0;
+        if (buf < bestBuf) { bestBuf = buf; best = ws; }
+      }
+      if (!best) break;
       // 闸门 2：运行时若暴露 bufferedAmount，则作为第二道水位（不可用时恒 undefined 跳过）
-      const buf = ws.bufferedAmount;
-      if (typeof buf === 'number' && buf > RECV_BUF_HIGH) {
+      if (bestBuf > RECV_BUF_HIGH) {
         // 无事件可等：50ms 后重试（DO 单线程，setTimeout 安全）
         if (!entry.flushTimer) {
           entry.flushTimer = setTimeout(() => { entry.flushTimer = null; this.flushRecv(entry); }, 50);
@@ -330,7 +347,7 @@ export class Relay {
       const payload = entry.recvQueue[0];
       const size = typeof payload === 'string' ? 0 : (payload.byteLength || 0);
       try {
-        ws.send(payload);
+        best.send(payload);
       } catch (e) {
         // send 失败：帧留在队头，稍后重试 —— 绝不丢帧
         console.error('[ws] flushRecv send error:', e?.message || e);
@@ -395,7 +412,8 @@ export class Relay {
     entry.ready = false;
     entry.getConnected = false;
     entry.wsSenders = new Set();   // 支持并发多发送端 WS 流（单房间可有多条数据流打满上行）
-    entry.wsReceiver = null;
+    entry.wsReceivers = new Set(); // 支持并发多接收端 WS 流（对称打满下行带宽，2026-07-29 多路接收）
+    entry.recvInflightLimit = RECV_INFLIGHT_LIMIT; // relay→接收端 在途上限（随接收端路数线性放大）
     // ---- 接收端回压转发状态（2026-07-29）----
     entry.recvQueue = [];          // 待下发给接收端的帧队列（ArrayBuffer 数据帧 / string 控制帧）
     entry.recvQueueBytes = 0;      // 队列字节数（水位判断）
