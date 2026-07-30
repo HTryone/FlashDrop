@@ -370,19 +370,33 @@ async function transferSegment(ctx: SegCtx): Promise<{ sentUpTo: number; isLast:
   lStatus.value = seg === 0
     ? '等待对方点「连接接收」…（链接已生成，可先发给对方）'
     : `第 ${seg + 1} 段：等待对方就绪…`;
-  // 第 0 段 = 等对方上线，属正常等待，给 10 分钟；后续段接收端已在流程中，60s 足够
-  const waitMs = seg === 0 ? 10 * 60 * 1000 : 60 * 1000;
-  try {
-    await Promise.race([
-      recvReadyPromise,
-      new Promise<void>((_, rej) => setTimeout(() => rej(new Error(`第 ${seg + 1} 段：对方未开始接收（${Math.round(waitMs / 1000)}s 超时）`)), waitMs)),
-    ]);
-  } catch (e: any) {
-    lStatus.value = `无法开始传输：${e?.message || e}。请确认对方已点「连接接收」且页面未关闭。`;
-    lSending.value = false;
-    segClosed = true;
-    try { lWs?.close(); } catch {}
-    throw e;
+  // recvReady 活性重试：relay 偶发未在 sender WS 连上时补发 pull（lost-wakeup，CF DO 在
+  // onopen 回调内同步 sendJSON 可能静默丢失）会让发送端永久等待首帧。每 15s 未就绪则断开
+  // ctrl WS（onclose 自动重连 → relay 在 sender WS 重连且接收端已连时补发 pull）+ 重发 offer，
+  // 最多 8 次（~2min）；仍失败才报超时。契合 18b6072 的「活性超时+重试」原则。
+  let attempts = 0;
+  const RECV_RETRY = 8;
+  const RECV_WAIT = 15_000;
+  while (true) {
+    try {
+      await Promise.race([
+        recvReadyPromise,
+        new Promise<void>((_, rej) => setTimeout(() => rej(new Error('TIMEOUT')), RECV_WAIT)),
+      ]);
+      break;
+    } catch (e: any) {
+      attempts++;
+      if (attempts >= RECV_RETRY) {
+        lStatus.value = `无法开始传输：对方未开始接收（重试 ${RECV_RETRY} 次仍超时）。请确认对方已点「连接接收」且页面未关闭。`;
+        lSending.value = false;
+        segClosed = true;
+        try { lWs?.close(); } catch {}
+        throw new Error(`第 ${seg + 1} 段：对方未开始接收（${RECV_RETRY} 次重试超时）`);
+      }
+      try { lWs?.close(); } catch {}   // 触发 onclose 自动重连，relay 会重新补发 pull
+      armRecvReady();
+      postOfferSeg().catch(() => {});
+    }
   }
   await offerP; // 就绪即说明 GET 已连，offer 已送达
   lStatus.value = `第 ${seg + 1} 段：开始传输数据…`;
