@@ -202,7 +202,8 @@ let pendingDone = false;
 let lastProgressAt = 0;     // 进度回传节流时间戳
 let recvDoneSent = false;   // recv-done 是否已发送给发送端（防重复）
 let manifest0: { name: string; size: number }[] | null = null; // 第 1 段文件清单（后续段校验一致性）
-const recvSegCount = ref(1);                                    // 总段数（第 1 段 offer 中获知）
+let lastSegSeen = false; // 本段 offer 标记 isLast（按时间切段后段数运行期才定，以此判定结束）
+const recvSegCount = ref(1);                                    // 估算段数（仅展示；结束以 isLast 为准）
 function segRoomRecv(i: number): string { return `${recvRoom.value}-s${i}`; } // 段房间码
 
 function resetReceiver() {
@@ -354,14 +355,14 @@ async function startRecv() {
   recvAbort = new AbortController();
   const base = resolveRelayBase();
   manifest0 = null;
+  lastSegSeen = false;
 
-  // 逐段消费：第 0 段读 offer 获知总段数，再循环后续段。
-  let segCount = 1;
-  for (let seg = 0; seg < segCount; seg++) {
+  // 逐段消费：段数运行期才确定（发送端按时间切段），以每段 offer 的 isLast 判定结束。
+  for (let seg = 0; ; seg++) {
     if (recvAborted) break;
     const ok = await recvSegment(base, seg, dirHandle);
     if (!ok || !receiving.value) break;       // 出错则停止
-    segCount = recvSegCount.value;            // 第 0 段读 offer 后获知真实段数
+    if (lastSegSeen) break;                   // 本段是最后一段 → 结束
   }
   // 循环正常结束：所有段收完（finishRecv 已在最后一段 drainWrites 内触发）
 }
@@ -414,7 +415,10 @@ async function recvSegment(base: string, seg: number, dirHandle: any): Promise<b
   if (!Array.isArray(offer.files) || offer.files.length === 0) { recvStatus.value = '收到无效的文件清单'; receiving.value = false; return false; }
   const segIndex = offer.segIndex || 0;
   const segCount = offer.segCount || 1;
-  recvSegCount.value = segCount;
+  // isLast 为权威结束标记；旧版发送端无此字段时回退 segCount 判定（兼容）
+  const segIsLast = typeof offer.isLast === 'boolean' ? offer.isLast : segIndex >= segCount - 1;
+  lastSegSeen = segIsLast;
+  recvSegCount.value = Math.max(segCount, seg + 1);
   if (segIndex !== seg) {
     recvStatus.value = `段序号错乱：期望第 ${seg + 1} 段，收到第 ${segIndex + 1} 段`;
     receiving.value = false; return false;
@@ -448,7 +452,9 @@ async function recvSegment(base: string, seg: number, dirHandle: any): Promise<b
   if (recvWs && recvWs.readyState === WebSocket.OPEN) {
     try { recvWs.send(JSON.stringify({ type: 'recv-ready' })); } catch {}
   }
-  recvStatus.value = `第 ${seg + 1}/${segCount} 段：开始流式接收…`;
+  recvStatus.value = segIsLast && seg === 0
+    ? '开始流式接收…'
+    : `第 ${seg + 1} 段：开始流式接收…${segIsLast ? '（最后一段）' : ''}`;
 
   // 3. 读数据帧直到 EOF
   let frameCount = 0;
@@ -466,7 +472,7 @@ async function recvSegment(base: string, seg: number, dirHandle: any): Promise<b
   pendingDone = true;
   void drainWrites();
   // 关闭本段控制通道（最后一段保留 WS 以回传 recv-done 完成信号）
-  if (segIndex < segCount - 1) {
+  if (!segIsLast) {
     try { if (recvWs) recvWs.close(); } catch {}
     recvWs = null;
   }

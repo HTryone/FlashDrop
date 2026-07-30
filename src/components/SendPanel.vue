@@ -48,9 +48,17 @@ function resolveRelayBase() {
   return `https://${host}`;
 }
 
-// 自动分房：按 SEGMENT_SIZE 字节切段，每段独立房间（独立 DO 实例），
+// 自动分房：按「时间」切段（每段目标发送时长 ~8 分钟），每段独立房间（独立 DO 实例），
 // 规避单 DO 长时间运行（>15min）缓冲堆积劣化。段房间码 = base-s{i}。
-const SEGMENT_SIZE = 2 * 1024 * 1024 * 1024; // 2GB
+// 段大小按运行时实测上行速度动态估算：快则大段、慢则小段，保证每段都在 15min 阈值内完成。
+const SEGMENT_TIME_MS = 8 * 60 * 1000;
+const SEGMENT_MIN = 128 * 1024 * 1024;   // 首段/最慢兜底：128MB（即便 ~0.15MB/s 也 <15min）
+const SEGMENT_MAX = 1024 * 1024 * 1024;  // 单段上限 1GB（防极慢速仍超阈值的兜底）
+let estSpeed = 0; // 运行时实测上行速度(bytes/s)
+function segTargetBytes(): number {
+  if (estSpeed <= 0) return SEGMENT_MIN;
+  return Math.min(SEGMENT_MAX, Math.max(SEGMENT_MIN, Math.round(estSpeed * (SEGMENT_TIME_MS / 1000))));
+}
 function segRoom(base: string, i: number): string { return `${base}-s${i}`; }
 
 const lRoom = ref('');
@@ -110,11 +118,9 @@ function genRoom() {
   for (let i = 0; i < 6; i++) s += cs[a[i] % cs.length];
   lRoom.value = s; lPassphrase.value = randomPassphrase();
   lRecvReady.value = false;
-  // 段数按当前已选文件总大小估算（权威段数以发送端实际 offer 为准）
-  const totalNow = files.value.reduce((sum, f) => sum + f.file.size, 0);
-  const segN = Math.max(1, Math.ceil(totalNow / SEGMENT_SIZE));
-  lSegCount.value = segN;
-  lSendLink.value = `${location.origin}/?tab=local&room=${s}&seg=${segN}#k=${lPassphrase.value}`;
+  // 段数运行期按实测速度动态确定（每段 ~8 分钟），不再预估
+  lSegCount.value = 1;
+  lSendLink.value = `${location.origin}/?tab=local&room=${s}#k=${lPassphrase.value}`;
   lStatus.value = '房间已生成，等待对方加入…';
 }
 
@@ -214,57 +220,70 @@ async function pollReceiverReady() {
 }
 
 
-/** 把多文件按 SEGMENT_SIZE 切成连续帧段；每段独立房间上传。
- *  返回每段 chunk 清单与「段前累计明文字节偏移」（供滑动窗口换算本段 ack）。 */
-function buildSegments(filesList: { file: File }[]) {
+/** 把所有文件展开成有序 chunk 清单（fi, ci, plainLen），供按时间动态切段。 */
+function buildChunkList(filesList: { file: File }[]) {
   type Chunk = { fi: number; ci: number; plainLen: number };
-  type Seg = { chunks: Chunk[]; plainBytes: number };
-  const segs: Seg[] = [];
-  let cur: Seg = { chunks: [], plainBytes: 0 };
+  const list: Chunk[] = [];
+  let total = 0;
   for (let fi = 0; fi < filesList.length; fi++) {
     const size = filesList[fi].file.size;
-    const nChunks = size === 0 ? 0 : Math.ceil(size / LOCAL_CHUNK);
-    for (let ci = 0; ci < nChunks; ci++) {
+    const n = size === 0 ? 0 : Math.ceil(size / LOCAL_CHUNK);
+    for (let ci = 0; ci < n; ci++) {
       const plainLen = Math.min(LOCAL_CHUNK, size - ci * LOCAL_CHUNK);
-      // 当前段非空且加入本块会超阈值 → 另起一段（块原子，单段最多超出一个块）
-      if (cur.plainBytes > 0 && cur.plainBytes + plainLen > SEGMENT_SIZE) {
-        segs.push(cur);
-        cur = { chunks: [], plainBytes: 0 };
-      }
-      cur.chunks.push({ fi, ci, plainLen });
-      cur.plainBytes += plainLen;
+      list.push({ fi, ci, plainLen });
+      total += plainLen;
     }
   }
-  if (cur.chunks.length > 0 || segs.length === 0) segs.push(cur);
-  const segOffsets: number[] = [];
-  let acc = 0;
-  for (const s of segs) { segOffsets.push(acc); acc += s.plainBytes; }
-  return { segs, segOffsets };
+  return { list, total };
+}
+/** 从 startIdx 起，按 target 字节切出下一段 chunk 清单（块原子：单段最多超出一个块）。 */
+function nextSegment(chunkListAll: { fi: number; ci: number; plainLen: number }[], startIdx: number, target: number) {
+  const chunks: { fi: number; ci: number; plainLen: number }[] = [];
+  let bytes = 0;
+  let i = startIdx;
+  while (i < chunkListAll.length && (chunks.length === 0 || bytes + chunkListAll[i].plainLen <= target)) {
+    chunks.push(chunkListAll[i]); bytes += chunkListAll[i].plainLen; i++;
+  }
+  return { chunks, bytes, nextIdx: i, isLast: i >= chunkListAll.length };
 }
 
 async function startLocalSend() {
   if (!lRoom.value || !lPassphrase.value) { lStatus.value = '请先生成房间'; return; }
   if (!files.value.length) { lStatus.value = '没有待发送文件'; return; }
-  // 不再强制要求对方先加入——第 0 段会等待接收端 GET（relay 发 pull），20s 超时兜底。
   let lKeyHex: string;
   try { lKeyHex = await deriveKey(lPassphrase.value, LOCAL_SALT); }
   catch (e: any) { lStatus.value = `密钥派生失败: ${e?.message || e}`; return; }
 
   const filesList = files.value.map((f) => ({ file: f.file }));
-  const total = filesList.reduce((s, f) => s + f.file.size, 0);
-  const { segs, segOffsets } = buildSegments(filesList);
-  const segCount = segs.length;
-  lSegCount.value = segCount;
-
+  const { list: chunkListAll, total } = buildChunkList(filesList);
   lSending.value = true; lProgress.value = 0; lDone.value = false;
   lStatus.value = '正在建立控制通道…';
   lAbort = new AbortController();
+  estSpeed = 0;
+  const t0 = Date.now();
+  let totalSentAll = 0;
 
   try {
-    for (let seg = 0; seg < segCount; seg++) {
+    let startIdx = 0;
+    let seg = 0;
+    let segOffsetsAcc = 0;
+    // 估算段数仅用于展示；真实结束以发送端标记的 isLast 为准（按时间切段，段数运行期才确定）
+    const estSegCount = Math.max(1, Math.ceil(total / SEGMENT_MIN));
+    while (startIdx < chunkListAll.length) {
       if (lAbort.signal.aborted) break;
+      const target = segTargetBytes();
+      const { chunks, bytes, nextIdx, isLast } = nextSegment(chunkListAll, startIdx, target);
+      const segOffsets = [segOffsetsAcc];
       lSegIndex.value = seg;
-      await transferSegment({ seg, segCount, segs, segOffsets, filesList, total, lKeyHex });
+      lSegCount.value = estSegCount;
+      await transferSegment({ seg, segCount: estSegCount, chunks, segOffsets, filesList, total, lKeyHex, isLast });
+      totalSentAll += sentBytes;
+      // 用累计实际耗时估算上行速度，供后续段定大小（慢速必触发小段，规避 15min 阈值）
+      const dt = (Date.now() - t0) / 1000;
+      if (dt > 1 && totalSentAll > 0) estSpeed = totalSentAll / dt;
+      segOffsetsAcc += bytes;
+      startIdx = nextIdx;
+      seg++;
     }
     if (!lAbort.signal.aborted) {
       lStatus.value = '文件已发送，等待对方接收完成…';
@@ -290,36 +309,33 @@ async function startLocalSend() {
 
 type SegCtx = {
   seg: number; segCount: number;
-  segs: { chunks: { fi: number; ci: number; plainLen: number }[]; plainBytes: number }[];
+  chunks: { fi: number; ci: number; plainLen: number }[];
   segOffsets: number[]; filesList: { file: File }[]; total: number; lKeyHex: string;
+  isLast: boolean;
 };
 
 /** 单段传输：独立房间 + 独立控制通道 + 独立滑动窗口；段内逻辑与原单房间一致。 */
 async function transferSegment(ctx: SegCtx) {
-  const { seg, segCount, segs, segOffsets, filesList, total, lKeyHex } = ctx;
+  const { seg, segCount, chunks: chunkList, segOffsets, filesList, total, lKeyHex, isLast } = ctx;
   const room = segRoom(lRoom.value, seg);
-  const isLast = seg === segCount - 1;
   const base = resolveRelayBase();
   const POST_LIMIT = 4 * 1024 * 1024;
   const MAX_INFLIGHT = 3;
+  const segBytes = chunkList.reduce((s, c) => s + c.plainLen, 0);
 
-  lStatus.value = `正在传输第 ${seg + 1}/${segCount} 段（${fmt(segs[seg].plainBytes)}）…`;
+  lStatus.value = `正在传输第 ${seg + 1} 段（${fmt(segBytes)}）…`;
 
   // 每段独立滑动窗口 + 接收端就绪闸门（防上一段残留导致闸门误判）
   ackBytes = 0; sentBytes = 0; ackWaiters = [];
   lRecvReady.value = false;
   armRecvReady();
 
-  // 本段控制通道（每段独立 room → 独立 DO，规避单 DO 长时劣化）
-  const ws = new WebSocket(base.replace(/^https:/, 'wss:') + `/ws/${room}?role=sender`);
-  lWs = ws;
-  let wsOpened = false;
-  await new Promise<void>((resolve, reject) => {
-    ws.onopen = () => { wsOpened = true; resolve(); };
-    ws.onerror = () => { if (!wsOpened) reject(new Error('控制通道连接失败')); };
-    ws.onclose = () => { if (lWs === ws) lWs = null; };
-  });
-  ws.onmessage = (ev) => {
+  // 本段控制通道（每段独立 room → 独立 DO，规避单 DO 长时劣化）。
+  // 断线自动重连：relay 在 sender WS 重连且接收端 GET 已连时会补发 pull，
+  // 消灭「WS 掉线丢 pull → 发送端永等 → 一个包都不发」的死锁。
+  let segClosed = false;
+  const wsUrl = base.replace(/^https:/, 'wss:') + `/ws/${room}?role=sender`;
+  const handleCtrlMsg = (ev: MessageEvent) => {
     try {
       const data = JSON.parse(ev.data);
       if (data.type === 'ready') {
@@ -331,7 +347,7 @@ async function transferSegment(ctx: SegCtx) {
         const t = data.total || 1;
         lProgress.value = Math.min(1, (data.received || 0) / t);
         // 滑动窗口用「本段已确认字节」= 全局已收 - 本段之前字节偏移；绝不跨段累计，否则闸门虚高死锁
-        ackBytes = Math.max(0, (data.received || 0) - segOffsets[seg]);
+        ackBytes = Math.max(0, (data.received || 0) - segOffsets[0]);
         notifyAckWaiters();
       } else if (data.type === 'recv-done' && !lDone.value) {
         lDone.value = true; lProgress.value = 1; lSending.value = false;
@@ -340,25 +356,48 @@ async function transferSegment(ctx: SegCtx) {
       }
     } catch {}
   };
+  function openCtrl(first: boolean): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(wsUrl);
+      let opened = false;
+      ws.onopen = () => { opened = true; lWs = ws; resolve(); };
+      ws.onerror = () => { if (!opened && first) reject(new Error('控制通道连接失败')); };
+      ws.onmessage = handleCtrlMsg;
+      ws.onclose = () => {
+        if (lWs === ws) lWs = null;
+        // 段未结束且未完成 → 1s 后自动重连（重连失败会再次触发 onclose 循环重试）
+        if (!segClosed && !lDone.value && !lAbort?.signal.aborted) {
+          setTimeout(() => { if (!segClosed && !lDone.value) openCtrl(false).catch(() => {}); }, 1000);
+        }
+        if (!opened && first) reject(new Error('控制通道连接失败'));
+      };
+    });
+  }
+  await openCtrl(true);
 
-  // 等接收端 GET 连上（relay 权威 pull）或接收端 recv-ready
+  // —— 破死锁改序：先发 offer，再等就绪。relay 会把 POST 挂起到接收端 GET 连上，
+  // offer 先行入 writeChain 保证它是 GET 流第一个有效帧；数据帧仍等就绪后才开始 POST。
+  const offerP = postOfferSeg();
+  offerP.catch(() => {}); // 超时路径统一抛错，防未捕获 rejection
+  lStatus.value = seg === 0
+    ? '等待对方点「连接接收」…（链接已生成，可先发给对方）'
+    : `第 ${seg + 1} 段：等待对方就绪…`;
+  // 第 0 段 = 等对方上线，属正常等待，给 10 分钟；后续段接收端已在流程中，60s 足够
+  const waitMs = seg === 0 ? 10 * 60 * 1000 : 60 * 1000;
   try {
     await Promise.race([
       recvReadyPromise,
-      new Promise<void>((_, rej) => setTimeout(() => rej(new Error(`第 ${seg + 1} 段：对方未开始接收（20s 超时）`)), 20000)),
+      new Promise<void>((_, rej) => setTimeout(() => rej(new Error(`第 ${seg + 1} 段：对方未开始接收（${Math.round(waitMs / 1000)}s 超时）`)), waitMs)),
     ]);
   } catch (e: any) {
     lStatus.value = `无法开始传输：${e?.message || e}。请确认对方已点「连接接收」且页面未关闭。`;
     lSending.value = false;
-    try { ws.close(); } catch {}
+    segClosed = true;
+    try { lWs?.close(); } catch {}
     throw e;
   }
-
-  lStatus.value = `第 ${seg + 1} 段：对方已就绪，发送文件清单…`;
-  await postOfferSeg();
+  await offerP; // 就绪即说明 GET 已连，offer 已送达
   lStatus.value = `第 ${seg + 1} 段：开始传输数据…`;
-
-  const chunkList = segs[seg].chunks;
 
   // ---- 生产者：本段 chunk 加密入队 ----
   let pending: Uint8Array[] = [];
@@ -409,7 +448,7 @@ async function transferSegment(ctx: SegCtx) {
     const offerJson = JSON.stringify({
       type: 'offer',
       files: filesList.map((f) => ({ name: f.file.name, size: f.file.size })),
-      segIndex: seg, segCount,
+      segIndex: seg, segCount, isLast, // segCount 仅估算展示；接收端以 isLast 判定结束
     });
     const offerFrame = encodeMsg(new TextEncoder().encode(offerJson));
     const rs = new ReadableStream({ start(ctrl) { ctrl.enqueue(offerFrame); ctrl.close(); } });
@@ -488,7 +527,8 @@ async function transferSegment(ctx: SegCtx) {
   }
 
   await sendCloseSeg();
-  if (!isLast) { try { ws.close(); } catch {} }
+  segClosed = true; // 停止自动重连
+  if (!isLast) { try { lWs?.close(); } catch {} }
 }
 
 function copyLocalLink() { navigator.clipboard?.writeText(lSendLink.value); lStatus.value = '链接已复制'; }
