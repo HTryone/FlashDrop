@@ -154,30 +154,54 @@ export class Relay {
       try {
         // 等 controller 就绪（GET 的 ReadableStream.start 设置），否则 enqueue 会抛 500
         await entry.controllerReady;
-        const pump = async () => {
-          const reader = request.body.getReader();
-          try {
-            for (;;) {
-              // 背压：可读流缓冲满则等接收端拉取（pull 回调唤醒所有等待者）
-              while (entry.controller.desiredSize !== null && entry.controller.desiredSize <= 0) {
-                await new Promise((res) => { entry.pullWaiters.push(res); });
-              }
-              const { done, value } = await reader.read();
-              if (done) break;
-              // 同步 enqueue：当前 POST 字节整段连续入队（writeChain 已保证跨 POST 不交叉）
-              entry.controller.enqueue(value);
-            }
-          } finally {
-            reader.releaseLock();
+
+        // ---- 阶段 1：把整个请求体读进内存（原子单元，发送端按 ~4MB 分片）----
+        // 关键修复（原子性）：旧实现边读边 enqueue，POST 中途失败会在房间流里留下「半截字节」，
+        // 破坏长度前缀分帧 → 接收端永久错位；且发送端无法安全重发。
+        // 改为「整体读完才入队」：读失败则一个字节都不入队 → 房间不受污染 → 发送端重发同一份字节完全安全。
+        const parts = [];
+        let totalLen = 0;
+        const reader = request.body.getReader();
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            parts.push(value);
+            totalLen += value.byteLength;
           }
-          console.log(`[stream] POST ${room}, pumped`);
+        } finally {
+          try { reader.releaseLock(); } catch (e) { /* 已释放 */ }
+        }
+        const body = new Uint8Array(totalLen);
+        {
+          let off = 0;
+          for (const p of parts) { body.set(p, off); off += p.byteLength; }
+        }
+
+        // ---- 阶段 2：串行入队 ----
+        // writeChain 串行化各 POST 的 enqueue，保证帧字节连续不交叉（并发上传前提）。
+        // 致命 bug 修复（链毒化）：旧写法 `writeChain.then(pump).catch(e=>{throw e})` 会让 writeChain
+        // 永久变成 rejected —— 之后每个 POST 的 .then(pump) 都被跳过、直接透传 rejection 秒回 500，
+        // 房间永久报废、传输速度归零。现用 then(task, task)：无论前序成败都执行本任务，
+        // 且 task 内部自行 try/catch 绝不 reject → writeChain 永远保持 fulfilled，单个 POST 失败互不牵连。
+        let settleOk, settleErr;
+        const mine = new Promise((res, rej) => { settleOk = res; settleErr = rej; });
+        const task = async () => {
+          try {
+            // 背压：可读流缓冲满则等接收端拉取（pull 回调唤醒所有等待者）
+            while (entry.controller && entry.controller.desiredSize !== null && entry.controller.desiredSize <= 0) {
+              await new Promise((res) => { entry.pullWaiters.push(res); });
+            }
+            entry.controller.enqueue(body);
+            settleOk();
+          } catch (e) {
+            console.error('[stream] POST enqueue error:', e?.message || e);
+            settleErr(e);
+          }
         };
-        // writeChain 串行化各 POST 的 enqueue，保证帧字节连续不交叉（并发上传前提）
-        entry.writeChain = entry.writeChain.then(pump).catch((e) => {
-          console.error('[stream] POST pump error:', e?.message || e);
-          throw e;
-        });
-        await entry.writeChain;
+        entry.writeChain = entry.writeChain.then(task, task);
+        await mine;
+        console.log(`[stream] POST ${room}, enqueued ${totalLen}B`);
       } catch (e) {
         console.error('[stream] POST error:', e?.message || e);
         return new Response('error: ' + (e?.message || e), { status: 500, headers: this.cors() });

@@ -408,7 +408,6 @@ async function transferSegment(ctx: SegCtx) {
   let pending: Uint8Array[] = [];
   let producerDone = false;
   let waiters: Array<() => void> = [];
-  let chunkBytes = 0;
   const frameGate: { resolve: (() => void) | null; reject: ((e: any) => void) | null } = { resolve: null, reject: null };
   function pushFrame(f: Uint8Array) {
     const wasEmpty = pending.length === 0;
@@ -430,32 +429,49 @@ async function transferSegment(ctx: SegCtx) {
     });
   }
   async function postOneChunk(seed: Uint8Array): Promise<boolean> {
-    chunkBytes = 0;
-    const rs = new ReadableStream({
-      start(ctrl) {
-        ctrl.enqueue(seed); sentBytes += seed.length; chunkBytes += seed.length;
-      },
-      async pull(ctrl) {
-        if (pending.length === 0) {
-          if (producerDone) { ctrl.close(); return; }
-          await waitFrame();
-          if (pending.length === 0) {
-            if (producerDone) { ctrl.close(); return; }
-            return;
-          }
-        }
-        const frame = pending.shift()!; notifyDrain();
-        ctrl.enqueue(frame); sentBytes += frame.length; chunkBytes += frame.length;
-        if (chunkBytes >= POST_LIMIT) { ctrl.close(); return; }
-      },
-    });
-    const resp = await fetch(`${base}/stream/${room}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/octet-stream' },
-      body: rs, duplex: 'half', signal: lAbort!.signal,
-    } as any);
-    if (!resp.ok) throw new Error(`第 ${seg + 1} 段上传失败 HTTP ${resp.status}`);
-    return !(producerDone && pending.length === 0);
+    // ---- 阶段 1：先把帧攒成一个 ≤POST_LIMIT 的完整字节块（不再用流式 body）----
+    // 旧实现把 pending 里 shift 出来的帧直接喂给流式请求体：POST 一旦失败（网络抖动/500），
+    // 这些帧就永久丢失且无法重发 → 接收端按序写盘卡在缺口上 → 双方 UI 显示「传输中」但速度归零。
+    // 改为先组包再发，字节留在本地变量里，失败可原样重发（relay 侧已保证「整体读完才入队」，重发无副作用）。
+    const parts: Uint8Array[] = [seed];
+    let bytes = seed.length;
+    const SOFT_MIN = 1024 * 1024; // 队列空且已攒够 1MB 就先发，避免死等满 4MB 拉长延迟
+    while (bytes < POST_LIMIT) {
+      if (pending.length > 0) {
+        const f = pending.shift()!; notifyDrain();
+        parts.push(f); bytes += f.length;
+        continue;
+      }
+      if (producerDone) break;
+      if (bytes >= SOFT_MIN) break;
+      await waitFrame();
+    }
+    const body = new Uint8Array(bytes);
+    { let off = 0; for (const p of parts) { body.set(p, off); off += p.length; } }
+    // 窗口计数在「已交付发送」时即计入（与旧行为一致），失败会整体抛错终止本段
+    sentBytes += bytes;
+
+    // ---- 阶段 2：原子重试 ----
+    let lastErr: any = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (lAbort?.signal.aborted) throw new Error('已取消');
+      try {
+        const resp = await fetch(`${base}/stream/${room}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: body as unknown as BodyInit, signal: lAbort!.signal,
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        if (attempt > 0) lStatus.value = `第 ${seg + 1} 段：重试成功，继续传输…`;
+        return !(producerDone && pending.length === 0);
+      } catch (e: any) {
+        if (lAbort?.signal.aborted) throw e;
+        lastErr = e;
+        lStatus.value = `第 ${seg + 1} 段：网络抖动，正在重发分片（第 ${attempt + 1}/4 次）…`;
+        await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+      }
+    }
+    throw new Error(`第 ${seg + 1} 段上传失败（已重试 4 次）: ${lastErr?.message || lastErr}`);
   }
   async function postOfferSeg() {
     const offerJson = JSON.stringify({
@@ -464,12 +480,24 @@ async function transferSegment(ctx: SegCtx) {
       segIndex: seg, segCount, isLast, // segCount 仅估算展示；接收端以 isLast 判定结束
     });
     const offerFrame = encodeMsg(new TextEncoder().encode(offerJson));
-    const rs = new ReadableStream({ start(ctrl) { ctrl.enqueue(offerFrame); ctrl.close(); } });
-    const resp = await fetch(`${base}/stream/${room}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/octet-stream' },
-      body: rs, duplex: 'half', signal: lAbort!.signal,
-    } as any);
-    if (!resp.ok) throw new Error(`第 ${seg + 1} 段上传 offer 失败 HTTP ${resp.status}`);
+    // offer 同样用普通 body + 重试：它是本段第一个有效帧，丢了整段就起不来
+    let lastErr: any = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (lAbort?.signal.aborted) throw new Error('已取消');
+      try {
+        const resp = await fetch(`${base}/stream/${room}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/octet-stream' },
+          body: offerFrame as unknown as BodyInit, signal: lAbort!.signal,
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        return;
+      } catch (e: any) {
+        if (lAbort?.signal.aborted) throw e;
+        lastErr = e;
+        await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+      }
+    }
+    throw new Error(`第 ${seg + 1} 段上传 offer 失败: ${lastErr?.message || lastErr}`);
   }
   async function sendCloseSeg() {
     try {
