@@ -62,10 +62,34 @@ export class Relay {
     }
 
     // ---- HTTP 数据流 ----
-    const m = path.match(/^\/stream\/([^/]+)(\/(ready|close))?$/);
+    const m = path.match(/^\/stream\/([^/]+)(\/(ready|close|stat))?$/);
     if (!m) return new Response('not found', { status: 404, headers: this.cors() });
     const room = m[1];
-    const sub = m[3]; // 'ready' | 'close' | undefined
+    const sub = m[3]; // 'ready' | 'close' | 'stat' | undefined
+
+    // GET /stream/:room/stat — 诊断端点：暴露房间实时内部状态，用于线上定位卡死
+    if (request.method === 'GET' && sub === 'stat') {
+      const e = this.rooms.get(room);
+      const body = e ? {
+        exists: true,
+        locked: e.readable.locked,
+        desiredSize: e.controller ? e.controller.desiredSize : null,
+        pullWaiters: e.pullWaiters.length,
+        getConnected: e.getConnected,
+        wsSender: !!(e.wsSender && e.wsSender.readyState === 1),
+        wsReceiver: !!(e.wsReceiver && e.wsReceiver.readyState === 1),
+        ready: e.ready,
+        posts: e.posts || 0,
+        enqueued: e.enqueued || 0,
+        msSinceLastPull: e.lastPullAt ? Date.now() - e.lastPullAt : null,
+        msSinceLastEnqueue: e.lastEnqueueAt ? Date.now() - e.lastEnqueueAt : null,
+        closed: !!e.closed,
+      } : { exists: false };
+      body.rooms = Array.from(this.rooms.keys());
+      return new Response(JSON.stringify(body), {
+        headers: this.cors({ 'Content-Type': 'application/json' }),
+      });
+    }
 
     // POST /stream/:room/ready — 兼容旧长轮询（保留，但新前端改用 ws）
     if (request.method === 'POST' && sub === 'ready') {
@@ -92,12 +116,17 @@ export class Relay {
     if (request.method === 'POST' && sub === 'close') {
       const entry = this.rooms.get(room);
       if (entry && entry.controller) {
+        entry.closed = true;
         try {
           // 关闭可读流 → 接收端 GET 收到 EOF = 传输完成
           entry.controller.close();
         } catch (e) {
           // 流可能已关闭（接收端断开等），忽略
         }
+        // 唤醒所有因背压挂起的写入者，避免它们悬在已关闭的房间上拖住 writeChain
+        const ws = entry.pullWaiters;
+        entry.pullWaiters = [];
+        for (const w of ws) { try { w(); } catch (e) { /* ignore */ } }
         this.rooms.delete(room);
       }
       return new Response('closed', { headers: this.cors() });
@@ -111,8 +140,22 @@ export class Relay {
         // 如果已有房间但 readable 被占用（接收端重连/重复 GET），
         // 必须重建房间，否则 new Response(entry.readable) 会抛
         // "ReadableStream is disturbed (has already been read from)"
-        if (entry && entry.readable.locked) this.rooms.delete(room);
+        if (entry && entry.readable.locked) {
+          // 旧房间即将被丢弃：先唤醒挂在它上面的背压等待者，让它们感知
+          // 「room replaced」而快速失败重试，避免永久挂起堵死 writeChain
+          entry.closed = true;
+          const ws = entry.pullWaiters;
+          entry.pullWaiters = [];
+          for (const w of ws) { try { w(); } catch (e) { /* ignore */ } }
+          this.rooms.delete(room);
+        }
+        const oldWsSender = entry && entry.wsSender;
+        const oldWsReceiver = entry && entry.wsReceiver;
         entry = this.createRoom(room);
+        // 房间重建必须继承 WS 绑定：否则发送端的 WS 还挂在旧 entry 上，
+        // 新 entry 的 wsSender=null → pull / recv-ready / progress 全部丢失 → 发送端永久等待
+        if (oldWsSender) entry.wsSender = oldWsSender;
+        if (oldWsReceiver) entry.wsReceiver = oldWsReceiver;
         console.log(`[stream] GET ${room}, created new room`);
       }
       // 关键修复：立即往流里写 1 字节「开场帧」，防止 Cloudflare 缓冲空响应体。
@@ -151,6 +194,7 @@ export class Relay {
       let entry = this.rooms.get(room);
       console.log(`[stream] POST ${room}, entry exists=${!!entry}`);
       if (!entry) entry = this.createRoom(room);
+      entry.posts = (entry.posts || 0) + 1;
       try {
         // 等 controller 就绪（GET 的 ReadableStream.start 设置），否则 enqueue 会抛 500
         await entry.controllerReady;
@@ -188,11 +232,32 @@ export class Relay {
         const mine = new Promise((res, rej) => { settleOk = res; settleErr = rej; });
         const task = async () => {
           try {
-            // 背压：可读流缓冲满则等接收端拉取（pull 回调唤醒所有等待者）
+            // 背压：可读流缓冲满则等接收端拉取（pull 回调唤醒所有等待者）。
+            // 关键修复（活性）：旧写法无限等 pullWaiters —— 接收端一旦消失（GET 被中断、
+            // 房间被重建、页面关闭），pull 永不触发 → 本 task 永久挂起 → writeChain 被堵死
+            // → 该房间之后每个 POST 都无限 pending → 表现为「速度归零、双方 UI 仍显示传输中」。
+            // 现改为带超时的等待：单轮最多 20s，累计无 pull 超过 STALL_MS 则判定接收端已死，
+            // 快速失败返回 503 让发送端重试（帧带 (fi,ci)，重发幂等），绝不拖垮整条链。
+            const STALL_MS = 70000; // < Cloudflare ~100s 请求上限，抢在被掐断前主动失败
+            const t0 = Date.now();
             while (entry.controller && entry.controller.desiredSize !== null && entry.controller.desiredSize <= 0) {
-              await new Promise((res) => { entry.pullWaiters.push(res); });
+              if (this.rooms.get(room) !== entry) throw new Error('room replaced');
+              if (Date.now() - t0 > STALL_MS) throw new Error('backpressure stall: no pull for ' + ((Date.now() - t0) / 1000 | 0) + 's');
+              await new Promise((res) => {
+                let done = false;
+                const w = () => { if (!done) { done = true; res(); } };
+                entry.pullWaiters.push(w);
+                setTimeout(w, 20000);
+              });
             }
+            // 关键修复（陈旧房间）：等待期间房间可能已被 /close 或 GET 重建替换。
+            // 若仍向旧 entry.controller 入队，字节会流进一条没人读的孤儿流并永久丢失
+            // （接收端已收到 EOF），发送端却拿到 200 以为成功 → 静默丢数据。
+            if (this.rooms.get(room) !== entry) throw new Error('room replaced');
+            if (entry.closed) throw new Error('room closed');
             entry.controller.enqueue(body);
+            entry.enqueued = (entry.enqueued || 0) + body.byteLength;
+            entry.lastEnqueueAt = Date.now();
             settleOk();
           } catch (e) {
             console.error('[stream] POST enqueue error:', e?.message || e);
@@ -237,13 +302,15 @@ export class Relay {
 
     server.addEventListener('message', (event) => {
       try {
+        // 房间可能在 GET 重连时被重建，必须实时取当前 entry，不能用闭包里的旧引用
+        const cur = this.rooms.get(room) || entry;
         const data = JSON.parse(event.data);
         if (data.type === 'ready' && role === 'receiver') {
-          entry.ready = true;
-          this.notifyReady(entry);
+          cur.ready = true;
+          this.notifyReady(cur);
         } else if (role === 'receiver' && (data.type === 'progress' || data.type === 'recv-done' || data.type === 'recv-ready')) {
           // 接收端进度/完成回传 → 转发给发送端，由其驱动进度条与完成态
-          if (entry.wsSender) this.sendJSON(entry.wsSender, data);
+          if (cur.wsSender) this.sendJSON(cur.wsSender, data);
         }
       } catch (e) {
         console.error('[ws] parse error:', e?.message || e);
@@ -293,6 +360,7 @@ export class Relay {
         },
         pull() {
           // 消费方拉取 → 唤醒因背压暂停的所有 POST 写入（并发下不能用单一 waiter）
+          entry.lastPullAt = Date.now();
           const ws = entry.pullWaiters;
           if (ws && ws.length) {
             entry.pullWaiters = [];
@@ -306,6 +374,11 @@ export class Relay {
     entry.writeChain = Promise.resolve();  // 串行化各 POST 的 enqueue，保证帧连续不交叉
     entry.ready = false;
     entry.getConnected = false;
+    entry.closed = false;
+    entry.posts = 0;
+    entry.enqueued = 0;
+    entry.lastPullAt = 0;
+    entry.lastEnqueueAt = 0;
     entry.wsSender = null;
     entry.wsReceiver = null;
     this.rooms.set(room, entry);
