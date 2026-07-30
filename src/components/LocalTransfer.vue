@@ -415,8 +415,8 @@ async function recvSegment(base: string, seg: number, dirHandle: any): Promise<b
   if (!Array.isArray(offer.files) || offer.files.length === 0) { recvStatus.value = '收到无效的文件清单'; receiving.value = false; return false; }
   const segIndex = offer.segIndex || 0;
   const segCount = offer.segCount || 1;
-  // isLast 为权威结束标记；旧版发送端无此字段时回退 segCount 判定（兼容）
-  const segIsLast = typeof offer.isLast === 'boolean' ? offer.isLast : segIndex >= segCount - 1;
+  // isLast 权威来源：时间切段下发送端在段末发 segend 帧（携带真实 isLast）。此处为回退值（兼容旧发送端）。
+  let segIsLast = typeof offer.isLast === 'boolean' ? offer.isLast : segIndex >= segCount - 1;
   lastSegSeen = segIsLast;
   recvSegCount.value = Math.max(segCount, seg + 1);
   if (segIndex !== seg) {
@@ -462,6 +462,18 @@ async function recvSegment(base: string, seg: number, dirHandle: any): Promise<b
     if (recvAborted) break;
     const payload = await readMsg(reader);
     if (!payload) break; // EOF = 发送端完成本段
+    // 段末控制帧：type=segend，携带真实 isLast（时间切段下 offer.isLast 不可预知）。
+    // 发送端在段末数据发完后、close 之前补发此帧，识别后据其判定是否最后一段。
+    if (payload[0] === 0x7b /* { */) {
+      try {
+        const msg = JSON.parse(new TextDecoder().decode(payload));
+        if (msg && msg.type === 'segend') {
+          segIsLast = !!msg.isLast;
+          lastSegSeen = segIsLast;
+          continue;
+        }
+      } catch {}
+    }
     if (payload.length < FRAME_HDR) { console.log(`[recv] 跳过过短帧(${payload.length}B，疑似开场帧)`); continue; }
     const frameBuf = new ArrayBuffer(payload.byteLength);
     new Uint8Array(frameBuf).set(payload);

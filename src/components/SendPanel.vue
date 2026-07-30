@@ -48,17 +48,12 @@ function resolveRelayBase() {
   return `https://${host}`;
 }
 
-// 自动分房：按「时间」切段（每段目标发送时长 ~8 分钟），每段独立房间（独立 DO 实例），
-// 规避单 DO 长时间运行（>15min）缓冲堆积劣化。段房间码 = base-s{i}。
-// 段大小按运行时实测上行速度动态估算：快则大段、慢则小段，保证每段都在 15min 阈值内完成。
-const SEGMENT_TIME_MS = 8 * 60 * 1000;
-const SEGMENT_MIN = 128 * 1024 * 1024;   // 首段/最慢兜底：128MB（即便 ~0.15MB/s 也 <15min）
-const SEGMENT_MAX = 1024 * 1024 * 1024;  // 单段上限 1GB（防极慢速仍超阈值的兜底）
-let estSpeed = 0; // 运行时实测上行速度(bytes/s)
-function segTargetBytes(): number {
-  if (estSpeed <= 0) return SEGMENT_MIN;
-  return Math.min(SEGMENT_MAX, Math.max(SEGMENT_MIN, Math.round(estSpeed * (SEGMENT_TIME_MS / 1000))));
-}
+// 自动分房：纯「时间」切段（每段从开始传输起计时，达到 SEGMENT_TIME_MS 即收尾开新段），
+// 每段独立房间（独立 DO 实例），规避单 DO 长时间运行（>15min）缓冲堆积劣化。段房间码 = base-s{i}。
+// 不按字节预算大小：速度中途变化也不影响，天然躲开 15min 阈值——这是相对旧版「速度×时间」写法的根本改进
+// （旧版用段开始那一刻的速度估算整段大小，前快后慢时大段会越过 15min 阈值）。
+const SEGMENT_TIME_MS = 300_000;            // 单段目标时长 5 分钟（远小于 DO 15min 劣化阈值，留足余量）
+const SEGMENT_MIN_BYTES = 32 * 1024 * 1024; // 最小段字节守卫：本段已发字节未达此值时不切，避免瞬时抖动切出迷你段
 function segRoom(base: string, i: number): string { return `${base}-s${i}`; }
 
 const lRoom = ref('');
@@ -118,7 +113,7 @@ function genRoom() {
   for (let i = 0; i < 6; i++) s += cs[a[i] % cs.length];
   lRoom.value = s; lPassphrase.value = randomPassphrase();
   lRecvReady.value = false;
-  // 段数运行期按实测速度动态确定（每段 ~8 分钟），不再预估
+  // 段数运行期按传输墙钟动态确定（每 ~5 分钟切一段），不预算大小
   lSegCount.value = 1;
   lSendLink.value = `${location.origin}/?tab=local&room=${s}#k=${lPassphrase.value}`;
   lStatus.value = '房间已生成，等待对方加入…';
@@ -241,16 +236,8 @@ function buildChunkList(filesList: { file: File }[]) {
   }
   return { list, total };
 }
-/** 从 startIdx 起，按 target 字节切出下一段 chunk 清单（块原子：单段最多超出一个块）。 */
-function nextSegment(chunkListAll: { fi: number; ci: number; plainLen: number }[], startIdx: number, target: number) {
-  const chunks: { fi: number; ci: number; plainLen: number }[] = [];
-  let bytes = 0;
-  let i = startIdx;
-  while (i < chunkListAll.length && (chunks.length === 0 || bytes + chunkListAll[i].plainLen <= target)) {
-    chunks.push(chunkListAll[i]); bytes += chunkListAll[i].plainLen; i++;
-  }
-  return { chunks, bytes, nextIdx: i, isLast: i >= chunkListAll.length };
-}
+// 按时间切段已无需按字节预切（nextSegment）：transferSegment 直接吃全量 chunk 清单 + startIdx，
+// 在帧循环里按墙钟时间（SEGMENT_TIME_MS）收尾，边界天然落在帧边界。
 
 async function startLocalSend() {
   if (!lRoom.value || !lPassphrase.value) { lStatus.value = '请先生成房间'; return; }
@@ -264,30 +251,16 @@ async function startLocalSend() {
   lSending.value = true; lProgress.value = 0; lDone.value = false;
   lStatus.value = '正在建立控制通道…';
   lAbort = new AbortController();
-  estSpeed = 0;
-  const t0 = Date.now();
-  let totalSentAll = 0;
 
   try {
     let startIdx = 0;
     let seg = 0;
-    let segOffsetsAcc = 0;
-    // 估算段数仅用于展示；真实结束以发送端标记的 isLast 为准（按时间切段，段数运行期才确定）
-    const estSegCount = Math.max(1, Math.ceil(total / SEGMENT_MIN));
+    // 纯时间切段：每段从开始传起计时，到点（SEGMENT_TIME_MS）即收尾开新段；段数运行期才确定。
     while (startIdx < chunkListAll.length) {
       if (lAbort.signal.aborted) break;
-      const target = segTargetBytes();
-      const { chunks, bytes, nextIdx, isLast } = nextSegment(chunkListAll, startIdx, target);
-      const segOffsets = [segOffsetsAcc];
       lSegIndex.value = seg;
-      lSegCount.value = estSegCount;
-      await transferSegment({ seg, segCount: estSegCount, chunks, segOffsets, filesList, total, lKeyHex, isLast });
-      totalSentAll += sentBytes;
-      // 用累计实际耗时估算上行速度，供后续段定大小（慢速必触发小段，规避 15min 阈值）
-      const dt = (Date.now() - t0) / 1000;
-      if (dt > 1 && totalSentAll > 0) estSpeed = totalSentAll / dt;
-      segOffsetsAcc += bytes;
-      startIdx = nextIdx;
+      const r = await transferSegment({ seg, startIdx, chunkListAll, filesList, total, lKeyHex });
+      startIdx = r.sentUpTo;
       seg++;
     }
     if (!lAbort.signal.aborted) {
@@ -313,27 +286,37 @@ async function startLocalSend() {
 }
 
 type SegCtx = {
-  seg: number; segCount: number;
-  chunks: { fi: number; ci: number; plainLen: number }[];
-  segOffsets: number[]; filesList: { file: File }[]; total: number; lKeyHex: string;
-  isLast: boolean;
+  seg: number;
+  startIdx: number;
+  chunkListAll: { fi: number; ci: number; plainLen: number }[];
+  filesList: { file: File }[]; total: number; lKeyHex: string;
 };
 
 /** 单段传输：独立房间 + 独立控制通道 + 独立滑动窗口；段内逻辑与原单房间一致。 */
-async function transferSegment(ctx: SegCtx) {
-  const { seg, segCount, chunks: chunkList, segOffsets, filesList, total, lKeyHex, isLast } = ctx;
+async function transferSegment(ctx: SegCtx): Promise<{ sentUpTo: number; isLast: boolean }> {
+  const { seg, startIdx, chunkListAll, filesList, total, lKeyHex } = ctx;
   const room = segRoom(lRoom.value, seg);
   const base = resolveRelayBase();
   const POST_LIMIT = 4 * 1024 * 1024;
   const MAX_INFLIGHT = 3;
-  const segBytes = chunkList.reduce((s, c) => s + c.plainLen, 0);
 
-  lStatus.value = `正在传输第 ${seg + 1} 段（${fmt(segBytes)}）…`;
+  // 本段起始字节偏移（滑动窗口用：本段已确认字节 = 全局已收 - 本段之前字节），与接收端 segOffset 对齐
+  let segOffset = 0;
+  for (let k = 0; k < startIdx; k++) segOffset += chunkListAll[k].plainLen;
+  const segOffsets = [segOffset];
+  const segStartTime = Date.now();
+
+  lStatus.value = `正在传输第 ${seg + 1} 段…`;
 
   // 每段独立滑动窗口 + 接收端就绪闸门（防上一段残留导致闸门误判）
   ackBytes = 0; sentBytes = 0; ackWaiters = [];
   lRecvReady.value = false;
   armRecvReady();
+
+  // 段级状态：生产者按时间切段时填充，供段末收尾与 isLast 判定
+  let segTimeUp = false;     // 本段因到达 SEGMENT_TIME_MS 而收尾（非最后一段）
+  let segBytes = 0;          // 本段已加密入队字节
+  let producedUpTo = startIdx; // 生产者已处理的下一个 chunk 索引
 
   // 本段控制通道（每段独立 room → 独立 DO，规避单 DO 长时劣化）。
   // 断线自动重连：relay 在 sender WS 重连且接收端 GET 已连时会补发 pull，
@@ -477,7 +460,9 @@ async function transferSegment(ctx: SegCtx) {
     const offerJson = JSON.stringify({
       type: 'offer',
       files: filesList.map((f) => ({ name: f.file.name, size: f.file.size })),
-      segIndex: seg, segCount, isLast, // segCount 仅估算展示；接收端以 isLast 判定结束
+      // 时间切段下 isLast 在发 offer 时不可预知（取决于传输过程墙钟），故统一 false，
+      // 段末由 segend 帧携带真实 isLast；segCount 运行期才定，填 0（仅展示）。
+      segIndex: seg, segCount: 0, isLast: false,
     });
     const offerFrame = encodeMsg(new TextEncoder().encode(offerJson));
     // offer 同样用普通 body + 重试：它是本段第一个有效帧，丢了整段就起不来
@@ -499,6 +484,31 @@ async function transferSegment(ctx: SegCtx) {
     }
     throw new Error(`第 ${seg + 1} 段上传 offer 失败: ${lastErr?.message || lastErr}`);
   }
+  // 段末控制帧：携带真实 isLast。时间切段下发送端需跑完本段才知道是否最后一段，
+  // 故在段末（数据发完、close 之前）补发此帧；接收端读流时识别并据其判定结束。
+  async function postSegendFrame(realIsLast: boolean) {
+    const segendJson = JSON.stringify({ type: 'segend', isLast: realIsLast });
+    const frame = encodeMsg(new TextEncoder().encode(segendJson));
+    let lastErr: any = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (lAbort?.signal.aborted) throw new Error('已取消');
+      try {
+        const resp = await fetch(`${base}/stream/${room}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/octet-stream' },
+          body: frame as unknown as BodyInit, signal: lAbort!.signal,
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        return;
+      } catch (e: any) {
+        if (lAbort?.signal.aborted) throw e;
+        lastErr = e;
+        await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+      }
+    }
+    throw new Error(`第 ${seg + 1} 段上传 segend 失败: ${lastErr?.message || lastErr}`);
+  }
+  // 段末关闭流：best-effort。数据已通过 POST + segend(isLast) 送达，close 只是给 relay 的回收提示；
+  // 失败 relay 也会超时回收，对结果零影响。旧版把它当致命错抛出，导致「传输出错: 第 N 段关闭流失败」假报错。
   async function sendCloseSeg() {
     try {
       await fetch(`${base}/stream/${room}/close`, {
@@ -507,14 +517,15 @@ async function transferSegment(ctx: SegCtx) {
       });
     } catch (e: any) {
       if (lAbort?.signal.aborted) throw e;
-      throw new Error(`第 ${seg + 1} 段关闭流失败: ${e?.message || e}`);
+      console.warn(`第 ${seg + 1} 段关闭流提示失败（数据已送达，relay 会超时回收）: ${e?.message || e}`);
     }
   }
 
-  if (chunkList.length > 0) {
+  if (startIdx < chunkListAll.length) {
     const producer = (async () => {
       try {
-        for (const c of chunkList) {
+        for (let i = startIdx; i < chunkListAll.length; i++) {
+          const c = chunkListAll[i];
           const file = filesList[c.fi].file;
           const offset = c.ci * LOCAL_CHUNK;
           const chunkBuf = await file.slice(offset, offset + c.plainLen).arrayBuffer();
@@ -524,6 +535,8 @@ async function transferSegment(ctx: SegCtx) {
           dv.setUint16(0, c.fi); dv.setUint32(2, c.ci); dv.setUint32(6, c.plainLen);
           frame.set(enc, FRAME_HDR);
           pushFrame(encodeMsg(frame));
+          segBytes += c.plainLen;
+          producedUpTo = i + 1;
           while (pending.length > 300) {
             await new Promise<void>((r) => {
               let fired = false;
@@ -531,6 +544,13 @@ async function transferSegment(ctx: SegCtx) {
               waiters.push(once);
               setTimeout(once, 500);   // 兜底：唤醒信号丢失也不会永久挂在背压等待上
             });
+          }
+          // 纯时间切段：到点且本段已发够最小守卫字节 且 还有后续 chunk → 收尾本段（边界落帧边界，接收端按 fi/ci 重组天然干净）
+          if (i + 1 < chunkListAll.length
+              && (Date.now() - segStartTime) >= SEGMENT_TIME_MS
+              && segBytes >= SEGMENT_MIN_BYTES) {
+            segTimeUp = true;
+            break;
           }
         }
         producerDone = true; notifyAllDrain();
@@ -582,9 +602,15 @@ async function transferSegment(ctx: SegCtx) {
     await producer;
   }
 
+  // 段末：先发 segend 帧（携带真实 isLast），再 best-effort 关闭流。
+  // 真实 isLast = 生产者跑到 EOF（非因时间到点收尾）→ 这是最后一段。
+  const realIsLast = !segTimeUp;
+  try { await postSegendFrame(realIsLast); }
+  catch (e: any) { console.warn(`第 ${seg + 1} 段 segend 发送失败（接收端将按 EOF 判定）: ${e?.message || e}`); }
   await sendCloseSeg();
   segClosed = true; // 停止自动重连
-  if (!isLast) { try { lWs?.close(); } catch {} }
+  if (!realIsLast) { try { lWs?.close(); } catch {} }
+  return { sentUpTo: producedUpTo, isLast: realIsLast };
 }
 
 function copyLocalLink() { navigator.clipboard?.writeText(lSendLink.value); lStatus.value = '链接已复制'; }
@@ -955,7 +981,7 @@ onUnmounted(() => { closeLocalConn(); });
           </button>
           <button v-else class="btn danger" @click="cancelLocalSend">取消发送</button>
         </div>
-        <div v-if="lSegCount > 1 && (lSending || lDone)" class="seg-info">分段传输：第 {{ lSegIndex + 1 }} / {{ lSegCount }} 段</div>
+        <div v-if="(lSending || lDone)" class="seg-info">分段传输：第 {{ lSegIndex + 1 }} 段</div>
         <div v-if="lSending || lDone" class="bar">
           <div class="fill" :style="{ width: (lProgress * 100) + '%' }"></div>
         </div>
