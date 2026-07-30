@@ -130,7 +130,12 @@ const WINDOW = 24 * 1024 * 1024;   // 在途上限 24MB：并发 3 路 × 4MB �
 let ackBytes = 0;                  // 接收端已写盘字节（来自 WS progress.received）
 let sentBytes = 0;                 // 已 enqueue 进 POST body 流的字节
 let ackWaiters: Array<() => void> = [];
-function notifyAckWaiters() { const w = ackWaiters.shift(); if (w) w(); }
+// 必须唤醒「全部」等待者，且清空数组。
+// 历史 BUG：只 shift 一个 → 被 wakeInflight 唤醒过的 stale resolver 会永久残留在 ackWaiters 里，
+// 每次 progress 只消化掉一个死 resolver，真正在等窗口的协程拿不到唤醒；
+// 当 inflightCount 归零、窗口仍满时唯一唤醒源就是 progress，
+// 而发送端停发 → 接收端不落盘 → 不再发 progress → 永久死锁（表现为速度归零、大文件后段必现）。
+function notifyAckWaiters() { const ws = ackWaiters; ackWaiters = []; for (const w of ws) { try { w(); } catch {} } }
 
 // 接收端「创建下载」闸门：接收端建好下载流(StreamSaver sink)后才允许发数据帧，
 // 否则接收端 GET 已连但下载流未就绪 → 数据在 DO 堆积 → OOM。offer 首帧不受限（接收端要先读它来建下载）。
@@ -412,9 +417,17 @@ async function transferSegment(ctx: SegCtx) {
     const w = waiters.shift(); if (w) w();
   }
   function notifyDrain() { const w = waiters.shift(); if (w) w(); }
+  /** 唤醒全部等待者：生产结束时必须用它，否则并发 pull 中只有 1 个被唤醒、其余永久挂起 → POST 流不 close → 段卡死。 */
+  function notifyAllDrain() { const ws = waiters; waiters = []; for (const w of ws) { try { w(); } catch {} } }
   async function waitFrame(): Promise<void> {
     if (pending.length > 0) return;
-    await new Promise<void>((res) => waiters.push(res));
+    // 500ms 兜底轮询：任何唤醒信号丢失都不会导致永久挂起（唤醒后会重新检查 pending/producerDone）
+    await new Promise<void>((res) => {
+      let fired = false;
+      const once = () => { if (fired) return; fired = true; res(); };
+      waiters.push(once);
+      setTimeout(once, 500);
+    });
   }
   async function postOneChunk(seed: Uint8Array): Promise<boolean> {
     chunkBytes = 0;
@@ -483,9 +496,16 @@ async function transferSegment(ctx: SegCtx) {
           dv.setUint16(0, c.fi); dv.setUint32(2, c.ci); dv.setUint32(6, c.plainLen);
           frame.set(enc, FRAME_HDR);
           pushFrame(encodeMsg(frame));
-          while (pending.length > 300) { await new Promise<void>((r) => waiters.push(r)); }
+          while (pending.length > 300) {
+            await new Promise<void>((r) => {
+              let fired = false;
+              const once = () => { if (fired) return; fired = true; r(); };
+              waiters.push(once);
+              setTimeout(once, 500);   // 兜底：唤醒信号丢失也不会永久挂在背压等待上
+            });
+          }
         }
-        producerDone = true; notifyDrain();
+        producerDone = true; notifyAllDrain();
       } catch (e: any) {
         if (frameGate.reject) frameGate.reject(e);
         throw e;
@@ -495,8 +515,8 @@ async function transferSegment(ctx: SegCtx) {
     frameGate.reject = null;
 
     // 消费者：并发池发起分片流式 POST（深流水线），窗口 + 并发数双闸门
-    const inflightWaiters: Array<() => void> = [];
-    const wakeInflight = () => { let w: (() => void) | undefined; while ((w = inflightWaiters.shift())) w(); };
+    let inflightWaiters: Array<() => void> = [];
+    const wakeInflight = () => { const ws = inflightWaiters; inflightWaiters = []; for (const w of ws) { try { w(); } catch {} } };
     let inflightCount = 0;
     async function pumpPool() {
       const active = new Set<Promise<unknown>>();
@@ -517,7 +537,15 @@ async function transferSegment(ctx: SegCtx) {
         while (tryLaunch()) launched = true;
         if (!launched) {
           if (inflightCount === 0 && producerDone && pending.length === 0) break;
-          await new Promise<void>((res) => { ackWaiters.push(res); inflightWaiters.push(res); });
+          // 同一个 resolver 同时挂在两个唤醒源上，必须去重（once），否则重复 resolve；
+          // 且两边唤醒时都整体清空，保证不会有 stale resolver 残留造成后续唤醒被吞。
+          // 兜底 1s 轮询：即便两个唤醒源都静默（对端停发 progress），也能重新评估窗口，绝不永久卡死。
+          await new Promise<void>((res) => {
+            let fired = false;
+            const once = () => { if (fired) return; fired = true; res(); };
+            ackWaiters.push(once); inflightWaiters.push(once);
+            setTimeout(once, 1000);
+          });
         }
       }
       await Promise.all([...active]);
