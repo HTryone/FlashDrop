@@ -312,6 +312,12 @@ export class Relay {
         } else if (role === 'receiver' && (data.type === 'progress' || data.type === 'recv-done' || data.type === 'recv-ready')) {
           // 接收端进度/完成回传 → 转发给发送端，由其驱动进度条与完成态
           if (cur.wsSender) this.sendJSON(cur.wsSender, data);
+        } else if (data.type === 'rtc-signal') {
+          // P2P WebRTC 信令透传：把 SDP/ICE 转发给房间内对端（sender↔receiver）。
+          // 信令房间用 `${room}::p2p` 命名空间，与 HTTP 控制通道互不干扰；
+          // 此分支只处理 P2P 信令，绝不动 HTTP 的 ready/progress 等控制消息。
+          const target = role === 'sender' ? cur.wsReceiver : cur.wsSender;
+          if (target) this.sendJSON(target, data);
         }
       } catch (e) {
         console.error('[ws] parse error:', e?.message || e);

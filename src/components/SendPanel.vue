@@ -5,7 +5,8 @@ import { createTransfer, refreshCode, setMessage, terminateTransfer, zipUrl } fr
 import { uploadAll } from '@/composables/useTusUpload';
 import { newSalt, E2EE_CHUNK_SIZE, randomPassphrase } from '@/crypto/e2ee';
 import SendFileRow from './SendFileRow.vue';
-import { LocalSender } from '@/https';
+import { LocalSender, resolveRelayBase } from '@/https';
+import { createP2PSender } from '@/p2p';
 
 const emit = defineEmits<{
   (e: 'gotLoginCode', code: string): void;
@@ -61,8 +62,50 @@ const sender = new LocalSender({
 });
 
 function genRoom() { sender.genRoom(); }
-function startLocalSend() { sender.startSend(files.value.map((f) => ({ file: f.file }))); }
-function cancelLocalSend() { sender.cancel(); }
+
+// ---------- P2P 直连发送（独立模块 @/p2p，复用同一房间码/口令/文件，不触碰 HTTP 代码）----------
+const localTransport = ref<'http' | 'p2p'>('http');
+let p2pSender: ReturnType<typeof createP2PSender> | null = null;
+
+async function runP2PLocalSend() {
+  if (!lRoom.value || !lPassphrase.value) { lStatus.value = '请先生成房间'; return; }
+  if (!files.value.length) { lStatus.value = '没有待发送文件'; return; }
+  lSending.value = true; lProgress.value = 0; lDone.value = false;
+  lStatus.value = 'P2P 信令协商中…';
+  const sender = createP2PSender({
+    relayBase: resolveRelayBase(),
+    room: lRoom.value,
+    pass: lPassphrase.value,
+    files: files.value.map((f) => f.file),
+    onState: (s, d) => {
+      // 对端在线指示灯原先只有 HTTP 链路会置位，P2P 下永远停在「等待加入…」。
+      // 这里在 vue 薄壳层同步，P2P 模块保持零改动。
+      if (s === 'connected') { lPeerOnline.value = true; lStatus.value = 'P2P 直连已建立，开始传输…'; }
+      else if (s === 'transferring') { lPeerOnline.value = true; lStatus.value = 'P2P 传输中…'; }
+      else if (s === 'done') { lDone.value = true; lStatus.value = 'P2P 发送完成'; }
+      else if (s === 'error') { lPeerOnline.value = false; lStatus.value = `P2P 出错：${d || ''}`; }
+      else if (s === 'aborted') { lPeerOnline.value = false; lStatus.value = '已取消'; }
+    },
+    onProgress: (p) => { lProgress.value = p.total ? p.sent / p.total : 0; },
+    onFail: (e) => { lStatus.value = `P2P 传输失败：${e.message}`; lDone.value = false; },
+  });
+  p2pSender = sender;
+  try {
+    await sender.connect();
+  } catch (e: any) {
+    lStatus.value = `P2P 连接失败：${e?.message || e}`;
+    lSending.value = false;
+  }
+}
+
+function startLocalSend() {
+  if (localTransport.value === 'p2p') { void runP2PLocalSend(); return; }
+  sender.startSend(files.value.map((f) => ({ file: f.file })));
+}
+function cancelLocalSend() {
+  if (p2pSender) { p2pSender.abort(); p2pSender = null; }
+  sender.cancel();
+}
 function copyLocalLink() { navigator.clipboard?.writeText(sender.link); lStatus.value = '链接已复制'; }
 
 // ========== 中转发送（原有逻辑）==========
@@ -411,6 +454,15 @@ onUnmounted(() => { sender.close(); });
     <div class="local-send-panel">
       <p class="hint">文件经 HTTP 流式中继转发，不落服务器磁盘；双方需同时在线，关闭即止。</p>
       <p class="hint e2ee-hint">🔒 已端到端加密：密钥仅在你的浏览器本地派生，服务器只转发密文、无法解密。</p>
+
+      <div class="opt" v-if="!lRoom">
+        <label>直传方式</label>
+        <div class="seg">
+          <button :class="{ on: localTransport === 'http' }" @click="localTransport = 'http'">HTTP 中继</button>
+          <button :class="{ on: localTransport === 'p2p' }" @click="localTransport = 'p2p'">P2P 直连</button>
+        </div>
+      </div>
+      <p v-if="localTransport === 'p2p'" class="hint">P2P 直连：文件端到端不经服务器中转（仅信令过 relay），适合同网/可穿透场景；NAT 穿透失败请切回 HTTP 中继。</p>
 
       <div v-if="!lRoom" class="actions">
         <button class="btn primary" :disabled="!files.length" @click="genRoom">生成直传房间</button>

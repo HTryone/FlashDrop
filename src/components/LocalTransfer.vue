@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onUnmounted } from 'vue';
-import { LocalReceiver } from '@/https';
+import { LocalReceiver, resolveRelayBase } from '@/https';
+import { createP2PReceiver } from '@/p2p';
 
 // 由父组件（接收面板）指定渲染哪一侧；不传则两侧都渲染
 const props = defineProps<{ side?: 'send' | 'receive' }>();
@@ -41,8 +42,89 @@ function parsePastedLink() {
   recvPass.value = receiver.pass;
 }
 
-function startRecv() { receiver.start(); }
-function onCancelRecv() { receiver.cancel(); }
+// ---------- P2P 直连接收（独立模块 @/p2p，复用同一房间码/口令，不触碰 HTTP 代码）----------
+const localTransport = ref<'http' | 'p2p'>('http');
+let p2pReceiver: ReturnType<typeof createP2PReceiver> | null = null;
+
+// 必须在用户手势内调用（连接接收按钮触发），拿到目录句柄；非 Chromium 返回 null 走兜底。
+async function pickSaveDir(): Promise<any | null> {
+  const w = window as any;
+  if (typeof w.showDirectoryPicker !== 'function') return null;
+  try {
+    const dir = await w.showDirectoryPicker({ mode: 'readwrite' });
+    return dir;
+  } catch (e: any) {
+    return { __cancelled: true, __error: e?.name || String(e) };
+  }
+}
+
+// 在用户手势内把目录句柄提升到 readwrite，避免后续异步回调里因缺用户激活抛 SecurityError。
+async function ensureRwPermission(dh: any): Promise<string> {
+  if (!dh || typeof dh.requestPermission !== 'function') return 'granted';
+  try {
+    if (typeof dh.queryPermission === 'function') {
+      const q = await dh.queryPermission({ mode: 'readwrite' });
+      if (q === 'granted') return 'granted';
+    }
+    return await dh.requestPermission({ mode: 'readwrite' });
+  } catch (e: any) {
+    return `error:${e?.message || e}`;
+  }
+}
+
+async function runP2PRecv() {
+  const room = recvRoom.value;
+  const pass = recvPass.value;
+  if (!room || !pass) { recvStatus.value = '需要房间码和口令'; return; }
+  const picked = await pickSaveDir();
+  if (picked && (picked as any).__cancelled) {
+    const errName = (picked as any).__error || '';
+    recvStatus.value = errName ? `选择保存目录失败: ${errName}` : '已取消选择保存目录';
+    return;
+  }
+  if (picked) {
+    const perm = await ensureRwPermission(picked);
+    if (perm !== 'granted') {
+      recvStatus.value = perm.startsWith('error:')
+        ? `目录授权失败: ${perm.slice(6)}`
+        : '需要目录读写权限才能保存文件';
+      return;
+    }
+  }
+  receiving.value = true; recvReady.value = false; recvProgress.value = 0;
+  recvStatus.value = 'P2P 信令协商中…';
+  const inst = createP2PReceiver({
+    relayBase: resolveRelayBase(),
+    room,
+    pass,
+    dirHandle: (picked as any) || null,
+    onState: (s, d) => {
+      if (s === 'connected') { senderOnline.value = true; recvStatus.value = 'P2P 直连已建立，等待文件清单…'; }
+      else if (s === 'transferring') { senderOnline.value = true; recvStatus.value = 'P2P 接收中…'; }
+      else if (s === 'done') { receiving.value = false; recvStatus.value = 'P2P 接收完成，文件已保存'; }
+      else if (s === 'error') { senderOnline.value = false; recvStatus.value = `P2P 出错：${d || ''}`; }
+      else if (s === 'aborted') { senderOnline.value = false; recvStatus.value = '已取消'; }
+    },
+    onProgress: (p) => { recvProgress.value = p.total ? p.received / p.total : 0; },
+    onFail: (e) => { recvStatus.value = `P2P 接收失败：${e.message}`; receiving.value = false; },
+  });
+  p2pReceiver = inst;
+  try {
+    await inst.connect();
+  } catch (e: any) {
+    recvStatus.value = `P2P 连接失败：${e?.message || e}`;
+    receiving.value = false;
+  }
+}
+
+function startRecv() {
+  if (localTransport.value === 'p2p') { void runP2PRecv(); return; }
+  receiver.start();
+}
+function onCancelRecv() {
+  if (p2pReceiver) { p2pReceiver.abort(); p2pReceiver = null; }
+  receiver.cancel();
+}
 
 function fmt(n: number) {
   if (n < 1024 * 1024) return (n / 1024).toFixed(0) + ' KB';
@@ -50,7 +132,10 @@ function fmt(n: number) {
   return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
 }
 
-onUnmounted(() => { receiver.close(); });
+onUnmounted(() => {
+  if (p2pReceiver) { try { p2pReceiver.abort(); } catch { /* ignore */ } }
+  receiver.close();
+});
 </script>
 
 <template>
@@ -68,10 +153,16 @@ onUnmounted(() => { receiver.close(); });
         <input v-model="recvLinkInput" placeholder="或粘贴整条分享链接自动解析" :disabled="receiving" />
         <button class="btn sm" @click="parsePastedLink">解析</button>
       </div>
+      <div class="recv-form transport-switch">
+        <span class="muted">直传方式：</span>
+        <button class="btn sm" :class="{ on: localTransport === 'http' }" @click="localTransport = 'http'">HTTP 中继</button>
+        <button class="btn sm" :class="{ on: localTransport === 'p2p' }" @click="localTransport = 'p2p'">P2P 直连</button>
+      </div>
       <div class="presence">
         <span class="dot" :class="{ on: senderOnline }"></span>
         对方（发送端）：{{ senderOnline ? '已在线 ✓' : '等待加入…' }}
-        <span class="transport">HTTP 流式中继</span>
+        <span class="transport" v-if="localTransport === 'http'">HTTP 流式中继</span>
+        <span class="transport p2p" v-else>P2P 直连</span>
       </div>
       <div class="actions">
         <button class="btn primary" :disabled="receiving" @click="startRecv">连接接收</button>
@@ -132,6 +223,9 @@ hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
 .presence { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-dim); }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-faint); flex: none; }
 .dot.on { background: #2ecc71; box-shadow: 0 0 6px #2ecc71; }
-.transport { margin-left: 8px; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-dim); }
-input[type=file] { font-size: 13px; color: var(--text-dim); }
+  .transport { margin-left: 8px; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-dim); }
+  .transport-switch { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-dim); }
+  .btn.sm.on { background: var(--accent-grad); color: #07101f; border: none; }
+  .transport.p2p { color: #7aa2ff; border-color: #7aa2ff; }
+  input[type=file] { font-size: 13px; color: var(--text-dim); }
 </style>

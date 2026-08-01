@@ -1,0 +1,202 @@
+// PeerLink：RTCPeerConnection + DataChannel 生命周期管理。
+// 发送端 initiator 创建 DC + offer；接收端 answerer 回 answer。信令经 SignalingClient 透传。
+// 失败重协商重连：connectionState='failed' 时保留信令 WS，仅重建 pc+dc 重新 offer/answer（房间码不变）。
+import type { P2PRole } from './types';
+import { RTC_LOW } from './types';
+
+type DcHandler = (dc: RTCDataChannel) => void;
+type MsgHandler = (data: string | ArrayBuffer) => void;
+type StateHandler = (connected: boolean) => void;
+type ReconnectHandler = () => void;
+
+export class PeerLink {
+  role: P2PRole;
+  private sendSignal: (msg: any) => void;
+  private onDcOpenCb: DcHandler | null = null;
+  private onDcMsgCb: MsgHandler | null = null;
+  private onStateCb: StateHandler | null = null;
+  private onReconnectCb: ReconnectHandler | null = null;
+
+  private pc: RTCPeerConnection | null = null;
+  private dc: RTCDataChannel | null = null;
+  private iceServers: RTCIceServer[] = [];
+  private gotRemote = false; // 是否收到对端 answer/candidate
+  private offerTimer: ReturnType<typeof setInterval> | null = null;
+  private destroyed = false;
+
+  constructor(opts: {
+    role: P2PRole;
+    sendSignal: (msg: any) => void;
+    onDcOpen?: DcHandler;
+    onDcMessage?: MsgHandler;
+    onState?: StateHandler;
+    onReconnect?: ReconnectHandler;
+  }) {
+    this.role = opts.role;
+    this.sendSignal = opts.sendSignal;
+    this.onDcOpenCb = opts.onDcOpen || null;
+    this.onDcMsgCb = opts.onDcMessage || null;
+    this.onStateCb = opts.onState || null;
+    this.onReconnectCb = opts.onReconnect || null;
+  }
+
+  private wireDc(dc: RTCDataChannel) {
+    dc.binaryType = 'arraybuffer';
+    (dc as unknown as { bufferedAmountLowThreshold: number }).bufferedAmountLowThreshold = RTC_LOW;
+    dc.onopen = () => {
+      this.onStateCb?.(true);
+      this.onDcOpenCb?.(dc);
+    };
+    dc.onclose = () => this.onStateCb?.(false);
+    dc.onmessage = (ev: MessageEvent) => this.onDcMsgCb?.(ev.data as string | ArrayBuffer);
+    dc.onerror = (e: any) => console.warn('[p2p] dc error:', e);
+  }
+
+  private ensurePc(): RTCPeerConnection {
+    if (this.pc) return this.pc;
+    try {
+      this.pc = new RTCPeerConnection({ iceServers: this.iceServers });
+    } catch (e) {
+      console.warn('[p2p] RTCPeerConnection 构造失败，剔除 TURN 后重试:', e);
+      const stunOnly = this.iceServers.filter((s) => {
+        const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+        return urls.every((u) => /^stun:/i.test(String(u)));
+      });
+      this.pc = new RTCPeerConnection({ iceServers: stunOnly });
+    }
+    this.pc.onicecandidate = (e) => {
+      if (e.candidate) this.sendSignal({ type: 'candidate', candidate: e.candidate.toJSON() });
+    };
+    this.pc.onconnectionstatechange = () => {
+      if (!this.pc) return;
+      const st = this.pc.connectionState;
+      if (st === 'connected') {
+        this.gotRemote = true;
+        this.clearOfferTimer();
+        this.onStateCb?.(true);
+      } else if (st === 'failed') {
+        this.onStateCb?.(false);
+        this.reconnect();
+      }
+      // 'disconnected' 先观察，待其自行恢复或转 failed 再处理
+    };
+    if (this.role === 'receiver') {
+      this.pc.ondatachannel = (e) => {
+        this.dc = e.channel;
+        this.wireDc(this.dc);
+      };
+    }
+    return this.pc;
+  }
+
+  async connect(iceServers: RTCIceServer[]) {
+    this.iceServers = iceServers;
+    this.ensurePc();
+    if (this.role === 'sender') {
+      this.dc = this.pc!.createDataChannel('flashdrop');
+      this.wireDc(this.dc);
+      await this.sendOffer();
+    }
+    // receiver 等待对端 offer（由 onSignal 触发）
+  }
+
+  private async sendOffer() {
+    if (!this.pc || this.destroyed) return;
+    try {
+      const offer = await this.pc.createOffer();
+      await this.pc.setLocalDescription(offer);
+      this.sendSignal({ type: 'offer', sdp: this.pc.localDescription?.sdp });
+      // 重发 offer 直到收到对端响应（防 relay 未缓冲早期 offer 导致接收端永远收不到）
+      this.clearOfferTimer();
+      this.offerTimer = setInterval(() => {
+        if (this.destroyed || this.gotRemote) {
+          this.clearOfferTimer();
+          return;
+        }
+        try {
+          this.sendSignal({ type: 'offer', sdp: this.pc?.localDescription?.sdp });
+        } catch { /* ignore */ }
+      }, 1500);
+    } catch (e) {
+      console.warn('[p2p] sendOffer 失败:', e);
+    }
+  }
+
+  private clearOfferTimer() {
+    if (this.offerTimer) {
+      clearInterval(this.offerTimer);
+      this.offerTimer = null;
+    }
+  }
+
+  async onSignal(data: any) {
+    const p = this.pc;
+    if (!p || this.destroyed) return;
+    try {
+      if (data?.type === 'offer') {
+        if (this.role !== 'receiver') return; // sender 忽略自己的 offer 回声
+        await p.setRemoteDescription({ type: 'offer', sdp: data.sdp } as RTCSessionDescriptionInit);
+        this.gotRemote = true;
+        const answer = await p.createAnswer();
+        await p.setLocalDescription(answer);
+        this.sendSignal({ type: 'answer', sdp: p.localDescription?.sdp });
+      } else if (data?.type === 'answer') {
+        if (this.role !== 'sender') return;
+        this.gotRemote = true;
+        this.clearOfferTimer();
+        await p.setRemoteDescription({ type: 'answer', sdp: data.sdp } as RTCSessionDescriptionInit);
+      } else if (data?.type === 'candidate') {
+        try {
+          await p.addIceCandidate(data.candidate as RTCIceCandidateInit);
+        } catch (e) {
+          console.warn('[p2p] addIceCandidate 失败:', e);
+        }
+      }
+    } catch (e) {
+      console.warn('[p2p] onSignal 失败:', e);
+    }
+  }
+
+  private reconnect() {
+    if (this.destroyed) return;
+    try {
+      this.dc?.close();
+    } catch { /* ignore */ }
+    try {
+      this.pc?.close();
+    } catch { /* ignore */ }
+    this.pc = null;
+    this.dc = null;
+    this.gotRemote = false;
+    this.clearOfferTimer();
+    // 保留 sendSignal（relay WS 不断），重建 pc 并重新协商
+    this.ensurePc();
+    this.onReconnectCb?.();
+    if (this.role === 'sender') {
+      this.dc = this.pc!.createDataChannel('flashdrop');
+      this.wireDc(this.dc);
+      this.sendOffer();
+    }
+    // receiver 等待新 offer
+  }
+
+  get channel() {
+    return this.dc;
+  }
+  get isOpen() {
+    return !!(this.dc && this.dc.readyState === 'open');
+  }
+
+  destroy() {
+    this.destroyed = true;
+    this.clearOfferTimer();
+    try {
+      this.dc?.close();
+    } catch { /* ignore */ }
+    try {
+      this.pc?.close();
+    } catch { /* ignore */ }
+    this.pc = null;
+    this.dc = null;
+  }
+}
