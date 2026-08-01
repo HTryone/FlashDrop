@@ -167,7 +167,13 @@ export class LocalReceiver {
   // ============ 单段接收 ============
   private async recvSegment(base: string, seg: number, dirHandle: any): Promise<boolean> {
     const room = segRoom(this.room, seg);
-    this.ctrl = new RelayControl({ base, room, role: 'receiver', onMessage: () => {} });
+    // 接收端 WS 是 progress 的唯一上行通道，而发送端靠 progress 推进 24MB ack 窗口：
+    // WS 一旦断开且不重连，progress 停 → 发送端窗口卡死。故必须开自动重连。
+    this.ctrl = new RelayControl({
+      base, room, role: 'receiver', onMessage: () => {},
+      reconnect: true, reconnectDelay: 1000,
+      shouldReconnect: () => this.receiving && !this.recvAborted,
+    });
     await this.ctrl.connect();
 
     let resp: Response;

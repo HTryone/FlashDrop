@@ -239,31 +239,45 @@ export class LocalSender {
       ? '等待对方点「连接接收」…（链接已生成，可先发给对方）'
       : `第 ${seg + 1} 段：等待对方就绪…`);
 
-    // recvReady 活性重试：relay 偶发未补发 pull 会让发送端永久等待首帧。每 15s 未就绪则断开
-    // ctrl 重连 → relay 重补 pull，最多 8 次（~2min）。
-    let attempts = 0;
-    const RECV_RETRY = 8;
-    const RECV_WAIT = 15_000;
-    while (true) {
-      try {
-        await Promise.race([
-          this.recvReadyPromise,
-          new Promise<void>((_, rej) => setTimeout(() => rej(new Error('TIMEOUT')), RECV_WAIT)),
-        ]);
-        break;
-      } catch {
-        attempts++;
-        if (attempts >= RECV_RETRY) {
-          this.cb.onStatus(`无法开始传输：对方未开始接收（重试 ${RECV_RETRY} 次仍超时）。请确认对方已点「连接接收」且页面未关闭。`);
-          this.setSending(false);
-          segClosed = true;
-          try { ctrl.close(); } catch { /* ignore */ }
-          throw new Error(`第 ${seg + 1} 段：对方未开始接收（${RECV_RETRY} 次重试超时）`);
+    // 就绪闸门：
+    //  · 第 1 段必须真等 —— 接收端要人工点「连接接收」，可能等很久。保留 15s×8 活性重试
+    //    （relay 偶发未补发 pull → 断开 ctrl 重连让 relay 重补）。
+    //  · 第 2 段起不等任何信号 —— pull 是边沿信号，切段瞬间 WS 与 GET 的建立时序错开就会
+    //    永久丢失，实测因此死锁 58s。而 relay 允许「先推后拉」：POST 时房间不存在会自动
+    //    createRoom（relay.js:197），房间自带 8MB 缓冲（relay.js:372），GET 首次连上时
+    //    readable 未 locked 故复用同一房间、缓冲数据一字节不丢（relay.js:139）。缓冲满则
+    //    POST 挂 pullWaiters 等 GET 唤醒（STALL_MS 70s 容忍窗，实测接收端 1~2s 即到）。
+    //    所以这里只给 3s 让接收端从容跟上，超时照样开推，不再依赖信号必达。
+    if (seg === 0) {
+      let attempts = 0;
+      const RECV_RETRY = 8;
+      const RECV_WAIT = 15_000;
+      while (true) {
+        try {
+          await Promise.race([
+            this.recvReadyPromise,
+            new Promise<void>((_, rej) => setTimeout(() => rej(new Error('TIMEOUT')), RECV_WAIT)),
+          ]);
+          break;
+        } catch {
+          attempts++;
+          if (attempts >= RECV_RETRY) {
+            this.cb.onStatus(`无法开始传输：对方未开始接收（重试 ${RECV_RETRY} 次仍超时）。请确认对方已点「连接接收」且页面未关闭。`);
+            this.setSending(false);
+            segClosed = true;
+            try { ctrl.close(); } catch { /* ignore */ }
+            throw new Error(`第 ${seg + 1} 段：对方未开始接收（${RECV_RETRY} 次重试超时）`);
+          }
+          try { ctrl.nudgeReconnect(); } catch { /* ignore */ } // 关 WS 触发 onclose 自动重连（勿用 close() 永久阻断）
+          this.armRecvReady();
+          postOfferSeg().catch(() => {});
         }
-        try { ctrl.nudgeReconnect(); } catch { /* ignore */ } // 关 WS 触发 onclose 自动重连（勿用 close() 永久阻断）
-        this.armRecvReady();
-        postOfferSeg().catch(() => {});
       }
+    } else {
+      await Promise.race([
+        this.recvReadyPromise,
+        new Promise<void>((res) => setTimeout(res, 3_000)),
+      ]);
     }
     await offerP;
     this.cb.onStatus(`第 ${seg + 1} 段：开始传输数据…`);

@@ -17,12 +17,15 @@ export interface RelayControlOptions {
   reconnectDelay?: number;
   /** 自动重连判定（返回 false 则不再重连） */
   shouldReconnect?: () => boolean;
+  /** 心跳间隔（ms），传 0 关闭。默认 20s，防中间设备/边缘掐断空闲控制连接 */
+  heartbeatMs?: number;
 }
 
 export class RelayControl {
   ws: WebSocket | null = null;
   private opened = false;
   private closedByUs = false;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private opts: RelayControlOptions) {}
 
@@ -35,6 +38,7 @@ export class RelayControl {
         if (this.opts.role === 'receiver') {
           try { ws.send(JSON.stringify({ type: 'ready' })); } catch { /* ignore */ }
         }
+        this.startHeartbeat();
         this.opts.onOpen?.();
         resolve();
       };
@@ -52,6 +56,7 @@ export class RelayControl {
       };
       ws.onclose = () => {
         if (this.ws === ws) this.ws = null;
+        this.stopHeartbeat();
         this.opts.onClose?.();
         if (!this.opened) {
           reject(new Error('控制通道连接失败'));
@@ -74,8 +79,29 @@ export class RelayControl {
 
   close() {
     this.closedByUs = true;
+    this.stopHeartbeat();
     try { this.ws?.close(); } catch { /* ignore */ }
     this.ws = null;
+  }
+
+  /**
+   * 轻量心跳：定时向 relay 发 {type:'ping'}。relay 的消息处理只认
+   * ready/progress/recv-done/recv-ready，未知类型静默忽略，故无需改 Worker。
+   * 作用是让连接始终有流量，防中间设备/CF 边缘按空闲掐断控制通道。
+   */
+  private startHeartbeat() {
+    this.stopHeartbeat();
+    const ms = this.opts.heartbeatMs ?? 20_000;
+    if (!ms) return;
+    this.pingTimer = setInterval(() => {
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        try { this.ws.send('{"type":"ping"}'); } catch { /* ignore */ }
+      }
+    }, ms);
+  }
+
+  private stopHeartbeat() {
+    if (this.pingTimer !== null) { clearInterval(this.pingTimer); this.pingTimer = null; }
   }
 
   /**
