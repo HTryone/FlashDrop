@@ -78,6 +78,16 @@ export class RelayControl {
     this.ws = null;
   }
 
+  /**
+   * 触发底层 WS 重连（用于发送端 recvReady 活性重试）：关闭当前 WS 但不置 closedByUs，
+   * 让 onclose 按 reconnect/shouldReconnect 自动重建连接。等价于原始裸 WebSocket 的
+   * `lWs?.close()`（其 onclose 会重连）。切勿用 close()——那会永久阻断重连导致多段传输失败。
+   */
+  nudgeReconnect() {
+    if (this.closedByUs) return;
+    try { this.ws?.close(); } catch { /* ignore */ }
+  }
+
   get isOpen(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;
   }

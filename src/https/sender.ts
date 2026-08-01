@@ -260,7 +260,7 @@ export class LocalSender {
           try { ctrl.close(); } catch { /* ignore */ }
           throw new Error(`第 ${seg + 1} 段：对方未开始接收（${RECV_RETRY} 次重试超时）`);
         }
-        try { ctrl.close(); } catch { /* ignore */ }
+        try { ctrl.nudgeReconnect(); } catch { /* ignore */ } // 关 WS 触发 onclose 自动重连（勿用 close() 永久阻断）
         this.armRecvReady();
         postOfferSeg().catch(() => {});
       }
