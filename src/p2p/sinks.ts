@@ -40,15 +40,35 @@ function createFsaSink(dirHandle: FileSystemDirectoryHandle, files: P2PFileMeta[
     if (readyErr) throw readyErr;
   };
 
-  // ── 批量写入缓冲区 ──
-  // 根因：同机 P2P 每 896KB 一次 w.write() IPC 调用 → NVMe 仅 20MB/s、梯形震荡。
-  // 解法：同文件内顺序 chunk 合并到阈值后一次性 append 写入，减少 IPC 次数。
-  // P2P 路径已升级到 4MB/块（P2P_CHUNK_SIZE），阈值设为 8MB ≈ 每 2 块一次 IPC。
+  // ── 批量写入缓冲区 + 后台异步刷盘 ──
+  // 旧根因：writeChunk 内 `if (bufLens>=FLUSH_BYTES) await flushFile` 串行阻塞，写循环
+  // （唯一消费者）每攒满 8MB 才 await 一次 w.write IPC，期间冻结 ~200ms → 写队列满 →
+  // 解密停 → DC 读取停 → 发送端 bufferedAmount 反压暂停 → 突发-空闲锯齿（实测 60% 空闲）。
+  // 新解法：writeChunk 只入缓冲立即返回（写循环零阻塞、解密/DC 读取持续满速）；
+  // 独立后台 flushLoop 持续把 8MB 缓冲合并落盘（保留合并 = IPC 次数不增）。
+  // 写循环与 flushLoop 经 bufChunks/bufLens 解耦，无锁交接（JS 单线程，await 让权）。
   const FLUSH_BYTES = 8 * 1024 * 1024; // 8MB 刷盘阈值（每文件独立）
   const bufChunks: Uint8Array[][] = files.map(() => []); // 各文件缓冲区
   const bufLens: number[] = files.map(() => 0);          // 各文件已缓冲字节（替代全局 bufTotal，避免跨文件串扰刷盘）
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-  /** 将文件 fi 的缓冲区一次性追加写入磁盘 */
+  // 后台 flush 协调状态
+  let closedFlag = false;
+  let flushDoneResolve: (() => void) | null = null;
+  const flushDone = new Promise<void>((r) => { flushDoneResolve = r; });
+  // 新数据到达信号：唤醒 flushLoop 避免空轮询；50ms 兜底重查保证不漏刷、不 deadlock
+  let notifyResolve: (() => void) | null = null;
+  let notifyPromise: Promise<void> = new Promise<void>((r) => { notifyResolve = r; });
+  const signalData = () => {
+    if (notifyResolve) {
+      const r = notifyResolve;
+      notifyResolve = null;
+      notifyPromise = new Promise<void>((r) => { notifyResolve = r; });
+      r();
+    }
+  };
+
+  /** 将文件 fi 的缓冲区一次性追加写入磁盘（清零 bufLens 防重复刷） */
   async function flushFile(fi: number): Promise<void> {
     const chunks = bufChunks[fi];
     if (chunks.length === 0) return;
@@ -63,29 +83,60 @@ function createFsaSink(dirHandle: FileSystemDirectoryHandle, files: P2PFileMeta[
       off += c.byteLength;
     }
     chunks.length = 0;
+    bufLens[fi] = 0;
     await w.write(combined as any); // FileSystemWriteParams.data
   }
+
+  /** 后台刷盘循环：持续合并落盘；close 后收尾刷剩余；退出时 resolve flushDone */
+  async function flushLoop(): Promise<void> {
+    try {
+      while (true) {
+        for (let fi = 0; fi < files.length; fi++) {
+          if (bufLens[fi] >= FLUSH_BYTES) await flushFile(fi);
+        }
+        if (closedFlag) {
+          // 收尾：把未达阈值的剩余缓冲也全部刷盘
+          for (let fi = 0; fi < files.length; fi++) {
+            if (bufChunks[fi].length > 0) await flushFile(fi);
+          }
+          break;
+        }
+        // 无达标缓冲且未关闭：等信号或 50ms 兜底
+        await Promise.race([notifyPromise, sleep(50)]);
+      }
+    } finally {
+      flushDoneResolve?.();
+    }
+  }
+  // ready 完成后才有 writers，启动后台 flush；close 已置 closedFlag 或 ready 失败则直接收尾
+  ready.then(() => {
+    if (!closedFlag) flushLoop().catch(() => {});
+    else flushDoneResolve?.();
+  }).catch(() => { flushDoneResolve?.(); });
 
   return {
     ready,
     async writeChunk(fi, data, _position) {
       await awaitReady();
-      // 缓存到对应文件的写缓冲区（不立即刷盘）
+      // 仅入缓冲并立即返回，写循环零阻塞
       bufChunks[fi].push(data);
       bufLens[fi] += data.byteLength;
-      // 仅当本文件缓冲达到阈值时批量刷盘（每文件独立判定，杜绝跨文件串扰刷盘）
-      if (bufLens[fi] >= FLUSH_BYTES) await flushFile(fi);
+      signalData(); // 唤醒后台 flushLoop
+      // 轻量背压：缓冲超过 2×阈值(16MB)才短暂等待，避免内存无限涨；
+      // 正常磁盘下 flushLoop 持续排空，几乎不触发，写循环保持零阻塞。
+      while (bufLens[fi] > FLUSH_BYTES * 2 && !closedFlag) {
+        await sleep(5);
+      }
     },
     async close() {
+      closedFlag = true;
+      signalData(); // 唤醒 flushLoop 走收尾分支
       try {
         await awaitReady();
       } catch {
         return; // 句柄根本没建起来，无可关闭
       }
-      // 关闭前把剩余缓冲全部刷盘
-      for (let i = 0; i < files.length; i++) {
-        if (bufChunks[i].length > 0) await flushFile(i);
-      }
+      await flushDone; // 等后台把剩余缓冲全部落盘
       for (const w of writers) {
         if (w) {
           try {
@@ -95,6 +146,8 @@ function createFsaSink(dirHandle: FileSystemDirectoryHandle, files: P2PFileMeta[
       }
     },
     abort() {
+      closedFlag = true;
+      signalData();
       for (const w of writers) {
         if (w) {
           try {
