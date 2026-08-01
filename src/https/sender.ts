@@ -3,7 +3,8 @@
 // 行为与原内联逻辑逐字节一致：帧协议、按时间切段、滑动窗口 + 并发池双闸门、段末 segend/close、断线重连。
 
 import { encodeMsg, FRAME_HDR } from './frame';
-import { resolveRelayBase, segRoom, genRoomCode, SEGMENT_TIME_MS, SEGMENT_MIN_BYTES } from './room';
+import { resolveRelayBase, genRoomCode } from '@/transfer/room';
+import { segRoom, SEGMENT_TIME_MS, SEGMENT_MIN_BYTES } from './segment';
 import { RelayControl } from './control';
 import { encryptChunkAsync } from '@/composables/useLocalCrypto';
 import { deriveKey, LOCAL_SALT, LOCAL_CHUNK_SIZE, randomPassphrase } from '@/crypto/e2ee';

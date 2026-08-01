@@ -5,7 +5,8 @@ import { createTransfer, refreshCode, setMessage, terminateTransfer, zipUrl } fr
 import { uploadAll } from '@/composables/useTusUpload';
 import { newSalt, E2EE_CHUNK_SIZE, randomPassphrase } from '@/crypto/e2ee';
 import SendFileRow from './SendFileRow.vue';
-import { LocalSender, resolveRelayBase } from '@/https';
+import { LocalSender } from '@/https';
+import { resolveRelayBase } from '@/transfer/room';
 import { createP2PSender } from '@/p2p';
 
 const emit = defineEmits<{

@@ -1,24 +1,5 @@
-// 房间码生成、relay 基址解析、按时间切段的段房间码计算。
-// 发送端与接收端共用，保证两端用同一套房间/分段规则对齐。
-
-export const RELAY_DEFAULT = 'flashdrop-relay.315461.xyz';
-
-/** 解析 relay 基址：默认线上 relay，可用 VITE_RELAY_URL 覆盖（本地联调） */
-export function resolveRelayBase(): string {
-  const host = (import.meta as any).env?.VITE_RELAY_URL || RELAY_DEFAULT;
-  return `https://${host}`;
-}
-
-const ROOM_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-
-/** 生成 6 位房间码（去掉易混淆字符） */
-export function genRoomCode(): string {
-  let s = '';
-  const a = new Uint8Array(6);
-  crypto.getRandomValues(a);
-  for (let i = 0; i < 6; i++) s += ROOM_CHARS[a[i] % ROOM_CHARS.length];
-  return s;
-}
+// HTTP 中继专属：按时间切段的段房间码与切段阈值。
+// P2P 直连不走分段，本文件与 P2P 无关。段房间码 = 房间码-s{i}，每段独立 DO 实例。
 
 // 自动分房：纯「时间」切段（每段从开始传输起计时，达到 SEGMENT_TIME_MS 即收尾开新段），
 // 每段独立房间（独立 DO 实例），规避单 DO 长时间运行（>15min）缓冲堆积劣化。段房间码 = base-s{i}。

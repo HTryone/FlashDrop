@@ -3,7 +3,8 @@
 // 行为与原内联逻辑逐字节一致：帧协议读取、逐段消费、并发解密 + 保序写盘、段末 segend 判定结束、OPFS/落盘校验。
 
 import { decodeFrame, FrameReader, FRAME_HDR } from './frame';
-import { resolveRelayBase, segRoom } from './room';
+import { resolveRelayBase } from '@/transfer/room';
+import { segRoom } from './segment';
 import { RelayControl } from './control';
 import { makeSinks, pickSaveDir } from './sink';
 import type { FileMeta, Sink } from './types';

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onUnmounted } from 'vue';
-import { LocalReceiver, resolveRelayBase } from '@/https';
+import { LocalReceiver } from '@/https';
+import { resolveRelayBase } from '@/transfer/room';
 import { createP2PReceiver } from '@/p2p';
 
 // 由父组件（接收面板）指定渲染哪一侧；不传则两侧都渲染
