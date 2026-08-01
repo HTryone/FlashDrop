@@ -44,9 +44,9 @@ function createFsaSink(dirHandle: FileSystemDirectoryHandle, files: P2PFileMeta[
   // 根因：同机 P2P 每 896KB 一次 w.write() IPC 调用 → NVMe 仅 20MB/s、梯形震荡。
   // 解法：同文件内顺序 chunk 合并到阈值后一次性 append 写入，减少 IPC 次数。
   // P2P 路径已升级到 4MB/块（P2P_CHUNK_SIZE），阈值设为 8MB ≈ 每 2 块一次 IPC。
-  const FLUSH_BYTES = 8 * 1024 * 1024; // 8MB 刷盘阈值
+  const FLUSH_BYTES = 8 * 1024 * 1024; // 8MB 刷盘阈值（每文件独立）
   const bufChunks: Uint8Array[][] = files.map(() => []); // 各文件缓冲区
-  let bufTotal = 0;                     // 全局缓冲字节数
+  const bufLens: number[] = files.map(() => 0);          // 各文件已缓冲字节（替代全局 bufTotal，避免跨文件串扰刷盘）
 
   /** 将文件 fi 的缓冲区一次性追加写入磁盘 */
   async function flushFile(fi: number): Promise<void> {
@@ -63,16 +63,7 @@ function createFsaSink(dirHandle: FileSystemDirectoryHandle, files: P2PFileMeta[
       off += c.byteLength;
     }
     chunks.length = 0;
-    bufTotal -= totalLen;
     await w.write(combined as any); // FileSystemWriteParams.data
-  }
-
-  /** 如果全局缓冲超过阈值，逐文件刷盘 */
-  async function flushIfNeeded(): Promise<void> {
-    if (bufTotal < FLUSH_BYTES) return;
-    for (let i = 0; i < files.length; i++) {
-      if (bufChunks[i].length > 0) await flushFile(i);
-    }
   }
 
   return {
@@ -81,9 +72,9 @@ function createFsaSink(dirHandle: FileSystemDirectoryHandle, files: P2PFileMeta[
       await awaitReady();
       // 缓存到对应文件的写缓冲区（不立即刷盘）
       bufChunks[fi].push(data);
-      bufTotal += data.byteLength;
-      // 达到阈值时批量刷盘（减少 IPC 调用频率）
-      await flushIfNeeded();
+      bufLens[fi] += data.byteLength;
+      // 仅当本文件缓冲达到阈值时批量刷盘（每文件独立判定，杜绝跨文件串扰刷盘）
+      if (bufLens[fi] >= FLUSH_BYTES) await flushFile(fi);
     },
     async close() {
       try {

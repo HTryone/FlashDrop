@@ -90,28 +90,23 @@ function dcMaxPiece(dc: RTCDataChannel): number {
   return Math.min(max, 256 * 1024);
 }
 
+// 主动轮询 DC 缓冲水位，替代 bufferedamountlow 事件 + 30s 兜底。
+// 旧实现依赖事件，某些浏览器/边缘情况下事件不触发会空等整 30s 假死；
+// 现改为 30ms 轮询 + 2s 硬上限，水位回落即放行，绝不空等。
 function drainDc(dc: RTCDataChannel): Promise<void> {
-  if (dc.readyState !== 'open' || (dc as unknown as { bufferedAmount: number }).bufferedAmount <= RTC_LOW) {
+  const ch = dc as unknown as { bufferedAmount: number };
+  if (dc.readyState !== 'open' || ch.bufferedAmount <= RTC_LOW) {
     return Promise.resolve();
   }
   return new Promise<void>((resolve) => {
-    const onLow = () => cleanup();
-    const onClose = () => cleanup();
-    const timer = setTimeout(() => cleanup(), 30000);
-    const ch = dc as unknown as {
-      bufferedAmountLowThreshold: number;
-      removeEventListener: (t: string, cb: any, o?: any) => void;
-      addEventListener: (t: string, cb: any, o?: any) => void;
+    const start = Date.now();
+    const tick = () => {
+      if (dc.readyState !== 'open') { resolve(); return; }
+      if (ch.bufferedAmount <= RTC_LOW) { resolve(); return; }
+      if (Date.now() - start > 2000) { resolve(); return; } // 兜底 2s，绝不空等 30s
+      setTimeout(tick, 30); // 30ms 主动轮询
     };
-    function cleanup() {
-      clearTimeout(timer);
-      ch.removeEventListener('bufferedamountlow', onLow);
-      ch.removeEventListener('close', onClose);
-      resolve();
-    }
-    ch.bufferedAmountLowThreshold = RTC_LOW;
-    ch.addEventListener('bufferedamountlow', onLow, { once: true });
-    ch.addEventListener('close', onClose, { once: true });
+    tick();
   });
 }
 

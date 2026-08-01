@@ -4,11 +4,13 @@ import { PeerLink } from './peer';
 import { SignalingClient } from './signaling';
 import { fetchIceServers } from './ice';
 import { buildFrameHdr } from './framing';
-import { FlowWindow, sendSubFrames } from './channel';
-import { FRAME_HDR, WINDOW_FRAMES, P2P_CHUNK_SIZE } from './types';
+import { sendSubFrames } from './channel';
+import { FRAME_HDR, P2P_CHUNK_SIZE } from './types';
 import { deriveKey, LOCAL_SALT } from '@/crypto/e2ee';
 import { encryptChunkAsync } from '@/composables/useLocalCrypto';
 import type { SenderOpts, P2PState, P2PFileMeta } from './types';
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export interface P2PSender {
   connect(): Promise<void>;
@@ -34,10 +36,10 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
   let dc: RTCDataChannel | null = null;
   let sentSeq = -1;
   let sentBytes = 0;
+  let lastAcked = -1; // 接收端已确认的最高全局序号（仅作断线续传游标，不用于应用层流控）
   let finished = false;
   let aborted = false;
   let pumping = false;
-  const flow = new FlowWindow();
 
   const setState = (s: P2PState, d?: string) => opts.onState?.(s, d);
 
@@ -100,18 +102,13 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
       // 启动初始预加密（加密前 PRE_ENCRYPT_AHEAD 块）
       await preEncrypt();
 
-      while (!aborted && !finished && flow.lastAcked < totalChunks - 1) {
-        // 队列空了 → 预加密更多或等 ack
+      while (!aborted && !finished && lastAcked < totalChunks - 1) {
+        // 队列空了 → 预加密更多；全部已发则短轮询等最终 ack。
+        // 注意：不保留应用层在途窗口——DC 原生 bufferedAmount 背压(drainDc)已足够限速，
+        // 叠加 FlowWindow 属人为冗余节流，去掉后发送端只受接收端消费速度 + 原生背压约束。
         if (encQueue.length === 0) {
           await preEncrypt();
-          if (encQueue.length === 0) { await flow.waitForAck(); continue; }
-        }
-
-        // 检查在途窗口
-        const inflight = sentSeq - flow.lastAcked;
-        if (inflight >= WINDOW_FRAMES) {
-          await flow.waitForAck();
-          continue;
+          if (encQueue.length === 0) { await sleep(10); continue; }
         }
 
         // 取出已加密的帧发送
@@ -119,9 +116,9 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
         if (dc && dc.readyState === 'open') {
           const ok = await sendSubFrames(dc, frame);
           if (!ok) {
-            // 发送失败：放回队首，等 ack 后重试
+            // 发送失败：放回队首，稍后重试（由 DC 原生背压重新放行）
             encQueue.unshift({ seq: next, frame });
-            await flow.waitForAck();
+            await sleep(20);
             continue;
           }
           sentSeq = next;
@@ -135,7 +132,7 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
         } else {
           // dc 未就绪 → 等
           encQueue.unshift({ seq: next, frame });
-          await flow.waitForAck();
+          await sleep(20);
         }
       }
       if (!aborted) {
@@ -157,7 +154,7 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
     if (typeof data !== 'string') return; // 二进制都是数据子帧，sender 不收
     try {
       const msg = JSON.parse(data);
-      if (msg.type === 'ack') flow.noteAck(msg.seq);
+      if (msg.type === 'ack') { if (msg.seq > lastAcked) lastAcked = msg.seq; }
       else if (msg.type === 'done') finished = true;
     } catch { /* ignore */ }
   }
@@ -183,7 +180,7 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
       },
       onReconnect: () => {
         // 重连后续传：从已确认的最高序号之后继续，不重发已落盘帧
-        sentSeq = flow.lastAcked;
+        sentSeq = lastAcked;
       },
     });
     sig.connect();

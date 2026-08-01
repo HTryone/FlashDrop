@@ -37,6 +37,18 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
 
   const queue: Uint8Array[] = [];
   let draining = false;
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+  // ── 写盘与解密彻底解耦：解密作生产者，独立 writeLoop 作消费者 ──
+  // 旧瓶颈根因：drainQueue 里 `await sink.writeChunk` 把整个解密循环卡死，
+  // 8MB 合并写盘 IPC 期间解密被挂起 → 磁盘 69% 空闲、均速仅 10MB/s 的梯形震荡。
+  // 现在解密完立即入写队列返回，writeLoop 串行落盘，解密持续满速生产，
+  // 写队列有上限(MAX_WRITE_QUEUE)反压，慢盘时暂停解密，内存有界不溢出。
+  interface WriteJob { fi: number; plain: Uint8Array; position: number; seq: number; }
+  const writeQueue: WriteJob[] = [];
+  let writeLoopRunning = false;
+  let decryptDone = false;
+  const MAX_WRITE_QUEUE = 4; // 写队列上限（块数）：4×4MB ≈ 16MB，慢盘反压用
 
   const setState = (s: P2PState, d?: string) => opts.onState?.(s, d);
 
@@ -50,33 +62,52 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
     if (dc && dc.readyState === 'open') dc.send(JSON.stringify({ type: 'ack', seq: lastAcked }));
   }
 
-  // ── 流水线并行：解密与写盘重叠 ──
-  // 旧模式（串行）：decrypt(N) await → write(N) await → decrypt(N+1) → ...
-  // 新模式（流水线）：start decrypt(N) → write(N-1) [I/O||CPU] → await decrypt(N) → swap
-  // 对 4MB 块，crypto-js 解密耗时数 ms ~ 十 ms，与 FSA write IPC 重叠后隐藏全部 CPU 等待。
-  type PipeEntry = {
-    fi: number; ci: number; plainLen: number;
-    seq: number;
-    decryptP: Promise<ArrayBuffer> | null;  // 正在解密的 promise
-    plain: Uint8Array | null;               // 已解密完待写盘的数据
+  type DecryptSlot = {
+    fi: number; ci: number; plainLen: number; seq: number;
+    decryptP: Promise<ArrayBuffer> | null; // 正在解密的 promise
   };
-  let decrypting: PipeEntry | null = null;  // 当前正在解密（CPU）的槽位
-  let writing: PipeEntry | null = null;     // 当前正在写盘（I/O）的槽位
+  let decrypting: DecryptSlot | null = null; // 当前正在解密（CPU）的槽位
+
+  // 独立写盘消费者：只串行落盘 + 更新进度/ack/完成，绝不阻塞解密生产
+  async function ensureWriteLoop() {
+    if (writeLoopRunning) return;
+    writeLoopRunning = true;
+    try {
+      while (writeQueue.length || (!decryptDone && (queue.length || decrypting))) {
+        if (aborted) break;
+        if (writeQueue.length === 0) { await sleep(2); continue; }
+        const job = writeQueue.shift()!;
+        if (sink) {
+          await sink.writeChunk(job.fi, job.plain, job.position);
+          recvBytes += job.plain.byteLength;
+          if (job.seq > lastAcked) lastAcked = job.seq;
+          opts.onProgress?.({ sent: 0, received: recvBytes, total: totalBytes });
+          sinceAck++;
+          if (sinceAck >= ACK_EVERY || job.seq >= totalChunks - 1) {
+            sinceAck = 0;
+            sendAck();
+          }
+          if (job.seq >= totalChunks - 1 && !finished) {
+            finished = true;
+            await sink.close();
+            if (dc && dc.readyState === 'open') dc.send(JSON.stringify({ type: 'done' }));
+            setState('done');
+          }
+        }
+      }
+    } finally {
+      writeLoopRunning = false;
+    }
+  }
 
   async function drainQueue() {
     if (draining) return;
     draining = true;
     try {
-      while (queue.length || decrypting || writing) {
+      while (queue.length || decrypting) {
         if (aborted) break;
 
-        // 1) 写槽空、解密槽已就绪 → 移交写槽（写盘严格串行，避免乱序/覆盖丢块）
-        if (!writing && decrypting && decrypting.plain !== null) {
-          writing = decrypting;
-          decrypting = null;
-        }
-
-        // 2) 解密槽空、队列有帧 → 启动新解密（与写盘重叠，隐藏 4MB 块 CPU 等待）
+        // 1) 解密槽空、队列有帧 → 启动新解密（不 await 写盘，写完即入写队列返回）
         if (!decrypting && queue.length) {
           const f = queue.shift()!;
           const { fi, ci, plainLen } = readFrameHdr(f);
@@ -90,47 +121,28 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
               opts.onFail?.(e instanceof Error ? e : new Error(String(e)));
               return new ArrayBuffer(0); // 错误占位，后续检查长度跳过
             }),
-            plain: null,
           };
-          continue; // 立刻取下一帧（让多个 decrypt 并行飞起来）
+          continue; // 立刻取下一帧，让解密持续满速
         }
 
-        // 3) 写槽有数据 → 写盘（同时下一帧的解密在 Worker 里并行飞）
-        if (writing) {
-          const { fi, ci: ciVal, plain, seq } = writing;
-          if (plain && plain.byteLength > 0 && sink) {
-            const position = ciVal * P2P_CHUNK_SIZE;
-            await sink.writeChunk(fi, plain, position);
-            recvBytes += plain.byteLength;
-            if (seq > lastAcked) lastAcked = seq;
-            opts.onProgress?.({ sent: 0, received: recvBytes, total: totalBytes });
-            sinceAck++;
-            if (sinceAck >= ACK_EVERY || seq >= totalChunks - 1) {
-              sinceAck = 0;
-              sendAck();
-            }
-            if (seq >= totalChunks - 1 && !finished) {
-              finished = true;
-              await sink.close();
-              if (dc && dc.readyState === 'open') dc.send(JSON.stringify({ type: 'done' }));
-              setState('done');
-            }
-          }
-          writing = null;
-          continue;
-        }
-
-        // 4) 解密槽在飞 → 等其完成
+        // 2) 解密槽在飞 → 等完成，然后非阻塞入写队列（关键解耦点）
         if (decrypting && decrypting.decryptP !== null) {
           const buf = await decrypting.decryptP;
-          decrypting.plain = new Uint8Array(buf);
-          decrypting.decryptP = null; // 释放 promise 引用
+          const slot = decrypting;
+          decrypting = null;
+          const plain = new Uint8Array(buf).subarray(0, slot.plainLen);
+          // 写队列反压：慢盘时暂停解密，防止内存无限堆积
+          while (writeQueue.length >= MAX_WRITE_QUEUE && !aborted) await sleep(5);
+          writeQueue.push({ fi: slot.fi, plain, position: slot.ci * P2P_CHUNK_SIZE, seq: slot.seq });
+          void ensureWriteLoop();
           continue;
         }
 
-        // 无数据可处理 → 等（正常不会走到这里）
+        // 无数据可处理 → 极短让出
         await new Promise(r => setTimeout(r, 1));
       }
+      decryptDone = true;
+      void ensureWriteLoop();
     } finally {
       draining = false;
     }
