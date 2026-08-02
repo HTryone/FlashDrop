@@ -119,34 +119,42 @@ export class TusHandler {
   }
 
   private async patchUpload(request: Request, fileId: string, origin: string | null): Promise<Response> {
+    // PATCH 始终带请求体。任何提前返回错误的分支必须先 cancel() 请求体，
+    // 否则在 HTTP/3(QUIC) 多路复用下客户端会卡在该连接上等待 body 结束，
+    // 导致紧随其后的请求（如 HEAD 续传）挂起超时。
+    const fail = async (msg: string, status: number): Promise<Response> => {
+      await request.body?.cancel().catch(() => {});
+      return this.error(msg, status, origin);
+    };
+
     const offsetHeader = request.headers.get('Upload-Offset');
-    if (offsetHeader === null) return this.error('缺少 Upload-Offset', 400, origin);
+    if (offsetHeader === null) return fail('缺少 Upload-Offset', 400);
     const offset = Number(offsetHeader);
-    if (!Number.isFinite(offset) || offset < 0) return this.error('Upload-Offset 无效', 400, origin);
+    if (!Number.isFinite(offset) || offset < 0) return fail('Upload-Offset 无效', 400);
 
     const contentType = request.headers.get('Content-Type');
     if (contentType !== 'application/offset+octet-stream') {
-      return this.error('Content-Type 必须是 application/offset+octet-stream', 415, origin);
+      return fail('Content-Type 必须是 application/offset+octet-stream', 415);
     }
 
     const file = await this.index.getFile(fileId);
-    if (!file) return this.error('文件不存在', 404, origin);
-    if (!file.transferId) return this.error('文件记录缺少 transferId', 500, origin);
-    if (await this.index.isExpired(file.transferId)) return this.error('传输已过期', 410, origin);
+    if (!file) return fail('文件不存在', 404);
+    if (!file.transferId) return fail('文件记录缺少 transferId', 500);
+    if (await this.index.isExpired(file.transferId)) return fail('传输已过期', 410);
 
     const currentOffset = await this.calcOffset(fileId);
     if (offset !== currentOffset) {
-      return this.error(`Offset 不匹配：期望 ${currentOffset}，收到 ${offset}`, 409, origin);
+      return fail(`Offset 不匹配：期望 ${currentOffset}，收到 ${offset}`, 409);
     }
 
     const body = request.body;
-    if (!body) return this.error('请求体为空', 400, origin);
+    if (!body) return fail('请求体为空', 400);
 
     const contentLength = request.headers.get('Content-Length');
-    if (contentLength === null) return this.error('缺少 Content-Length', 400, origin);
+    if (contentLength === null) return fail('缺少 Content-Length', 400);
     const expectedLen = Number(contentLength);
     if (!Number.isFinite(expectedLen) || expectedLen < 0) {
-      return this.error('Content-Length 无效', 400, origin);
+      return fail('Content-Length 无效', 400);
     }
 
     // Workers 运行时要求 R2 put 的流长度已知：用 FixedLengthStream 包装，
@@ -166,7 +174,7 @@ export class TusHandler {
     const newOffset = currentOffset + expectedLen;
     if (newOffset > file.size) {
       await this.storage.delete(partKey).catch(() => {});
-      return this.error('上传大小超过声明的 Upload-Length', 400, origin);
+      return fail('上传大小超过声明的 Upload-Length', 400);
     }
 
     return new Response(null, {
