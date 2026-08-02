@@ -15,7 +15,7 @@ export class TusHandler {
     const origin = request.headers.get('Origin');
 
     if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: corsHeaders(origin) });
+      return new Response(null, { status: 204, headers: { ...corsHeaders(origin), 'Content-Length': '0' } });
     }
 
     const m = /^\/files(?:\/([^/]+))?$/.exec(url.pathname);
@@ -113,6 +113,7 @@ export class TusHandler {
         ...corsHeaders(origin),
         ...tusHeaders(),
         Location: `/files/${fileId}`,
+        'Content-Length': '0',
       },
     });
   }
@@ -174,6 +175,7 @@ export class TusHandler {
         ...corsHeaders(origin),
         ...tusHeaders(),
         'Upload-Offset': String(newOffset),
+        'Content-Length': '0',
       },
     });
   }
@@ -192,6 +194,7 @@ export class TusHandler {
         ...tusHeaders(),
         'Upload-Length': String(file.size),
         'Upload-Offset': String(offset),
+        'Content-Length': '0',
       },
     });
   }
@@ -205,7 +208,7 @@ export class TusHandler {
 
     return new Response(null, {
       status: 204,
-      headers: { ...corsHeaders(origin), ...tusHeaders() },
+      headers: { ...corsHeaders(origin), ...tusHeaders(), 'Content-Length': '0' },
     });
   }
 
