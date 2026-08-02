@@ -23,6 +23,7 @@ interface FileRow {
   relative_path: string;
   size: number;
   storage: string;
+  offset: number;
 }
 
 export class D1IndexBackend implements IndexBackend {
@@ -66,10 +67,10 @@ export class D1IndexBackend implements IndexBackend {
   async addFile(id: string, f: FileRecord): Promise<void> {
     await this.db
       .prepare(
-        `INSERT OR REPLACE INTO files (id, transfer_id, filename, relative_path, size, storage)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO files (id, transfer_id, filename, relative_path, size, storage, offset)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind(f.id, id, f.filename, f.relativePath, f.size, f.storage)
+      .bind(f.id, id, f.filename, f.relativePath, f.size, f.storage, f.offset ?? 0)
       .run();
   }
 
@@ -86,6 +87,7 @@ export class D1IndexBackend implements IndexBackend {
       relativePath: f.relative_path,
       size: f.size,
       storage: f.storage as FileRecord['storage'],
+      offset: f.offset,
     };
   }
 
@@ -130,7 +132,15 @@ export class D1IndexBackend implements IndexBackend {
       relativePath: f.relative_path,
       size: f.size,
       storage: f.storage as FileRecord['storage'],
+      offset: f.offset,
     }));
+  }
+
+  async updateOffset(id: string, offset: number): Promise<void> {
+    await this.db
+      .prepare(`UPDATE files SET offset = ? WHERE id = ?`)
+      .bind(offset, id)
+      .run();
   }
 
   async isExpired(id: string): Promise<boolean> {

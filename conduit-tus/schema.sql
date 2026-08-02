@@ -15,8 +15,11 @@ CREATE TABLE IF NOT EXISTS files (
   filename     TEXT NOT NULL,
   relative_path TEXT NOT NULL,
   size         INTEGER NOT NULL,
-  storage      TEXT NOT NULL
+  storage      TEXT NOT NULL,
+  offset       INTEGER NOT NULL DEFAULT 0
 );
+-- 迁移：已有 files 表加 offset 列（首次执行会成功，重复执行报错可忽略）
+-- ALTER TABLE files ADD COLUMN offset INTEGER NOT NULL DEFAULT 0;
 CREATE TABLE IF NOT EXISTS codes (
   code        TEXT PRIMARY KEY,
   transfer_id TEXT NOT NULL

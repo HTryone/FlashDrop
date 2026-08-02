@@ -1,5 +1,5 @@
 // tus 服务端最小实现（方案 B）：POST/PATCH/HEAD/DELETE/OPTIONS。
-// 文件体落 R2，分片 key 为 {fileId}/part-{offset}；offset 通过 R2 list 汇总。
+// 文件体落 R2，分片 key 为 {fileId}/part-{offset}；offset 由 D1 记录，PATCH 成功后 UPDATE。
 
 import { StorageBackend, IndexBackend, TransferError } from './types';
 import { MAX_SIZE, corsHeaders, tusHeaders, parseMetadata } from './tus-protocol';
@@ -145,7 +145,7 @@ export class TusHandler {
     if (!file.transferId) return fail('文件记录缺少 transferId', 500);
     if (await this.index.isExpired(file.transferId)) return fail('传输已过期', 410);
 
-    const currentOffset = await this.calcOffset(fileId);
+    const currentOffset = file.offset ?? 0;
     if (offset !== currentOffset) {
       return fail(`Offset 不匹配：期望 ${currentOffset}，收到 ${offset}`, 409);
     }
@@ -180,6 +180,8 @@ export class TusHandler {
       return fail('上传大小超过声明的 Upload-Length', 400);
     }
 
+    await this.index.updateOffset(fileId, newOffset);
+
     return new Response(null, {
       status: 204,
       headers: {
@@ -197,7 +199,7 @@ export class TusHandler {
     if (!file.transferId) return this.error('文件记录缺少 transferId', 500, origin);
     if (await this.index.isExpired(file.transferId)) return this.error('传输已过期', 410, origin);
 
-    const offset = await this.calcOffset(fileId);
+    const offset = file.offset ?? 0;
     return new Response(null, {
       status: 200,
       headers: {
@@ -223,8 +225,4 @@ export class TusHandler {
     });
   }
 
-  private async calcOffset(fileId: string): Promise<number> {
-    const parts = await this.storage.list(`${fileId}/`);
-    return parts.reduce((sum, p) => sum + p.size, 0);
-  }
 }

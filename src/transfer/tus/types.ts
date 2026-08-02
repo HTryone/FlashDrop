@@ -28,6 +28,8 @@ export interface FileRecord {
   relativePath: string;
   size: number;
   storage: StorageBackend['kind'];
+  /** 已上传偏移量（D1 记录，替代 R2 list 汇总）。新建文件时默认 0。 */
+  offset?: number;
 }
 
 /** 一次传输（一个分享码对应的一批文件）。 */
@@ -57,6 +59,8 @@ export interface IndexBackend {
   setCode(id: string, code: string): Promise<void>;
   setLoginCode(id: string, loginCode: string): Promise<void>;
   listFiles(id: string): Promise<FileRecord[]>;
+  /** 更新文件已上传偏移量（PATCH 成功写 R2 后调用）。 */
+  updateOffset(id: string, offset: number): Promise<void>;
   isExpired(id: string): Promise<boolean>;
   terminate(id: string): Promise<void>;
   deleteTransfer(id: string): Promise<void>;
