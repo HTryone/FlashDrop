@@ -1,7 +1,9 @@
 // 端到端加密（E2EE）：分享码 + 独立口令派生密钥，逐片 AES-256-CBC 加密。
 // 使用 crypto-js（纯 JS 实现），不依赖 WebCrypto，HTTP/HTTPS 均可用。
 // 密钥只在两端本地，服务器（含 R2）只存密文，零知识。
-// 加密单位格式：[4字节明文长度][16字节IV][密文(PKCS7填充)][32字节HMAC-SHA256]
+// 加密单位格式（每块）：[4字节明文长度][4字节密文长度][16字节IV][密文(PKCS7填充)][32字节HMAC-SHA256]
+// 注意：encryptFile 按 8MiB 将文件切成多块并首尾拼接，decryptBlob 必须逐块解析，
+// 因此头部额外记录密文长度以定位每块边界（否则多块文件 HMAC 校验必失败）。
 
 import CryptoJS from 'crypto-js';
 
@@ -10,7 +12,7 @@ export const E2EE_CHUNK_SIZE = CHUNK;
 const PBKDF2_ITERS = 150_000;
 const IV_LEN = 16;
 const TAG_LEN = 32; // HMAC-SHA256 输出长度
-const HEADER_LEN = 4;
+const HEADER_LEN = 8; // 4B 明文长度 + 4B 密文长度
 
 /** WordArray → Uint8Array */
 function waToU8(wa: CryptoJS.lib.WordArray): Uint8Array<ArrayBuffer> {
@@ -80,10 +82,13 @@ export async function encryptFile(
     // HMAC-SHA256 对密文做完整性校验（只对原始密文，与解密端一致）
     const hmac = CryptoJS.HmacSHA256(encrypted.ciphertext, key);
 
-    // 组装：[4B 明文长度][16B IV][密文][32B HMAC]
+    // 组装：[4B 明文长度][4B 密文长度][16B IV][密文][32B HMAC]
     const plainLen = end - offset;
+    const ctLen = encrypted.ciphertext.sigBytes;
     const header = new Uint8Array(HEADER_LEN);
-    new DataView(header.buffer).setUint32(0, plainLen, false);
+    const hdv = new DataView(header.buffer);
+    hdv.setUint32(0, plainLen, false);
+    hdv.setUint32(4, ctLen, false);
     parts.push(new Blob([
       header,
       waToU8(iv),
@@ -107,9 +112,11 @@ export async function decryptBlob(
   const total = blob.size;
   let offset = 0;
   while (offset < total) {
-    // 读 4B 头
+    // 读 8B 头：[4B 明文长度][4B 密文长度]
     const headerBuf = await blob.slice(offset, offset + HEADER_LEN).arrayBuffer();
-    const plainLen = new DataView(headerBuf).getUint32(0, false);
+    const hdv = new DataView(headerBuf);
+    const plainLen = hdv.getUint32(0, false);
+    const ctLen = hdv.getUint32(4, false);
     offset += HEADER_LEN;
 
     // 读 16B IV
@@ -117,12 +124,7 @@ export async function decryptBlob(
     const iv = u8ToWa(new Uint8Array(ivBuf));
     offset += IV_LEN;
 
-    // 计算密文长度 = plainLen + PKCS7填充(1~16字节)
-    // 总剩余 = total - offset，其中最后 32B 是 HMAC
-    const remaining = total - offset;
-    const ctLen = remaining - TAG_LEN;
-
-    // 读密文
+    // 读密文（长度由头部显式给出，精确定位本块边界）
     const ctBuf = await blob.slice(offset, offset + ctLen).arrayBuffer();
     const ctWA = u8ToWa(new Uint8Array(ctBuf));
     offset += ctLen;
@@ -132,21 +134,17 @@ export async function decryptBlob(
     const macReceived = u8ToWa(new Uint8Array(macBuf));
     offset += TAG_LEN;
 
-    const macComputed = CryptoJS.HmacSHA256(CryptoJS.lib.WordArray.create(ctWA.words, ctLen), key);
+    const macComputed = CryptoJS.HmacSHA256(ctWA, key);
     if (macReceived.toString() !== macComputed.toString()) {
       throw new Error('完整性校验失败：数据可能被篡改');
     }
 
-    // 解密
-    const cipherParams = CryptoJS.lib.CipherParams.create({
-      ciphertext: ctWA,
-      iv: iv,
-    });
-    const decrypted = CryptoJS.AES.decrypt(cipherParams, key);
+    // 解密（⚠️ iv 必须作为 options 传入，不能塞进 CipherParams.create，否则 xorBlock 崩溃）
+    const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: ctWA });
+    const decrypted = CryptoJS.AES.decrypt(cipherParams, key, { iv });
 
     // 去除 PKCS7 填充
-    const plainWA = decrypted as CryptoJS.lib.WordArray; // decrypt 返回 WordArray
-    const plain = waToU8(plainWA).slice(0, plainLen); // 截断到原始明文长度
+    const plain = waToU8(decrypted as CryptoJS.lib.WordArray).slice(0, plainLen); // 截断到原始明文长度
     parts.push(new Blob([plain]));
     onProgress?.(offset / total);
   }
