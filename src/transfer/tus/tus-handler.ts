@@ -15,7 +15,10 @@ export class TusHandler {
     const origin = request.headers.get('Origin');
 
     if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: { ...corsHeaders(origin), 'Content-Length': '0' } });
+      return new Response(null, {
+        status: 204,
+        headers: { ...corsHeaders(origin), ...tusHeaders(), 'Content-Length': '0' },
+      });
     }
 
     const m = /^\/files(?:\/([^/]+))?$/.exec(url.pathname);

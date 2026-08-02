@@ -10,6 +10,17 @@ export function resolveRelayBase(): string {
   return `https://${host}`;
 }
 
+export const TUS_DEFAULT = 'flashdrop-tus.315461.xyz';
+
+/** 解析 tus 中转 Worker 基址：默认线上 tus Worker，
+ *  可用 VITE_TUS_URL 覆盖（如本地联调设为 http://localhost:3000）。
+ *  注意：前端“中转模式”必须指向 tus Worker 绝对地址，不能写相对 /files ——
+ *  纯静态 Pages 不会把 /files 路由到 Worker，相对路径上传会永远到不了后端。 */
+export function resolveTusBase(): string {
+  const host = (import.meta as any).env?.VITE_TUS_URL || TUS_DEFAULT;
+  return host.startsWith('http') ? host.replace(/\/+$/, '') : `https://${host}`;
+}
+
 const ROOM_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 /** 生成 6 位房间码（去掉易混淆字符） */

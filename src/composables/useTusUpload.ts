@@ -2,6 +2,7 @@
 import * as tus from 'tus-js-client';
 import type { QueuedFile } from '@/types/transfer';
 import { encryptFile, deriveKey, E2EE_CHUNK_SIZE } from '@/crypto/e2ee';
+import { resolveTusBase } from '@/transfer/room';
 
 export interface UploadOptions {
   transferId: string;
@@ -31,9 +32,12 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
   };
   if (opts.e2ee.enabled) meta.e2ee = '1';
 
+  const tusBase = resolveTusBase();
+  const endpoint = `${tusBase}/files`;
+
   await new Promise<void>((resolve, reject) => {
     const upload = new tus.Upload(payload, {
-      endpoint: '/files',
+      endpoint,
       chunkSize: 6 * 1024 * 1024, // 6MiB 分片
       retryDelays: [0, 1000, 3000, 5000, 10000],
       metadata: meta,

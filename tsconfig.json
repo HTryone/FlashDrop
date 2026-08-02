@@ -22,5 +22,10 @@
     "types": ["vite/client"]
   },
   "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.vue"],
+  "exclude": [
+    "src/transfer/tus/tus-handler.ts",
+    "src/transfer/tus/transfer-handler.ts",
+    "src/transfer/tus/download-handler.ts"
+  ],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
