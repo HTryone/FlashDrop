@@ -99,7 +99,8 @@ node server.mjs    # 启动服务，访问 http://<lan-ip>:3000
     │   ├── SendFileRow.vue
     │   └── ReceiveFileRow.vue
     ├── crypto/
-    │   └── e2ee.ts          # HTTP/中转 E2EE（crypto-js，AES-256-CBC+HMAC）
+    │   ├── e2ee.ts          # HTTP/中转 E2EE（crypto-js，AES-256-CBC+HMAC）
+    │   └── p2p-crypto.ts    # P2P 专用 WebCrypto 加密（AES-CBC+HMAC，独立派生）
     ├── https/               # 本地直传链路（HTTP relay）
     │   ├── index.ts
     │   ├── types.ts         # 链路类型定义
@@ -118,7 +119,6 @@ node server.mjs    # 启动服务，访问 http://<lan-ip>:3000
     │   ├── sinks.ts         # 接收端异步落盘（8MB 合并写）
     │   ├── sender.ts
     │   ├── receiver.ts
-    │   ├── p2p-crypto.ts    # P2P 专用 WebCrypto 加密
     │   ├── ice.ts
     │   └── types.ts
     ├── transfer/            # 公共房间与状态（HTTP/P2P 共用）

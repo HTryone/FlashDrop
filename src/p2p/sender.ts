@@ -1,5 +1,5 @@
 // 发送端编排：connect → 发 manifest → 逐文件逐块 encrypt → 经 DC 子帧发送 → ack 窗口推进 → 完成。
-// 加密用 P2P 专用 WebCrypto 模块（src/p2p/p2p-crypto），与 HTTP 链路（crypto-js）完全隔离；
+// 加密用 P2P 专用 WebCrypto 模块（src/crypto/p2p-crypto），与 HTTP 链路（crypto-js）完全隔离；
 // 区块格式 [16B IV][ct][32B HMAC] 与 HTTP 一致，故帧头解析逻辑共用、加解密原语独立。
 import { PeerLink } from './peer';
 import { SignalingClient } from './signaling';
@@ -7,7 +7,7 @@ import { fetchIceServers } from './ice';
 import { buildFrameHdr } from './framing';
 import { sendSubFrames } from './channel';
 import { FRAME_HDR, P2P_CHUNK_SIZE } from './types';
-import { deriveP2PKey, encryptP2PChunk, type P2PCryptoCtx } from './p2p-crypto';
+import { deriveP2PKey, encryptP2PChunk, type P2PCryptoCtx } from '../crypto/p2p-crypto';
 import type { SenderOpts, P2PState, P2PFileMeta } from './types';
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));

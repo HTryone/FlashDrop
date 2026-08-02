@@ -7,7 +7,7 @@ import { readFrameHdr } from './framing';
 import { Reassembler } from './channel';
 import { createSink, Sink } from './sinks';
 import { FRAME_HDR, P2P_CHUNK_SIZE } from './types';
-import { deriveP2PKey, decryptP2PChunk, type P2PCryptoCtx } from './p2p-crypto';
+import { deriveP2PKey, decryptP2PChunk, type P2PCryptoCtx } from '../crypto/p2p-crypto';
 import type { ReceiverOpts, P2PState, P2PFileMeta } from './types';
 
 export interface P2PReceiver {
