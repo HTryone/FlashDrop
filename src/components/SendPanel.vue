@@ -198,7 +198,7 @@ async function start() {
     error.value = '请先选择要发送的文件';
     return;
   }
-  // E2EE 使用 crypto-js 纯 JS 实现，不依赖 HTTPS/安全上下文
+  // E2EE 使用 WebCrypto（tus-crypto.ts），AES-NI 硬件加速
   uploading.value = true;
   try {
     if (!transferId.value) transferId.value = generateUUID();
