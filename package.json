@@ -1,6 +1,6 @@
 {
   "name": "flashdrop",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "闪传 FlashDrop · 大文件分片续传与端到端加密传输（Vue3 + TS + Vite + tus）",
