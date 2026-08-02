@@ -43,13 +43,9 @@ export class DownloadHandler {
       if (!file) return new Response('Not Found', { status: 404, headers: corsHeaders(origin) });
 
       const parts = await this.storage.list(`${fileId}/`);
-      if (parts.length === 0) {
-        return new Response('Not Found', { status: 404, headers: corsHeaders(origin) });
-      }
-
       const total = parts.reduce((sum, p) => sum + p.size, 0);
       if (total !== file.size) {
-        // 上传未完成：返回 423 Locked，与 tus 语义一致
+        // 上传未完成（含 0 分片）：返回 423 Locked，与 tus 语义一致
         return new Response('文件尚未上传完成', { status: 423, headers: corsHeaders(origin) });
       }
 

@@ -12,6 +12,7 @@ export class R2StorageBackend implements StorageBackend {
   /** 存：body 必须是 ReadableStream（tus 分片直传，不缓冲整文件）。 */
   async put(key: string, body: ReadableStream<Uint8Array>, size: number): Promise<void> {
     const res = await this.bucket.put(key, body, {
+      contentLength: size,
       customMetadata: { size: String(size) },
     });
     if (!res) throw new TransferError('STORAGE', `R2 put 失败: ${key}`);
