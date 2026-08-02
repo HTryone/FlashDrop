@@ -3,7 +3,7 @@ import { ref, computed, watch, onUnmounted } from 'vue';
 import type { QueuedFile, StorageType } from '@/types/transfer';
 import { createTransfer, refreshCode, setMessage, terminateTransfer, zipUrl } from '@/api/transfer';
 import { uploadAll } from '@/composables/useTusUpload';
-import { newSalt, E2EE_CHUNK_SIZE, randomPassphrase } from '@/crypto/e2ee';
+import { newSalt, E2EE_CHUNK_SIZE, randomPassphrase } from '@/crypto/tus-crypto';
 import SendFileRow from './SendFileRow.vue';
 import { LocalSender } from '@/https';
 import { resolveRelayBase } from '@/transfer/room';

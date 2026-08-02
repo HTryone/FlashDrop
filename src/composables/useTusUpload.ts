@@ -1,7 +1,7 @@
 // tus 可续传上传封装：支持分片、进度、并发、续传、E2EE 加密
 import * as tus from 'tus-js-client';
 import type { QueuedFile } from '@/types/transfer';
-import { encryptFile, deriveKey, E2EE_CHUNK_SIZE } from '@/crypto/e2ee';
+import { encryptFile, deriveKey, E2EE_CHUNK_SIZE } from '@/crypto/tus-crypto';
 import { resolveTusBase } from '@/transfer/room';
 
 export interface UploadOptions {

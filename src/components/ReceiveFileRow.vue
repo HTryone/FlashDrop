@@ -2,7 +2,7 @@
 import { ref } from 'vue';
 import type { ReceivedFile } from '@/types/transfer';
 import { fileUrl } from '@/api/transfer';
-import { decryptBlob } from '@/crypto/e2ee';
+import { decryptBlob } from '@/crypto/tus-crypto';
 
 const props = defineProps<{
   file: ReceivedFile;

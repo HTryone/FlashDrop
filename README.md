@@ -20,7 +20,8 @@
 [4B 长度前缀][12B 帧头: 文件索引 u16 + 块索引 u32 + 明文长度 u32][e2ee 密文体: 16B IV + AES-256-CBC 密文 + 32B HMAC]
 ```
 
-- **HTTP / 中转链路**：基于 `crypto-js` 的 AES-256-CBC + HMAC-SHA256，PBKDF2 派生密钥，借助 Web Worker 池并发加解密（`composables/useLocalCrypto` + `workers/localCrypto.worker.ts`）。
+- **HTTP 本地直传链路**：基于 `crypto-js` 的 AES-256-CBC + HMAC-SHA256，PBKDF2 派生密钥，借助 Web Worker 池并发加解密（`composables/useLocalCrypto` + `workers/localCrypto.worker.ts`）。
+- **中转(tus)链路**：基于浏览器原生 WebCrypto（`subtle`）的 AES-256-CBC + HMAC-SHA256，AES-NI 硬件加速（约 GB/s），帧格式与 HTTP 链路一致、可跨库互通（`crypto/tus-crypto.ts`）。
 - **P2P 链路**：基于浏览器原生 WebCrypto（`subtle`）的 AES-256-CBC + HMAC-SHA256（encrypt-then-MAC、恒定时间比较），主线程 `await` 派生，无需 Worker 池，更省 CPU。数据以 4MB 逻辑块为单位，DataChannel 拆为 ≤256KB 子帧在接收端重组。
 
 ### 大文件友好
@@ -99,7 +100,8 @@ node server.mjs    # 启动服务，访问 http://<lan-ip>:3000
     │   ├── SendFileRow.vue
     │   └── ReceiveFileRow.vue
     ├── crypto/
-    │   ├── e2ee.ts          # HTTP/中转 E2EE（crypto-js，AES-256-CBC+HMAC）
+    │   ├── e2ee.ts          # 本地直传(HTTP) E2EE（crypto-js，AES-256-CBC+HMAC）
+    │   ├── tus-crypto.ts    # 中转(tus) E2EE（WebCrypto，AES-NI 硬件加速）
     │   └── p2p-crypto.ts    # P2P 专用 WebCrypto 加密（AES-CBC+HMAC，独立派生）
     ├── https/               # 本地直传链路（HTTP relay）
     │   ├── index.ts

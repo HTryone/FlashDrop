@@ -2,7 +2,7 @@
 import { ref, onMounted } from 'vue';
 import type { TransferDetail } from '@/types/transfer';
 import { getTransfer, zipUrl } from '@/api/transfer';
-import { deriveKey } from '@/crypto/e2ee';
+import { deriveKey } from '@/crypto/tus-crypto';
 import ReceiveFileRow from './ReceiveFileRow.vue';
 import LocalTransfer from './LocalTransfer.vue';
 
