@@ -142,34 +142,27 @@ export class TusHandler {
     if (!body) return this.error('请求体为空', 400, origin);
 
     const contentLength = request.headers.get('Content-Length');
-    const expectedLen = contentLength ? Number(contentLength) : undefined;
-    if (expectedLen !== undefined && (!Number.isFinite(expectedLen) || expectedLen < 0)) {
+    if (contentLength === null) return this.error('缺少 Content-Length', 400, origin);
+    const expectedLen = Number(contentLength);
+    if (!Number.isFinite(expectedLen) || expectedLen < 0) {
       return this.error('Content-Length 无效', 400, origin);
     }
 
-    let received = 0;
-    const counter = new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        received += chunk.byteLength;
-        controller.enqueue(chunk);
-      },
-    });
-    const stream = body.pipeThrough(counter);
+    // Workers 运行时要求 R2 put 的流长度已知：用 FixedLengthStream 包装，
+    // 其可读半长度确定（=expectedLen），否则报
+    // "Provided readable stream must have a known length"。
+    const fixed = new FixedLengthStream(expectedLen);
+    body.pipeTo(fixed.writable).catch(() => {});
 
     const partKey = `${fileId}/part-${offset}`;
     try {
-      await this.storage.put(partKey, stream, expectedLen ?? 0);
+      await this.storage.put(partKey, fixed.readable, expectedLen);
     } catch (e) {
       await this.storage.delete(partKey).catch(() => {});
       throw e;
     }
 
-    if (expectedLen !== undefined && received !== expectedLen) {
-      await this.storage.delete(partKey).catch(() => {});
-      return this.error(`接收字节数 ${received} 与 Content-Length ${expectedLen} 不符`, 400, origin);
-    }
-
-    const newOffset = currentOffset + received;
+    const newOffset = currentOffset + expectedLen;
     if (newOffset > file.size) {
       await this.storage.delete(partKey).catch(() => {});
       return this.error('上传大小超过声明的 Upload-Length', 400, origin);
