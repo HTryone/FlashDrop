@@ -34,6 +34,8 @@ export default {
       }
 
       if (pathname === '/api/transfers' || pathname.startsWith('/api/transfer/')) {
+        // 有效期由服务端锁定为 DEFAULT_TTL_HOURS（24 小时）；客户端传入的 ttlHours
+        // 已被 TransferHandler 忽略，确保"房间 24 小时后自动清除"为硬保证、不可被前端/API 改写。
         const ttl = Number(env.DEFAULT_TTL_HOURS || 24);
         return await new TransferHandler(index, ttl).handle(request);
       }

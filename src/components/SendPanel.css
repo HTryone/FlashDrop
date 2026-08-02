@@ -37,6 +37,8 @@ textarea:focus, .pass:focus { outline: none; border-color: var(--accent); }
 .seg { display: flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
 .seg button { flex: 1; background: var(--bg-soft); border: none; color: var(--text-dim); padding: 9px; font-size: 13px; }
 .seg button.on { background: var(--accent-grad); color: #07101f; font-weight: 700; }
+.seg.seg-static { pointer-events: none; }
+.seg.seg-static .on { flex: 1; padding: 9px; font-size: 13px; text-align: center; background: var(--accent-grad); color: #07101f; font-weight: 700; }
 .err-box { color: var(--danger); font-size: 13px; background: rgba(255, 107, 129, 0.1); padding: 8px 12px; border-radius: var(--radius-sm); }
 .actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .ok-tag { color: var(--ok); font-weight: 600; }

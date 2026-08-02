@@ -75,10 +75,9 @@ export class TransferHandler {
         ? body.transferId.trim()
         : `t_${crypto.randomUUID().replace(/-/g, '')}`;
     const message = typeof body.message === 'string' ? body.message : '';
-    const ttlHours =
-      typeof body.ttlHours === 'number' && body.ttlHours > 0
-        ? body.ttlHours
-        : this.defaultTtlHours;
+    // 有效期强制固定为 24 小时（房间自动清除），忽略客户端传入的 ttlHours，
+    // 与前端 UI 锁定 24 小时保持一致，确保"房间 24 小时后自动清除"为硬保证。
+    const ttlHours = this.defaultTtlHours;
     const e2ee =
       body.e2ee && typeof body.e2ee === 'object'
         ? {

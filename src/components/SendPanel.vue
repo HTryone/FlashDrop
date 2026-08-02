@@ -20,14 +20,8 @@ const files = ref<QueuedFile[]>([]);
 const message = ref('');
 // E2EE 始终开启，不可关闭
 const passphrase = ref(randomPassphrase());
-// 有效期（小时）：分享码 / 登录码 / 文件统一过期
-const TTL_OPTIONS = [
-  { label: '1 小时', value: 1 },
-  { label: '24 小时', value: 24 },
-  { label: '3 天', value: 72 },
-  { label: '7 天', value: 168 },
-];
-const ttlHours = ref(24);
+// 有效期固定 24 小时（房间自动清除，不可更改）：分享码 / 登录码 / 文件统一过期
+const TTL_HOURS = 24;
 
 const transferId = ref('');
 const code = ref('');
@@ -209,7 +203,7 @@ async function start() {
   try {
     if (!transferId.value) transferId.value = generateUUID();
     const e2eeMeta = { salt: newSalt(), chunkSize: E2EE_CHUNK_SIZE };
-    const resp = await createTransfer(transferId.value, message.value, e2eeMeta, ttlHours.value);
+    const resp = await createTransfer(transferId.value, message.value, e2eeMeta, TTL_HOURS);
     code.value = resp.code;
     loginCode.value = resp.loginCode;   // 16 位登录码
     storage.value = resp.storage;
@@ -355,15 +349,10 @@ onUnmounted(() => { sender.close(); });
       <template v-if="sendMode === 'relay'">
         <div class="opt">
           <label>有效期</label>
-          <div class="seg">
-            <button
-              v-for="opt in TTL_OPTIONS"
-              :key="opt.value"
-              :class="{ on: ttlHours === opt.value }"
-              @click="ttlHours = opt.value"
-            >{{ opt.label }}</button>
+          <div class="seg seg-static">
+            <span class="on">24 小时（房间自动清除）</span>
           </div>
-          <small class="faint">分享码、登录码、文件同时到期；过期或乱写分享码返回找不到</small>
+          <small class="faint">分享码、登录码、文件统一 24 小时后自动清除；过期或乱写分享码返回找不到</small>
         </div>
       </template>
     </div>
