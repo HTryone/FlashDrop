@@ -7,8 +7,7 @@ import { readFrameHdr } from './framing';
 import { Reassembler } from './channel';
 import { createSink, Sink } from './sinks';
 import { FRAME_HDR, P2P_CHUNK_SIZE } from './types';
-import { deriveKey, LOCAL_SALT } from '@/crypto/e2ee';
-import { decryptChunkAsync } from '@/composables/useLocalCrypto';
+import { deriveP2PKey, decryptP2PChunk, type P2PCryptoCtx } from './p2p-crypto';
 import type { ReceiverOpts, P2PState, P2PFileMeta } from './types';
 
 export interface P2PReceiver {
@@ -19,7 +18,7 @@ export interface P2PReceiver {
 export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
   let peer: PeerLink | null = null;
   let sig: SignalingClient | null = null;
-  let keyHex = '';
+  let cryptoCtx: P2PCryptoCtx | null = null;
   let sink: Sink | null = null;
   let files: P2PFileMeta[] = [];
   let totalBytes = 0;
@@ -64,7 +63,7 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
 
   type DecryptSlot = {
     fi: number; ci: number; plainLen: number; seq: number;
-    decryptP: Promise<ArrayBuffer> | null; // 正在解密的 promise
+    decryptP: Promise<Uint8Array> | null; // 正在解密的 promise
   };
   let decrypting: DecryptSlot | null = null; // 当前正在解密（CPU）的槽位
 
@@ -116,10 +115,10 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
           const seq = seqOf(fi, ci);
           decrypting = {
             fi, ci, plainLen, seq,
-            decryptP: decryptChunkAsync(bodyBuf, keyHex, plainLen).catch((e: any) => {
+            decryptP: decryptP2PChunk(new Uint8Array(bodyBuf), cryptoCtx!, plainLen).catch((e: any) => {
               setState('error', '解密失败: ' + (e?.message || String(e)));
               opts.onFail?.(e instanceof Error ? e : new Error(String(e)));
-              return new ArrayBuffer(0); // 错误占位，后续检查长度跳过
+              return new Uint8Array(0); // 错误占位，后续检查长度跳过
             }),
           };
           continue; // 立刻取下一帧，让解密持续满速
@@ -130,7 +129,7 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
           const buf = await decrypting.decryptP;
           const slot = decrypting;
           decrypting = null;
-          const plain = new Uint8Array(buf).subarray(0, slot.plainLen);
+          const plain = buf.subarray(0, slot.plainLen);
           // 写队列反压：慢盘时暂停解密，防止内存无限堆积
           while (writeQueue.length >= MAX_WRITE_QUEUE && !aborted) await sleep(5);
           writeQueue.push({ fi: slot.fi, plain, position: slot.ci * P2P_CHUNK_SIZE, seq: slot.seq });
@@ -194,7 +193,7 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
   }
 
   async function connect(): Promise<void> {
-    keyHex = await deriveKey(opts.pass, LOCAL_SALT);
+    cryptoCtx = await deriveP2PKey(opts.pass);
     setState('signaling');
     sig = new SignalingClient({
       relayBase: opts.relayBase,

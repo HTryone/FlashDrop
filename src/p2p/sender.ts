@@ -1,13 +1,13 @@
 // 发送端编排：connect → 发 manifest → 逐文件逐块 encrypt → 经 DC 子帧发送 → ack 窗口推进 → 完成。
-// 复用现有 E2EE（deriveKey / encryptChunkAsync / LOCAL_CHUNK_SIZE / LOCAL_SALT），帧头与 HTTP 完全一致。
+// 加密用 P2P 专用 WebCrypto 模块（src/p2p/p2p-crypto），与 HTTP 链路（crypto-js）完全隔离；
+// 区块格式 [16B IV][ct][32B HMAC] 与 HTTP 一致，故帧头解析逻辑共用、加解密原语独立。
 import { PeerLink } from './peer';
 import { SignalingClient } from './signaling';
 import { fetchIceServers } from './ice';
 import { buildFrameHdr } from './framing';
 import { sendSubFrames } from './channel';
 import { FRAME_HDR, P2P_CHUNK_SIZE } from './types';
-import { deriveKey, LOCAL_SALT } from '@/crypto/e2ee';
-import { encryptChunkAsync } from '@/composables/useLocalCrypto';
+import { deriveP2PKey, encryptP2PChunk, type P2PCryptoCtx } from './p2p-crypto';
 import type { SenderOpts, P2PState, P2PFileMeta } from './types';
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -32,7 +32,7 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
 
   let peer: PeerLink | null = null;
   let sig: SignalingClient | null = null;
-  let keyHex = '';
+  let cryptoCtx: P2PCryptoCtx | null = null;
   let dc: RTCDataChannel | null = null;
   let sentSeq = -1;
   let sentBytes = 0;
@@ -82,7 +82,7 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
         const end = Math.min(offset + P2P_CHUNK_SIZE, file.size);
         const plainLen = end - offset;
         const chunkBuf = await file.slice(offset, end).arrayBuffer();
-        const enc = new Uint8Array(await encryptChunkAsync(chunkBuf, keyHex));
+        const enc = new Uint8Array(await encryptP2PChunk(new Uint8Array(chunkBuf), cryptoCtx!));
         const hdr = buildFrameHdr(fi, ci, plainLen);
         const frame = new Uint8Array(FRAME_HDR + enc.length);
         frame.set(hdr, 0);
@@ -160,7 +160,7 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
   }
 
   async function connect(): Promise<void> {
-    keyHex = await deriveKey(opts.pass, LOCAL_SALT);
+    cryptoCtx = await deriveP2PKey(opts.pass);
     setState('signaling');
     sig = new SignalingClient({
       relayBase: opts.relayBase,
