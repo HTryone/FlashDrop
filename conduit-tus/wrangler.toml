@@ -1,0 +1,35 @@
+name = "flashdrop-tus"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+
+# 中转(tus) Worker：文件体存 R2，索引用 D1。全程云端、无本地磁盘、无本地数据库。
+# 部署后前端"中转模式"连 https://<your-subdomain>.workers.dev/
+# 中继(本地直传)另由 flashdrop-relay Worker 承载，本文件只管中转。
+
+[[r2_buckets]]
+binding = "R2_TRANSFERS"
+bucket_name = "flashdrop-transfers"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "flashdrop-tus"
+database_id = "77286df6-c1d9-4274-82cb-b95c7371ccfa"
+
+[vars]
+DEFAULT_TTL_HOURS = "24"
+
+# 开启 Cloudflare Workers 日志（与 Dashboard 可观测性设置保持一致）
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
