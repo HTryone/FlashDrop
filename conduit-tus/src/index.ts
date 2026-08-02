@@ -1,5 +1,6 @@
 /// <reference types="@cloudflare/workers-types" />
 import { createStorage, createIndex } from './factory';
+import { CloudSweeper } from './sweeper';
 import { TusHandler } from '../../src/transfer/tus/tus-handler';
 import { TransferHandler } from '../../src/transfer/tus/transfer-handler';
 import { DownloadHandler } from '../../src/transfer/tus/download-handler';
@@ -49,5 +50,27 @@ export default {
       const msg = e instanceof Error ? e.message : String(e);
       return new Response(msg, { status: 500, headers: corsHeaders(origin) });
     }
+  },
+
+  async scheduled(
+    _controller: ScheduledController,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<void> {
+    ctx.waitUntil(
+      (async () => {
+        try {
+          const storage = createStorage(env);
+          const index = createIndex(env);
+          const sweeper = new CloudSweeper(index, storage);
+          const result = await sweeper.sweep();
+          console.log(
+            `Sweep: removed ${result.removedFiles} files, ${result.removedTransfers} transfers`,
+          );
+        } catch (e) {
+          console.error('Sweep failed:', e instanceof Error ? e.message : String(e));
+        }
+      })(),
+    );
   },
 };

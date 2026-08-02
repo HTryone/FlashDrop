@@ -18,6 +18,11 @@ database_id = "77286df6-c1d9-4274-82cb-b95c7371ccfa"
 [vars]
 DEFAULT_TTL_HOURS = "24"
 
+# 每小时跑一次 sweeper，清理 D1 中过期 24h 的 transfer/files/codes 记录。
+# R2 文件体由 bucket 生命周期规则自动过期（已在 CF 控制台配置）。
+[triggers]
+crons = ["0 * * * *"]
+
 # 开启 Cloudflare Workers 日志（与 Dashboard 可观测性设置保持一致）
 [observability]
 enabled = true
