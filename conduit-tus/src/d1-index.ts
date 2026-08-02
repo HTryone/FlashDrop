@@ -2,7 +2,7 @@
 // 设计原则（用户 2026-08-02「一律线上数据库」）：索引默认落 D1，强一致、可查询、去单点。
 // 旧版本地文件实现（FileIndexBackend）作为可插拔备选，不在默认路径，留待后续研究。
 
-import { IndexBackend, TransferRecord, FileRecord, TransferError } from './types';
+import { IndexBackend, TransferRecord, FileRecord, TransferError } from '../../src/transfer/tus/types';
 
 interface TransferRow {
   id: string;

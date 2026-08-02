@@ -2,7 +2,7 @@
 // 设计原则（用户 2026-08-02「一律云端」）：文件体默认落 R2，流式读写不进内存。
 // 本地磁盘实现（LocalStorageBackend）作为可插拔备选，不在默认路径，留待后续研究。
 
-import { StorageBackend, TransferError } from './types';
+import { StorageBackend, TransferError } from '../../src/transfer/tus/types';
 
 export class R2StorageBackend implements StorageBackend {
   readonly kind = 'r2' as const;

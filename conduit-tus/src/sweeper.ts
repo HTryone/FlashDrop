@@ -4,7 +4,7 @@
 //   - D1 索引：一条 DELETE 按 expires_at 划掉所有过期传输及其文件指针 / 分享码 / 登录码。
 // 注意：R2 生命周期规则需在 wrangler.toml 或 R2 控制台配置（见 deploy 说明），不在代码内。
 
-import { Sweeper, IndexBackend, StorageBackend, TransferError } from './types';
+import { Sweeper, IndexBackend, StorageBackend, TransferError } from '../../src/transfer/tus/types';
 
 export class CloudSweeper implements Sweeper {
   readonly kind = 'cloud' as const;

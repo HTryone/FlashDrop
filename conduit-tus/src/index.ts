@@ -1,5 +1,5 @@
 /// <reference types="@cloudflare/workers-types" />
-import { createStorage, createIndex } from '../../src/transfer/tus/factory';
+import { createStorage, createIndex } from './factory';
 import { TusHandler } from '../../src/transfer/tus/tus-handler';
 import { TransferHandler } from '../../src/transfer/tus/transfer-handler';
 import { DownloadHandler } from '../../src/transfer/tus/download-handler';

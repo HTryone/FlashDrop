@@ -3,7 +3,7 @@
 //   文件柜 -> R2；索引本 -> D1。本地磁盘 / 本地文件实现作为可插拔备选，需显式注入，不在默认路径。
 // 运行环境：CF Worker（env 含 R2Bucket 与 D1Database 绑定）。
 
-import { StorageBackend, IndexBackend, TransferError } from './types';
+import { StorageBackend, IndexBackend, TransferError } from '../../src/transfer/tus/types';
 import { R2StorageBackend } from './r2-storage';
 import { D1IndexBackend } from './d1-index';
 
