@@ -16,11 +16,14 @@ export interface StorageBackend {
   delete(key: string): Promise<void>;
   /** 是否存在 */
   exists(key: string): Promise<boolean>;
+  /** 列：按前缀列出对象。用于 tus 分片下载前拼接所有 part。 */
+  list(prefix: string): Promise<{ key: string; size: number }[]>;
 }
 
 /** 单文件记录（挂在某个 transfer 下）。 */
 export interface FileRecord {
   id: string;
+  transferId?: string;
   filename: string;
   relativePath: string;
   size: number;
@@ -46,6 +49,7 @@ export interface IndexBackend {
   createTransfer(t: TransferRecord): Promise<void>;
   getTransfer(id: string): Promise<TransferRecord | null>;
   addFile(id: string, f: FileRecord): Promise<void>;
+  getFile(id: string): Promise<FileRecord | null>;
   /** 分享码 -> transferId */
   resolveCode(code: string): Promise<string | null>;
   /** 登录码 -> transferId */

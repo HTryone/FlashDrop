@@ -49,4 +49,17 @@ export class R2StorageBackend implements StorageBackend {
     const head = await this.bucket.head(key);
     return !!head;
   }
+
+  async list(prefix: string): Promise<{ key: string; size: number }[]> {
+    const out: { key: string; size: number }[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.bucket.list({ prefix, cursor, limit: 1000 });
+      for (const obj of page.objects ?? []) {
+        out.push({ key: obj.key, size: obj.size });
+      }
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+    return out;
+  }
 }

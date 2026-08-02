@@ -73,6 +73,22 @@ export class D1IndexBackend implements IndexBackend {
       .run();
   }
 
+  async getFile(id: string): Promise<FileRecord | null> {
+    const f = (await this.db
+      .prepare(`SELECT * FROM files WHERE id = ?`)
+      .bind(id)
+      .first<FileRow>()) as FileRow | null;
+    if (!f) return null;
+    return {
+      id: f.id,
+      transferId: f.transfer_id,
+      filename: f.filename,
+      relativePath: f.relative_path,
+      size: f.size,
+      storage: f.storage as FileRecord['storage'],
+    };
+  }
+
   async resolveCode(code: string): Promise<string | null> {
     const r = (await this.db
       .prepare(`SELECT transfer_id FROM codes WHERE code = ?`)
