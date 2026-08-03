@@ -38,7 +38,7 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
   await new Promise<void>((resolve, reject) => {
     const upload = new tus.Upload(payload, {
       endpoint,
-      chunkSize: 6 * 1024 * 1024, // 6MiB 分片
+      chunkSize: 8 * 1024 * 1024, // 8MiB 分片（与 E2EE 加密块统一，中转全程 8MiB）
       retryDelays: [0, 1000, 3000, 5000, 10000],
       metadata: meta,
       onError: (err) => reject(err),

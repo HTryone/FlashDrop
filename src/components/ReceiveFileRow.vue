@@ -30,7 +30,7 @@ interface DownloadManifest { parts: PartInfo[]; total: number; filename: string 
 
 // 每次最多取 8MB（实测 CF 对 Worker 响应截断受带宽/时长影响：20MB 完整、30MB 被砍，8MB 留足余量）
 const SUB_CHUNK = 8 * 1024 * 1024;
-const CONCURRENCY = 4;
+const CONCURRENCY = 12;
 
 async function fetchRange(url: string, start: number, end: number): Promise<ArrayBuffer> {
   const resp = await fetch(url, { headers: { Range: `bytes=${start}-${end}` } });
