@@ -17,6 +17,8 @@ database_id = "77286df6-c1d9-4274-82cb-b95c7371ccfa"
 
 [vars]
 DEFAULT_TTL_HOURS = "24"
+# R2 预签名 URL 所需凭证请通过 Cloudflare Dashboard 设置环境变量：
+#   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
 
 # 每小时跑一次 sweeper，清理 D1 中过期 24h 的 transfer/files/codes 记录。
 # R2 文件体由 bucket 生命周期规则自动过期（已在 CF 控制台配置）。

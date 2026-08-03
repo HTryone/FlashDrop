@@ -1,12 +1,12 @@
 /// <reference types="@cloudflare/workers-types" />
 import { createStorage, createIndex } from './factory';
+import type { TusEnv } from './factory';
 import { CloudSweeper } from './sweeper';
 import { TusHandler } from '../../src/transfer/tus/tus-handler';
 import { TransferHandler } from '../../src/transfer/tus/transfer-handler';
 import { DownloadHandler } from '../../src/transfer/tus/download-handler';
 import { PresignHandler } from './presign-handler';
 import { corsHeaders } from '../../src/transfer/tus/tus-protocol';
-import type { TusEnv } from '../../src/transfer/tus/types';
 
 export interface Env extends TusEnv {
   DEFAULT_TTL_HOURS?: string;

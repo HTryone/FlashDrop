@@ -2,12 +2,31 @@
 // 设计原则（用户 2026-08-02「一律云端」）：文件体默认落 R2，流式读写不进内存。
 // 本地磁盘实现（LocalStorageBackend）作为可插拔备选，不在默认路径，留待后续研究。
 
+import { AwsClient } from 'aws4fetch';
 import { StorageBackend, TransferError } from '../../src/transfer/tus/types';
+
+interface R2Credentials {
+  accountId: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  bucketName: string;
+}
 
 export class R2StorageBackend implements StorageBackend {
   readonly kind = 'r2' as const;
+  private readonly aws: AwsClient;
 
-  constructor(private readonly bucket: R2Bucket) {}
+  constructor(
+    private readonly bucket: R2Bucket,
+    private readonly creds: R2Credentials,
+  ) {
+    this.aws = new AwsClient({
+      accessKeyId: creds.accessKeyId,
+      secretAccessKey: creds.secretAccessKey,
+      service: 's3',
+      region: 'auto',
+    });
+  }
 
   /** 存：body 必须是 ReadableStream（tus 分片直传，不缓冲整文件）。 */
   async put(key: string, body: ReadableStream<Uint8Array>, size: number): Promise<void> {
@@ -43,14 +62,23 @@ export class R2StorageBackend implements StorageBackend {
   }
 
   /** 预签名直传：返回浏览器可直传 R2 的临时 URL。大体积密文流绕过 Worker 的 request.body pipe，
-   *  避免 CF 边缘对大请求体流式透传的字节损坏（HMAC 校验失败的根因）。 */
+   *  避免 CF 边缘对大请求体流式透传的字节损坏（HMAC 校验失败的根因）。
+   *  用 aws4fetch 做 S3 兼容签名（Workers R2 binding 自身未暴露 createPresignedUrl）。 */
   async createPresignedUrl(
     key: string,
     opts: { method?: string; expiresIn?: number } = {},
   ): Promise<string> {
-    const method = (opts.method ?? 'PUT') as any;
+    const method = opts.method ?? 'PUT';
     const expiresIn = opts.expiresIn ?? 600;
-    return await (this.bucket as any).createPresignedUrl(key, { method, expiresIn });
+    const url = new URL(
+      `https://${this.creds.bucketName}.${this.creds.accountId}.r2.cloudflarestorage.com/${key}`,
+    );
+    url.searchParams.set('X-Amz-Expires', String(expiresIn));
+    const signed = await this.aws.sign(
+      new Request(url, { method }),
+      { aws: { signQuery: true } },
+    );
+    return signed.url;
   }
 
   async delete(key: string): Promise<void> {
