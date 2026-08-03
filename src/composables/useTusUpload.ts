@@ -106,8 +106,15 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
     }
 
     let idx = 0;
-    let uploaded = 0;
     let failed = false;
+    let committed = 0; // 已落库字节（commit 成功）
+    let inflight = 0; // 进行中块已上行字节合计（仅 UI 进度反馈用，让用户看到在传）
+
+    const report = () => {
+      const up = committed + inflight;
+      const frac = opts.e2ee.enabled ? 0.5 + 0.5 * (up / size) : up / size;
+      opts.onProgress(Math.floor(qf.file.size * frac), qf.file.size);
+    };
 
     const runLane = async () => {
       while (!failed && idx < blocks.length) {
@@ -117,17 +124,42 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
         let ok = false;
         let lastErr: unknown;
         for (let attempt = 0; attempt < RETRIES && !ok; attempt++) {
+          // 用 TransformStream 包装上传流，逐 chunk 累计真实上行字节并刷新进度。
+          // fetch PUT 本身没有上传进度事件，块内若无反馈进度条会静止（误以为卡死）。
+          const self = { sent: 0, acc: 0 };
           try {
             const url = await presign(tusBase, fileId, b.start, len);
+            const body = b.blob.stream().pipeThrough(
+              new TransformStream({
+                transform(chunk, controller) {
+                  const n = chunk.byteLength;
+                  self.sent += n;
+                  inflight += n;
+                  self.acc += n;
+                  if (self.acc >= 256 * 1024) {
+                    self.acc = 0;
+                    report();
+                  }
+                  controller.enqueue(chunk);
+                },
+              }),
+            );
             const res = await fetch(url, {
               method: 'PUT',
-              body: b.blob,
-              headers: { 'Content-Type': 'application/octet-stream' },
+              headers: {
+                'Content-Type': 'application/octet-stream',
+                'Content-Length': String(len),
+              },
+              body,
             });
             if (!res.ok) throw new Error(`PUT 失败 ${res.status}`);
             await commit(tusBase, fileId, b.start + len, len);
+            committed += len;
+            inflight -= self.sent;
+            report();
             ok = true;
           } catch (e) {
+            inflight -= self.sent; // 回退本次尝试已计入的字节，重试重新累计
             lastErr = e;
             await sleep(1000 * attempt);
           }
@@ -136,9 +168,6 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
           failed = true;
           throw lastErr instanceof Error ? lastErr : new Error('上传块失败');
         }
-        uploaded += len;
-        const frac = opts.e2ee.enabled ? 0.5 + 0.5 * (uploaded / size) : uploaded / size;
-        opts.onProgress(Math.floor(qf.file.size * frac), qf.file.size);
       }
     };
 
