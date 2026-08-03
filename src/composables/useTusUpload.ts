@@ -17,14 +17,14 @@ export interface UploadOptions {
   onError: (msg: string) => void;
 }
 
-/** 上传网络块：80MiB（用户实测保速度；E2EE 帧仍 8MiB，80/8=10 每块恰含 10 帧，下载 8MiB Range 重组不受影响）。 */
-const BLOCK = 80 * 1024 * 1024;
-/** 并发直传路数：抗掉线、铺满带宽（上传是写、比下载 12 路保守）。 */
-const CONCURRENCY = 3;
-/** 单块失败重试次数（网络抖动 / 单路掉线）。 */
-const RETRIES = 5;
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** 上传网络块基准大小：快链上单块自然到 80MiB（保速度）；慢链由"秒"驱动自动切小。 */
+const BASE_SEG = 80 * 1024 * 1024;
+/** 单条连接时间预算（秒）：到时就切下一块，绝不撞 R2 边缘 60s 硬超时。用户指定"用秒记"。 */
+const SLICE_SECONDS = 50;
+/** 块缩到的最小尺寸（兜底，避免极端慢链无限切）。 */
+const MIN_SEG = 4 * 1024 * 1024;
+/** 单块失败重试次数（网络抖动 / 单路掉线 / 超时切小后重传）。 */
+const RETRIES = 8;
 
 /** 步骤1：POST /files 创建文件记录，返回 fileId。 */
 async function createUpload(tusBase: string, meta: Record<string, string>): Promise<string> {
@@ -75,6 +75,32 @@ async function commit(
   if (!res.ok) throw new Error(`commit 失败 ${res.status}`);
 }
 
+/** 单块 PUT（XHR）：带 SLICE_SECONDS 超时与上传进度；超时/失败返回 'timeout'，成功返回 'done'。 */
+function uploadSliceXHR(
+  url: string,
+  blob: Blob,
+  onProgress: (sent: number) => void,
+): Promise<'done' | 'timeout'> {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    const timer = setTimeout(() => xhr.abort(), SLICE_SECONDS * 1000);
+    xhr.open('PUT', url);
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.setRequestHeader('Content-Length', String(blob.size));
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(e.loaded);
+    };
+    const finish = (r: 'done' | 'timeout') => {
+      clearTimeout(timer);
+      resolve(r);
+    };
+    xhr.onload = () => finish(xhr.status >= 200 && xhr.status < 300 ? 'done' : 'timeout');
+    xhr.onerror = () => finish('timeout');
+    xhr.onabort = () => finish('timeout');
+    xhr.send(blob);
+  });
+}
+
 /** 上传单个文件（E2EE 开启时先加密为密文 Blob 再直传 R2）。 */
 export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<void> {
   try {
@@ -98,17 +124,11 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
 
     const fileId = await createUpload(tusBase, meta);
 
-    // 切 80MiB 网络块（纯字节切，与 E2EE 8MiB 帧对齐无关）
-    const blocks: { start: number; blob: Blob }[] = [];
-    for (let off = 0; off < size; off += BLOCK) {
-      const end = Math.min(off + BLOCK, size);
-      blocks.push({ start: off, blob: cipher.slice(off, end) });
-    }
-
-    let idx = 0;
-    let failed = false;
+    // 单发 + 用秒记切片：顺序传，每条约 SLICE_SECONDS 秒；超时就把这块切小重传（不测速度、不算块）。
+    let off = 0;
+    let seg = BASE_SEG; // 快链上自然 80MiB；慢链由超时驱动减半
     let committed = 0; // 已落库字节（commit 成功）
-    let inflight = 0; // 进行中块已上行字节合计（仅 UI 进度反馈用，让用户看到在传）
+    let inflight = 0; // 当前块已上行字节（仅 UI 进度反馈）
 
     const report = () => {
       const up = committed + inflight;
@@ -116,63 +136,34 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
       opts.onProgress(Math.floor(qf.file.size * frac), qf.file.size);
     };
 
-    const runLane = async () => {
-      while (!failed && idx < blocks.length) {
-        const i = idx++;
-        const b = blocks[i];
-        const len = b.blob.size;
-        let ok = false;
-        let lastErr: unknown;
-        for (let attempt = 0; attempt < RETRIES && !ok; attempt++) {
-          // 用 TransformStream 包装上传流，逐 chunk 累计真实上行字节并刷新进度。
-          // fetch PUT 本身没有上传进度事件，块内若无反馈进度条会静止（误以为卡死）。
-          const self = { sent: 0, acc: 0 };
-          try {
-            const url = await presign(tusBase, fileId, b.start, len);
-            const body = b.blob.stream().pipeThrough(
-              new TransformStream({
-                transform(chunk, controller) {
-                  const n = chunk.byteLength;
-                  self.sent += n;
-                  inflight += n;
-                  self.acc += n;
-                  if (self.acc >= 256 * 1024) {
-                    self.acc = 0;
-                    report();
-                  }
-                  controller.enqueue(chunk);
-                },
-              }),
-            );
-            const res = await fetch(url, {
-              method: 'PUT',
-              headers: {
-                'Content-Type': 'application/octet-stream',
-                'Content-Length': String(len),
-              },
-              body,
-            });
-            if (!res.ok) throw new Error(`PUT 失败 ${res.status}`);
-            await commit(tusBase, fileId, b.start + len, len);
-            committed += len;
-            inflight -= self.sent;
-            report();
-            ok = true;
-          } catch (e) {
-            inflight -= self.sent; // 回退本次尝试已计入的字节，重试重新累计
-            lastErr = e;
-            await sleep(1000 * attempt);
-          }
-        }
-        if (!ok) {
-          failed = true;
-          throw lastErr instanceof Error ? lastErr : new Error('上传块失败');
+    while (off < size) {
+      const end = Math.min(off + seg, size);
+      const blob = cipher.slice(off, end);
+      let done = false;
+      let lastErr: string | undefined;
+      for (let attempt = 0; attempt < RETRIES && !done; attempt++) {
+        const url = await presign(tusBase, fileId, off, blob.size);
+        inflight = 0;
+        const r = await uploadSliceXHR(url, blob, (sent) => {
+          inflight = sent;
+          report();
+        });
+        if (r === 'done') {
+          await commit(tusBase, fileId, off + blob.size, blob.size);
+          committed += blob.size;
+          inflight = 0;
+          off += blob.size;
+          report();
+          done = true;
+        } else {
+          // 用秒记：到时切小块，下回从同一 offset 重传（R2 未提交中断的 PUT）
+          seg = Math.max(MIN_SEG, Math.floor(seg / 2));
+          inflight = 0;
+          lastErr = '单块传输超时，已切小重传';
         }
       }
-    };
-
-    const lanes = Math.min(CONCURRENCY, blocks.length);
-    await Promise.all(Array.from({ length: lanes }, () => runLane()));
+      if (!done) throw new Error(lastErr || '上传块失败');
+    }
 
     opts.onSuccess();
   } catch (e: any) {

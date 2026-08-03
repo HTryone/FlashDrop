@@ -73,10 +73,9 @@ export class R2StorageBackend implements StorageBackend {
     const url = new URL(
       `https://${this.creds.bucketName}.${this.creds.accountId}.r2.cloudflarestorage.com/${key}`,
     );
-    url.searchParams.set('X-Amz-Expires', String(expiresIn));
     const signed = await this.aws.sign(
       new Request(url, { method }),
-      { aws: { signQuery: true } },
+      { aws: { signQuery: true, expires: expiresIn } },
     );
     return signed.url;
   }
