@@ -41,6 +41,12 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
       chunkSize: 8 * 1024 * 1024, // 8MiB 分片（与 E2EE 加密块统一，中转全程 8MiB）
       retryDelays: [0, 1000, 3000, 5000, 10000],
       metadata: meta,
+      // 关闭客户端指纹续传：浏览器默认 fingerprint 只含 文件name/type/size/lastModified+endpoint，
+      // 不含 transferId；E2EE 时 payload 是普通 Blob（无 name/lastModified）指纹更会退化撞车。
+      // findPreviousUploads 会翻出上一个（甚至别的传输的）已完成上传 URL 直接复用，
+      // 导致 HEAD 返回 offset==size 后立刻 onSuccess 而不传数据 → “进度条完成但没上传到本传输”。
+      // 会话内网络抖动的续传由服务端按上传 URL 的 offset 自动处理，无需客户端缓存。
+      storeFingerprintForResuming: false,
       onError: (err) => reject(err),
       onProgress: (sent, total) => {
         if (opts.e2ee.enabled) {
@@ -53,10 +59,7 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
       onSuccess: () => resolve(),
     });
     qf._upload = upload;
-    upload.findPreviousUploads().then((prev) => {
-      if (prev.length) upload.resumeFromPreviousUpload(prev[0]);
-      upload.start();
-    });
+    upload.start();
   });
 }
 
