@@ -16,9 +16,9 @@ export function corsHeaders(origin?: string | null): Record<string, string> {
     'Access-Control-Allow-Origin': origin || '*',
     'Access-Control-Allow-Methods': 'POST, PATCH, HEAD, DELETE, GET, OPTIONS',
     'Access-Control-Allow-Headers':
-      'Tus-Resumable, Upload-Length, Upload-Offset, Upload-Metadata, Content-Type, Authorization, X-Requested-With',
+      'Tus-Resumable, Upload-Length, Upload-Offset, Upload-Metadata, Content-Type, Authorization, X-Requested-With, Range',
     'Access-Control-Expose-Headers':
-      'Tus-Resumable, Upload-Length, Upload-Offset, Upload-Metadata, Location, Content-Disposition',
+      'Tus-Resumable, Upload-Length, Upload-Offset, Upload-Metadata, Location, Content-Disposition, Content-Range',
     'Access-Control-Max-Age': '86400',
   };
 }
