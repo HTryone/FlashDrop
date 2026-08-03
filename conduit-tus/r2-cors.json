@@ -1,0 +1,15 @@
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": ["https://flashdrop.pages.dev", "https://*.flashdrop.pages.dev"],
+        "methods": ["PUT", "GET", "HEAD"],
+        "headers": ["*"]
+      },
+      "expose": {
+        "headers": ["ETag", "Content-Length", "Content-Type", "x-amz-request-id"]
+      },
+      "maxAgeSeconds": 86400
+    }
+  ]
+}
