@@ -402,6 +402,7 @@ onUnmounted(() => { sender.close(); });
           <button class="btn sm danger" @click="showTerminateDialog = true" v-if="!uploading">取消分享</button>
         </div>
         <div class="code-link faint">{{ shareLink }}</div>
+        <p class="share-hint">📤 把<b>分享码</b>和<b>口令</b>一起发给对方——对方必须输入口令才能解密下载。</p>
       </div>
 
       <!-- 分隔线 -->

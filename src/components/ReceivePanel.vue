@@ -81,8 +81,8 @@ onMounted(() => {
 <template>
   <div class="recv">
     <!-- ① 中转接收（常驻展示） -->
-    <section class="panel-block">
-      <h3 class="block-title">① 中转接收（分享码）</h3>
+    <section class="panel-block receive-block">
+      <h3 class="block-title"><span class="recv-badge">接收</span> 中转接收（分享码）</h3>
       <div class="code-input">
         <input v-model="codeInput" placeholder="输入 6 位分享码" maxlength="6" @keyup.enter="load()" />
         <button class="btn primary" :disabled="loading" @click="load()">{{ loading ? '查询中…' : '获取文件' }}</button>
@@ -135,8 +135,14 @@ onMounted(() => {
         </div>
       </div>
 
-      <div v-if="!detail && !loading" class="empty muted">
-        粘贴对方发来的分享码，或打开对方发来的带码链接，即可看到文件列表。
+      <div v-if="!detail && !loading" class="empty">
+        <strong class="empty-title">📥 如何接收文件</strong>
+        <ol class="steps">
+          <li>把对方发来的 <b>6 位分享码</b>粘贴到上方输入框（或打开对方发来的带码链接）；</li>
+          <li>点「获取文件」，稍候即可看到文件列表；</li>
+          <li>若文件已加密，输入对方给的<b>口令</b>并点「解锁」；</li>
+          <li>点「解密下载」，文件会自动保存到本机（无需选择保存位置）。</li>
+        </ol>
       </div>
     </section>
 
@@ -175,7 +181,12 @@ onMounted(() => {
 .unlock-row input:focus { outline: none; border-color: var(--accent); }
 .files-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
 .file-list { display: flex; flex-direction: column; gap: 8px; max-height: 320px; overflow: auto; }
-.empty { font-size: 13.5px; line-height: 1.7; padding: 10px 0; }
+.empty { background: rgba(56, 225, 200, 0.05); border: 1px solid rgba(56, 225, 200, 0.22); border-radius: var(--radius-sm); padding: 12px 14px; }
+.empty-title { color: var(--accent-2); font-size: 13.5px; }
+.steps { margin: 8px 0 0; padding-left: 20px; font-size: 12.5px; color: var(--text-dim); line-height: 1.9; }
+.steps b { color: var(--text); }
+.receive-block { border: 1px solid rgba(56, 225, 200, 0.35); border-radius: var(--radius-sm); padding: 14px; background: rgba(56, 225, 200, 0.04); }
+.recv-badge { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 1px; color: #07101f; background: var(--accent-2); border-radius: 6px; padding: 2px 8px; margin-right: 8px; vertical-align: middle; }
 .err-box { color: var(--danger); font-size: 13px; background: rgba(255, 107, 129, 0.1); padding: 8px 12px; border-radius: var(--radius-sm); }
 .err-box.sm { padding: 6px 10px; font-size: 12px; }
 </style>

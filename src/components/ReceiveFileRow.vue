@@ -13,6 +13,9 @@ const props = defineProps<{
 
 const busy = ref(false);
 const err = ref('');
+const progress = ref(0); // 0~1
+const speed = ref(0);    // MB/s
+const phase = ref('');
 
 function triggerDownload(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob);
@@ -31,15 +34,23 @@ interface DownloadManifest { parts: PartInfo[]; total: number; filename: string 
 // 每次最多取 8MB（实测 CF 对 Worker 响应截断受带宽/时长影响：20MB 完整、30MB 被砍，8MB 留足余量）
 const SUB_CHUNK = 8 * 1024 * 1024;
 const CONCURRENCY = 12;
+// 单块取数超时：40% 丢包网络下连接可能“挂死不报错”，必须主动掐断后重试，否则整链卡死
+const FETCH_TIMEOUT = 30_000;
 
 async function fetchRange(url: string, start: number, end: number): Promise<ArrayBuffer> {
-  const resp = await fetch(url, { headers: { Range: `bytes=${start}-${end}` } });
-  if (resp.status !== 206 && resp.status !== 200) throw new Error('分片下载失败 ' + resp.status);
-  return await resp.arrayBuffer();
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT);
+  try {
+    const resp = await fetch(url, { headers: { Range: `bytes=${start}-${end}` }, signal: ctrl.signal });
+    if (resp.status !== 206 && resp.status !== 200) throw new Error('分片下载失败 ' + resp.status);
+    return await resp.arrayBuffer();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-// 单个分片：按 ≤8MB 子范围多次取（与上传一致），偶发截断自动重试
-async function downloadPart(url: string, size: number): Promise<ArrayBuffer[]> {
+// 单个分片：按 ≤8MB 子范围多次取；超时 / 截断自动重试（覆盖 CF 截断 + 丢包挂死）
+async function downloadPart(url: string, size: number, stats: { received: number }): Promise<ArrayBuffer[]> {
   const chunks: ArrayBuffer[] = [];
   let pos = 0;
   while (pos < size) {
@@ -47,19 +58,25 @@ async function downloadPart(url: string, size: number): Promise<ArrayBuffer[]> {
     const want = end - pos + 1;
     let buf: ArrayBuffer | null = null;
     for (let attempt = 1; attempt <= 5; attempt++) {
-      const b = await fetchRange(url, pos, end);
-      if (b.byteLength === want) { buf = b; break; }
+      try {
+        const b = await fetchRange(url, pos, end);
+        if (b.byteLength === want) { buf = b; break; }
+      } catch {
+        /* 超时 / 网络错误：继续重试 */
+      }
+      buf = null;
       if (attempt < 5) await new Promise((r) => setTimeout(r, 400 * attempt));
     }
-    if (!buf) throw new Error('下载不完整，请重试');
+    if (!buf) throw new Error('网络不稳定，下载中断，请重试');
     chunks.push(buf);
+    stats.received += buf.byteLength;
     pos = end + 1;
   }
   return chunks;
 }
 
 // 并发拉取所有分片，按 offset 拼成完整密文 Blob
-async function downloadAll(base: string, manifest: DownloadManifest): Promise<Blob> {
+async function downloadAll(base: string, manifest: DownloadManifest, stats: { received: number }): Promise<Blob> {
   const results: (ArrayBuffer[] | null)[] = new Array(manifest.parts.length).fill(null);
   let next = 0;
   async function worker() {
@@ -67,7 +84,7 @@ async function downloadAll(base: string, manifest: DownloadManifest): Promise<Bl
       const i = next++;
       const part = manifest.parts[i];
       const url = `${base}/download/${props.code}/${props.file.id}/part/${encodeURIComponent(part.key)}`;
-      results[i] = await downloadPart(url, part.size);
+      results[i] = await downloadPart(url, part.size, stats);
     }
   }
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, manifest.parts.length) }, worker));
@@ -80,22 +97,35 @@ async function downloadAll(base: string, manifest: DownloadManifest): Promise<Bl
 async function onDownload() {
   err.value = '';
   busy.value = true;
+  progress.value = 0;
+  speed.value = 0;
+  phase.value = '准备中…';
+  const stats = { received: 0, total: 0 };
+  const t0 = performance.now();
+  // 进度 / 速度轮询：拉取阶段每 200ms 刷新一次 UI（解密瞬间完成，无需单独计速）
+  const timer = setInterval(() => {
+    const sec = (performance.now() - t0) / 1000;
+    progress.value = stats.total ? Math.min(1, stats.received / stats.total) : 0;
+    speed.value = sec > 0 ? stats.received / 1048576 / sec : 0;
+  }, 200);
   try {
     const base = resolveTusBase();
     const manifestUrl = `${base}/download/${props.code}/${props.file.id}`;
     const mResp = await fetch(manifestUrl);
     if (!mResp.ok) throw new Error('获取下载信息失败 ' + mResp.status);
     const manifest: DownloadManifest = await mResp.json();
-    const cipher = await downloadAll(base, manifest);
-    if (props.e2eeKey) {
-      const plain = await decryptBlob(cipher, props.e2eeKey);
-      triggerDownload(plain, props.file.name);
-    } else {
-      triggerDownload(cipher, props.file.name);
-    }
+    stats.total = manifest.total;
+    phase.value = '拉取加密数据中…';
+    const cipher = await downloadAll(base, manifest, stats);
+    phase.value = '本地解密中…';
+    const plain = props.e2eeKey ? await decryptBlob(cipher, props.e2eeKey) : cipher;
+    phase.value = '已保存到本机';
+    progress.value = 1;
+    triggerDownload(plain, props.file.name);
   } catch (e: any) {
     err.value = e?.message || '下载失败';
   } finally {
+    clearInterval(timer);
     busy.value = false;
   }
 }
@@ -108,10 +138,18 @@ function fmt(n: number) {
 </script>
 
 <template>
-  <div class="row">
+  <div class="row" :class="{ active: busy }">
+    <div class="tag">接收</div>
     <div class="info">
       <div class="name" :title="file.name">{{ file.name }}</div>
-      <div class="sub muted">{{ fmt(file.size) }}<span v-if="err" class="err"> · {{ err }}</span></div>
+      <div class="sub muted">
+        {{ fmt(file.size) }}
+        <span v-if="busy" class="prog-text"> · {{ phase }} {{ (progress * 100).toFixed(0) }}% · {{ speed.toFixed(1) }} MB/s</span>
+        <span v-if="err" class="err"> · {{ err }}</span>
+      </div>
+      <div v-if="busy" class="bar">
+        <div class="fill" :style="{ width: (progress * 100) + '%' }"></div>
+      </div>
     </div>
     <template v-if="encrypted && !e2eeKey">
       <span class="lock-hint muted">🔒 输入口令后下载</span>
@@ -126,11 +164,23 @@ function fmt(n: number) {
 .row {
   display: flex; align-items: center; gap: 12px;
   background: var(--panel-2); border: 1px solid var(--border);
+  border-left: 3px solid var(--accent-2);
   border-radius: var(--radius-sm); padding: 10px 12px;
+}
+.row.active {
+  border-color: var(--accent-2);
+  box-shadow: 0 0 0 1px rgba(56, 225, 200, 0.25);
+}
+.tag {
+  flex: none; font-size: 11px; font-weight: 700; letter-spacing: 1px;
+  color: #07101f; background: var(--accent-2); border-radius: 6px; padding: 3px 8px;
 }
 .info { flex: 1; min-width: 0; }
 .name { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sub { font-size: 12px; margin-top: 3px; }
+.prog-text { color: var(--accent-2); }
 .err { color: var(--danger); }
 .lock-hint { font-size: 12px; white-space: nowrap; }
+.bar { height: 8px; background: var(--bg-soft); border-radius: 999px; overflow: hidden; margin-top: 8px; }
+.fill { height: 100%; background: var(--accent-grad); transition: width 0.2s; }
 </style>
