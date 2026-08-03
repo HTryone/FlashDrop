@@ -31,8 +31,8 @@ function triggerDownload(blob: Blob, name: string) {
 interface PartInfo { key: string; offset: number; size: number }
 interface DownloadManifest { parts: PartInfo[]; total: number; filename: string }
 
-// 每次最多取 16MB（实测 CF 对 Worker 响应截断受带宽/时长影响：20MB 完整、30MB 被砍，16MB 仍留足余量；请求数较 8MB 减半、压 RTT 间隙）
-const SUB_CHUNK = 16 * 1024 * 1024;
+// 每次最多取 8MiB（实证安全线：CF 对本路径单响应流有上限，>~16MiB 流式透传 R2 时会字节损坏→下载 HMAC 校验失败；8MiB 远低于该上限稳定可用。减 RTT 应改提 CONCURRENCY，勿加大本值）
+const SUB_CHUNK = 8 * 1024 * 1024;
 const CONCURRENCY = 12;
 // 单块取数超时：不稳定网络下连接可能“挂死不报错”，必须主动掐断后重试，否则整链卡死
 const FETCH_TIMEOUT = 30_000;
@@ -49,7 +49,7 @@ async function fetchRange(url: string, start: number, end: number): Promise<Arra
   }
 }
 
-// 单个分片：按 ≤16MB 子范围多次取；超时 / 截断自动重试（覆盖 CF 截断）
+// 单个分片：按 ≤8MB 子范围多次取；超时 / 截断自动重试（覆盖 CF 截断；8MiB 为安全线，勿超）
 async function downloadPart(url: string, size: number, stats: { received: number }): Promise<ArrayBuffer[]> {
   const chunks: ArrayBuffer[] = [];
   let pos = 0;
