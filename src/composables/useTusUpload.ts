@@ -75,7 +75,9 @@ async function commit(
   if (!res.ok) throw new Error(`commit 失败 ${res.status}`);
 }
 
-/** 单块 PUT（XHR）：带 SLICE_SECONDS 超时与上传进度；超时/失败返回 'timeout'，成功返回 'done'。 */
+/** 单块 PUT（XHR）：带 SLICE_SECONDS 超时与上传进度；超时/失败返回 'timeout'，成功返回 'done'。
+ * 关键：50s 到时只在"数据还在传"才 abort 切小；块已传完但 R2 响应晚到（竞态窗口）则等响应，
+ * 不重传——否则会把已落盘的块误判失败、从同 offset 重传，造成"完成了还重传"。 */
 function uploadSliceXHR(
   url: string,
   blob: Blob,
@@ -83,16 +85,26 @@ function uploadSliceXHR(
 ): Promise<'done' | 'timeout'> {
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
-    const timer = setTimeout(() => xhr.abort(), SLICE_SECONDS * 1000);
+    let sent = 0; // 已上传字节（由 progress 事件累计，非 abort 后回退）
+    let settled = false;
+    const finish = (r: 'done' | 'timeout') => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(r);
+    };
+    // 用秒记：到时若数据尚未传完 → 超时切小；已传完 → 等服务器响应（200 即完成，不重传）
+    const timer = setTimeout(() => {
+      if (sent < blob.size) finish('timeout');
+    }, SLICE_SECONDS * 1000);
     xhr.open('PUT', url);
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
     xhr.setRequestHeader('Content-Length', String(blob.size));
     xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) onProgress(e.loaded);
-    };
-    const finish = (r: 'done' | 'timeout') => {
-      clearTimeout(timer);
-      resolve(r);
+      if (e.lengthComputable) {
+        sent = e.loaded;
+        onProgress(sent);
+      }
     };
     xhr.onload = () => finish(xhr.status >= 200 && xhr.status < 300 ? 'done' : 'timeout');
     xhr.onerror = () => finish('timeout');
@@ -156,8 +168,12 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
           report();
           done = true;
         } else {
+          if (seg <= MIN_SEG) {
+            // 已到最小块仍超时：极端慢链，放弃空转（避免 8×50s 浪费），直接失败
+            throw new Error('单块传输超时（已达最小块 4MiB），链路过慢');
+          }
           // 用秒记：到时切小块，下回从同一 offset 重传（R2 未提交中断的 PUT）
-          seg = Math.max(MIN_SEG, Math.floor(seg / 2));
+          seg = Math.floor(seg / 2);
           inflight = 0;
           lastErr = '单块传输超时，已切小重传';
         }
