@@ -28,8 +28,8 @@ function triggerDownload(blob: Blob, name: string) {
 interface PartInfo { key: string; offset: number; size: number }
 interface DownloadManifest { parts: PartInfo[]; total: number; filename: string }
 
-// 每次最多取 30MB（铁证：≤30MB 响应完整，90MB 被 CF 截断）
-const SUB_CHUNK = 30 * 1024 * 1024;
+// 每次最多取 8MB（实测 CF 对 Worker 响应截断受带宽/时长影响：20MB 完整、30MB 被砍，8MB 留足余量）
+const SUB_CHUNK = 8 * 1024 * 1024;
 const CONCURRENCY = 4;
 
 async function fetchRange(url: string, start: number, end: number): Promise<ArrayBuffer> {
@@ -38,14 +38,20 @@ async function fetchRange(url: string, start: number, end: number): Promise<Arra
   return await resp.arrayBuffer();
 }
 
-// 单个分片：若本身 >30MB（旧上传 90MB/片），按 ≤30MB 子范围多次取，与上传一致
+// 单个分片：按 ≤8MB 子范围多次取（与上传一致），偶发截断自动重试
 async function downloadPart(url: string, size: number): Promise<ArrayBuffer[]> {
   const chunks: ArrayBuffer[] = [];
   let pos = 0;
   while (pos < size) {
     const end = Math.min(pos + SUB_CHUNK, size) - 1;
-    const buf = await fetchRange(url, pos, end);
-    if (buf.byteLength !== end - pos + 1) throw new Error('下载不完整，请重试');
+    const want = end - pos + 1;
+    let buf: ArrayBuffer | null = null;
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      const b = await fetchRange(url, pos, end);
+      if (b.byteLength === want) { buf = b; break; }
+      if (attempt < 5) await new Promise((r) => setTimeout(r, 400 * attempt));
+    }
+    if (!buf) throw new Error('下载不完整，请重试');
     chunks.push(buf);
     pos = end + 1;
   }
