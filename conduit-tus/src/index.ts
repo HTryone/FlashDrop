@@ -54,10 +54,11 @@ export default {
       }
 
       return new Response('Not Found', { status: 404, headers: corsHeaders(origin) });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return new Response(msg, { status: 500, headers: corsHeaders(origin) });
-    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('[flashdrop-tus] uncaught', e);
+    return new Response(msg, { status: 500, headers: corsHeaders(origin) });
+  }
   },
 
   async scheduled(
