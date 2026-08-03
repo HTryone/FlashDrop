@@ -42,6 +42,17 @@ export class R2StorageBackend implements StorageBackend {
     return { body: obj.body, size: total, contentRange };
   }
 
+  /** 预签名直传：返回浏览器可直传 R2 的临时 URL。大体积密文流绕过 Worker 的 request.body pipe，
+   *  避免 CF 边缘对大请求体流式透传的字节损坏（HMAC 校验失败的根因）。 */
+  async createPresignedUrl(
+    key: string,
+    opts: { method?: string; expiresIn?: number } = {},
+  ): Promise<string> {
+    const method = (opts.method ?? 'PUT') as any;
+    const expiresIn = opts.expiresIn ?? 600;
+    return await (this.bucket as any).createPresignedUrl(key, { method, expiresIn });
+  }
+
   async delete(key: string): Promise<void> {
     await this.bucket.delete(key);
   }

@@ -34,6 +34,20 @@ export function tusHeaders(extra: Record<string, string> = {}): Record<string, s
   };
 }
 
+/** UTF-8 安全的 base64（Worker / 浏览器均支持 TextEncoder/TextDecoder）。 */
+function b64encode(s: string): string {
+  const bytes = new TextEncoder().encode(s);
+  let bin = '';
+  bytes.forEach((b) => (bin += String.fromCharCode(b)));
+  return btoa(bin);
+}
+function b64decode(s: string): string {
+  const bin = atob(s);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
 /** 把 Upload-Metadata 头解析为普通键值对。 */
 export function parseMetadata(header: string | null): Record<string, string> {
   const out: Record<string, string> = {};
@@ -45,7 +59,7 @@ export function parseMetadata(header: string | null): Record<string, string> {
     const b64 = space >= 0 ? trimmed.slice(space + 1) : '';
     if (!key) continue;
     try {
-      out[key] = b64 ? atob(b64) : '';
+      out[key] = b64 ? b64decode(b64) : '';
     } catch {
       out[key] = '';
     }
@@ -53,10 +67,10 @@ export function parseMetadata(header: string | null): Record<string, string> {
   return out;
 }
 
-/** 把普通键值对编码为 Upload-Metadata 头。 */
+/** 把普通键值对编码为 Upload-Metadata 头（UTF-8 安全，支持中文文件名）。 */
 export function encodeMetadata(meta: Record<string, string>): string {
   return Object.entries(meta)
     .filter(([, v]) => typeof v === 'string')
-    .map(([k, v]) => `${k} ${btoa(v)}`)
+    .map(([k, v]) => `${k} ${b64encode(v)}`)
     .join(',');
 }

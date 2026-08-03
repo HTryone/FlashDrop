@@ -18,6 +18,11 @@ export interface StorageBackend {
   exists(key: string): Promise<boolean>;
   /** 列：按前缀列出对象。用于 tus 分片下载前拼接所有 part。 */
   list(prefix: string): Promise<{ key: string; size: number }[]>;
+  /** 预签名直传：返回浏览器可直传 R2 的临时 URL（仅 R2 后端实现，绕过 Worker 大流 pipe）。 */
+  createPresignedUrl(
+    key: string,
+    opts?: { method?: string; expiresIn?: number },
+  ): Promise<string>;
 }
 
 /** 单文件记录（挂在某个 transfer 下）。 */

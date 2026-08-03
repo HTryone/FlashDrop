@@ -4,6 +4,7 @@ import { CloudSweeper } from './sweeper';
 import { TusHandler } from '../../src/transfer/tus/tus-handler';
 import { TransferHandler } from '../../src/transfer/tus/transfer-handler';
 import { DownloadHandler } from '../../src/transfer/tus/download-handler';
+import { PresignHandler } from './presign-handler';
 import { corsHeaders } from '../../src/transfer/tus/tus-protocol';
 import type { TusEnv } from '../../src/transfer/tus/types';
 
@@ -32,6 +33,13 @@ export default {
 
       if (pathname === '/files' || pathname.startsWith('/files/')) {
         return await new TusHandler(storage, index).handle(request);
+      }
+
+      if (pathname === '/api/presign' || pathname === '/api/commit') {
+        const handler = new PresignHandler(storage, index);
+        return pathname === '/api/presign'
+          ? await handler.handlePresign(request, origin)
+          : await handler.handleCommit(request, origin);
       }
 
       if (pathname === '/api/transfers' || pathname.startsWith('/api/transfer/')) {
