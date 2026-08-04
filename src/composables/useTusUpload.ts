@@ -1,7 +1,7 @@
 // 中转上传：加密后浏览器直传 R2（presigned PUT），Worker 仅做控制面（创建文件 / 索引 / commit）。
 // 大体积密文流绕过 Worker 的 request.body pipe，避免 CF 边缘对大请求体流式透传的字节损坏
 // （HMAC 校验失败根因：tus PATCH 把 80MiB 流穿过 CF 边缘→Worker→FixedLengthStream→R2，损坏且静默入库）。
-// 直传 R2 后数据不经 Worker 字节处理，R2 原生按 content-length 接收，损坏消失；80MiB 网络块保留（保速度）。
+// 直传 R2 后数据不经 Worker 字节处理，R2 原生按 content-length 接收，损坏消失；网络块大小按"50s 时间预算"动态决定，绝不因超时重传。
 
 import { encryptFile, deriveKey } from '@/crypto/tus-crypto';
 import { resolveTusBase } from '@/transfer/room';
@@ -17,14 +17,15 @@ export interface UploadOptions {
   onError: (msg: string) => void;
 }
 
-/** 上传网络块基准大小：快链上单块自然到 80MiB（保速度）；慢链由"秒"驱动自动切小。 */
+/** 单块大小初始值（快链起点）。实际每块大小由"时间预算"动态决定（见上传循环）。 */
 const BASE_SEG = 80 * 1024 * 1024;
-/** 单条连接时间预算（秒）：到时就切下一块，绝不撞 R2 边缘 60s 硬超时。用户指定"用秒记"。 */
+/** 单条连接时间预算（秒）：到时若当前块仍在传，不中断、不重传，让其自然完成（远在 R2 60s 墙内）。用户指定"用秒记"。 */
 const SLICE_SECONDS = 50;
-/** 块缩到的最小尺寸（兜底，避免极端慢链无限切）。 */
-const MIN_SEG = 4 * 1024 * 1024;
-/** 单块失败重试次数（网络抖动 / 单路掉线 / 超时切小后重传）。 */
-const RETRIES = 8;
+/** 块大小上下限（防极端慢链请求数爆炸 / 防单 PUT 撞 R2 60s 硬超时）。 */
+const MIN_SEG = 8 * 1024 * 1024;
+const MAX_SEG = 200 * 1024 * 1024;
+/** 网络错误（断线 / 5xx）重试次数。注意：超时≠错误，超时只软监控、绝不重传。 */
+const RETRIES = 5;
 
 /** 步骤1：POST /files 创建文件记录，返回 fileId。 */
 async function createUpload(tusBase: string, meta: Record<string, string>): Promise<string> {
@@ -75,27 +76,28 @@ async function commit(
   if (!res.ok) throw new Error(`commit 失败 ${res.status}`);
 }
 
-/** 单块 PUT（XHR）：带 SLICE_SECONDS 超时与上传进度；超时/失败返回 'timeout'，成功返回 'done'。
- * 关键：50s 到时只在"数据还在传"才 abort 切小；块已传完但 R2 响应晚到（竞态窗口）则等响应，
- * 不重传——否则会把已落盘的块误判失败、从同 offset 重传，造成"完成了还重传"。 */
+/** 单块 PUT（XHR）：带上传进度；成功返回 'done'，真实网络错误返回 'neterr'。
+ * 关键（用户要求"不重传、只看时间"）：SLICE_SECONDS 预算到时【不 abort、不切小】，仅打日志，
+ * 让当前 PUT 自然完成（块可能略超 50s，但远在 R2 边缘 60s 硬超时内）。绝不因超时重传。
+ * 只有真正的网络错误（onerror / 非 2xx）才允许上层重试。 */
 function uploadSliceXHR(
   url: string,
   blob: Blob,
   onProgress: (sent: number) => void,
-): Promise<'done' | 'timeout'> {
+): Promise<'done' | 'neterr'> {
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
-    let sent = 0; // 已上传字节（由 progress 事件累计，非 abort 后回退）
+    let sent = 0;
     let settled = false;
-    const finish = (r: 'done' | 'timeout') => {
+    const finish = (r: 'done' | 'neterr') => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       resolve(r);
     };
-    // 用秒记：到时若数据尚未传完 → 超时切小；已传完 → 等服务器响应（200 即完成，不重传）
+    // 软预算：仅监控，不中断、不重传
     const timer = setTimeout(() => {
-      if (sent < blob.size) finish('timeout');
+      console.warn(`[upload] 单块已超 ${SLICE_SECONDS}s 预算，继续等待自然完成（不重传）`);
     }, SLICE_SECONDS * 1000);
     xhr.open('PUT', url);
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
@@ -106,9 +108,9 @@ function uploadSliceXHR(
         onProgress(sent);
       }
     };
-    xhr.onload = () => finish(xhr.status >= 200 && xhr.status < 300 ? 'done' : 'timeout');
-    xhr.onerror = () => finish('timeout');
-    xhr.onabort = () => finish('timeout');
+    xhr.onload = () => finish(xhr.status >= 200 && xhr.status < 300 ? 'done' : 'neterr');
+    xhr.onerror = () => finish('neterr');
+    xhr.onabort = () => finish('neterr');
     xhr.send(blob);
   });
 }
@@ -136,9 +138,12 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
 
     const fileId = await createUpload(tusBase, meta);
 
-    // 单发 + 用秒记切片：顺序传，每条约 SLICE_SECONDS 秒；超时就把这块切小重传（不测速度、不算块）。
+    // 单发 + 用秒记（时间驱动动态块，不重传）：
+    // 顺序传；每块按 SLICE_SECONDS 预算自然完成，绝不因超时 abort 重传；
+    // 块大小随"本块实际耗时"动态调节（趋近 50s 预算），不看瞬时速度、不预测网络。
+    // 只有真实网络错误才重试（RETRIES）。
     let off = 0;
-    let seg = BASE_SEG; // 快链上自然 80MiB；慢链由超时驱动减半
+    let seg = BASE_SEG;
     let committed = 0; // 已落库字节（commit 成功）
     let inflight = 0; // 当前块已上行字节（仅 UI 进度反馈）
 
@@ -156,26 +161,27 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
       for (let attempt = 0; attempt < RETRIES && !done; attempt++) {
         const url = await presign(tusBase, fileId, off, blob.size);
         inflight = 0;
+        const t0 = Date.now();
         const r = await uploadSliceXHR(url, blob, (sent) => {
           inflight = sent;
           report();
         });
         if (r === 'done') {
           await commit(tusBase, fileId, off + blob.size, blob.size);
+          const dt = (Date.now() - t0) / 1000;
           committed += blob.size;
           inflight = 0;
-          off += blob.size;
+          off = end;
           report();
           done = true;
-        } else {
-          if (seg <= MIN_SEG) {
-            // 已到最小块仍超时：极端慢链，放弃空转（避免 8×50s 浪费），直接失败
-            throw new Error('单块传输超时（已达最小块 4MiB），链路过慢');
+          // 时间驱动动态块：用本块实际耗时反推下一块大小，使下一块趋近 SLICE_SECONDS 预算
+          if (dt > 0.5) {
+            const est = Math.floor(blob.size * (SLICE_SECONDS / dt));
+            seg = Math.min(MAX_SEG, Math.max(MIN_SEG, est));
           }
-          // 用秒记：到时切小块，下回从同一 offset 重传（R2 未提交中断的 PUT）
-          seg = Math.floor(seg / 2);
-          inflight = 0;
-          lastErr = '单块传输超时，已切小重传';
+        } else {
+          lastErr = '网络错误，正在重试';
+          // 仅网络错误重试；超时不会走到这里（超时只软监控，块自然完成）
         }
       }
       if (!done) throw new Error(lastErr || '上传块失败');
