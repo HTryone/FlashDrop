@@ -16,6 +16,7 @@ const err = ref('');
 const progress = ref(0); // 0~1
 const speed = ref(0);    // MB/s
 const phase = ref('');
+let activeAbort: AbortController | null = null; // 当前下载的 AbortController，供“取消”按钮中断后台请求
 
 function triggerDownload(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob);
@@ -120,6 +121,7 @@ async function onDownload() {
   const stats = { received: 0, total: 0 };
   const t0 = performance.now();
   const abortCtrl = new AbortController();
+  activeAbort = abortCtrl; // 暴露给取消按钮
   // 进度 / 速度轮询：拉取阶段每 200ms 刷新一次 UI（解密瞬间完成，无需单独计速）
   const timer = setInterval(() => {
     const sec = (performance.now() - t0) / 1000;
@@ -141,12 +143,18 @@ async function onDownload() {
     progress.value = 1;
     triggerDownload(plain, props.file.name);
   } catch (e: any) {
+    const wasCancelled = abortCtrl.signal.aborted; // 用户主动取消时，catch 触发前信号已置位
     abortCtrl.abort(); // 出错/取消时立即终止所有后台 fetch，避免继续拉取浪费流量
-    err.value = e?.message || '下载失败';
+    err.value = wasCancelled ? '已取消下载' : (e?.message || '下载失败');
   } finally {
     clearInterval(timer);
     busy.value = false;
+    activeAbort = null;
   }
+}
+
+function cancelDownload() {
+  activeAbort?.abort(); // 复用同一 abort 路径，立即中断所有后台 fetch（用户手动取消）
 }
 
 function fmt(n: number) {
@@ -173,9 +181,10 @@ function fmt(n: number) {
     <template v-if="encrypted && !e2eeKey">
       <span class="lock-hint muted">🔒 输入口令后下载</span>
     </template>
-    <button v-else class="btn sm primary" :disabled="busy" @click="onDownload">
-      {{ e2eeKey ? '解密下载' : (busy ? '下载中…' : '下载') }}
-    </button>
+      <button v-else-if="!busy" class="btn sm primary" @click="onDownload">
+        {{ e2eeKey ? '解密下载' : '下载' }}
+      </button>
+      <button v-else class="btn sm cancel" @click="cancelDownload">取消</button>
   </div>
 </template>
 
@@ -202,4 +211,9 @@ function fmt(n: number) {
 .lock-hint { font-size: 12px; white-space: nowrap; }
 .bar { height: 8px; background: var(--bg-soft); border-radius: 999px; overflow: hidden; margin-top: 8px; }
 .fill { height: 100%; background: var(--accent-grad); transition: width 0.2s; }
+.btn.cancel {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: transparent;
+}
 </style>
