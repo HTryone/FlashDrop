@@ -41,50 +41,84 @@ const CONCURRENCY = 6;
 // 取 55s：低于 CF 边缘 ~60s GET 硬超时，给“活着但慢”的连接留出自然完成/被截断的余量，避免误杀。
 const FETCH_TIMEOUT = 55_000;
 
-async function fetchRange(url: string, start: number, end: number, signal?: AbortSignal): Promise<ArrayBuffer> {
+// 流式读取单个 Range：每段到达即回调 onChunk 刷新进度（治 UI 滞后）；
+// 看门狗 abort / 网络中断时已收字节通过 partialBuf 抛给调用方，从断点续传（治流量浪费）。
+async function fetchRange(
+  url: string,
+  start: number,
+  end: number,
+  onChunk: (delta: number) => void,
+  signal?: AbortSignal,
+): Promise<{ buf: ArrayBuffer; received: number }> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT);
-  if (signal) {
-    signal.addEventListener('abort', () => ctrl.abort(), { once: true });
-  }
+  if (signal) signal.addEventListener('abort', () => ctrl.abort(), { once: true });
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  const assemble = () => {
+    const out = new Uint8Array(received);
+    let off = 0;
+    for (const c of chunks) { out.set(c, off); off += c.byteLength; }
+    return out.buffer;
+  };
   try {
     const resp = await fetch(url, { headers: { Range: `bytes=${start}-${end}` }, signal: ctrl.signal });
     if (resp.status !== 206 && resp.status !== 200) throw new Error('分片下载失败 ' + resp.status);
-    return await resp.arrayBuffer();
+    const reader = resp.body!.getReader();
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done || !value) break;
+      chunks.push(new Uint8Array(value)); // 拷贝，避免流复用底层 buffer 导致数据损坏
+      received += value.byteLength;
+      onChunk(value.byteLength);
+    }
+    return { buf: assemble(), received };
+  } catch (e) {
+    if (received > 0) {
+      // 看门狗 abort / 网络中断：已收字节保留，抛给调用方从断点续传
+      const err = new Error('partial') as Error & { partialBytes: number; partialBuf: ArrayBuffer };
+      err.partialBytes = received;
+      err.partialBuf = assemble();
+      throw err;
+    }
+    throw e;
   } finally {
     clearTimeout(timer);
   }
 }
 
-// 单个分片：按 ≤16MB 子范围多次取；超时 / 截断自动重试；允许部分返回并推进（弱网不断档）
+// 单个分片：按 ≤16MB 子范围多次取；看门狗 abort 后保留已收字节、从断点续传（零流量浪费）
 async function downloadPart(
   url: string,
   size: number,
-  stats: { received: number },
+  onChunk: (delta: number) => void,
   signal?: AbortSignal,
 ): Promise<ArrayBuffer[]> {
   const chunks: ArrayBuffer[] = [];
   let pos = 0;
   while (pos < size) {
     if (signal?.aborted) throw new Error('下载已取消');
+    const startPos = pos;
     const end = Math.min(pos + SUB_CHUNK, size) - 1;
-    const want = end - pos + 1;
-    let buf: ArrayBuffer | null = null;
     for (let attempt = 1; attempt <= 5; attempt++) {
       if (signal?.aborted) throw new Error('下载已取消');
       try {
-        const b = await fetchRange(url, pos, end, signal);
-        if (b.byteLength > 0) { buf = b; break; }
-      } catch {
-        /* 超时 / 网络错误：继续重试 */
+        const { buf, received } = await fetchRange(url, pos, end, onChunk, signal);
+        chunks.push(buf);
+        pos += received;
+        break;
+      } catch (e: any) {
+        if (signal?.aborted) throw new Error('下载已取消');
+        if (e?.partialBuf) {
+          // 看门狗 abort 前已收一部分：保存已收字节，外层 while 从断点继续
+          chunks.push(e.partialBuf);
+          pos += e.partialBytes;
+          break;
+        }
+        if (attempt < 5) await new Promise((r) => setTimeout(r, 400 * attempt));
       }
-      buf = null;
-      if (attempt < 5) await new Promise((r) => setTimeout(r, 400 * attempt));
     }
-    if (!buf) throw new Error('网络不稳定，下载中断，请重试');
-    chunks.push(buf);
-    stats.received += buf.byteLength;
-    pos += buf.byteLength; // 部分返回也能推进，弱网不卡死
+    if (pos <= startPos) throw new Error('网络不稳定，下载中断，请重试');
   }
   return chunks;
 }
@@ -93,7 +127,7 @@ async function downloadPart(
 async function downloadAll(
   base: string,
   manifest: DownloadManifest,
-  stats: { received: number },
+  onChunk: (delta: number) => void,
   abortCtrl: AbortController,
 ): Promise<Blob> {
   const results: (ArrayBuffer[] | null)[] = new Array(manifest.parts.length).fill(null);
@@ -104,7 +138,7 @@ async function downloadAll(
       const i = next++;
       const part = manifest.parts[i];
       const url = `${base}/download/${props.code}/${props.file.id}/part/${encodeURIComponent(part.key)}`;
-      results[i] = await downloadPart(url, part.size, stats, abortCtrl.signal);
+      results[i] = await downloadPart(url, part.size, onChunk, abortCtrl.signal);
     }
   }
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, manifest.parts.length) }, worker));
@@ -122,15 +156,21 @@ async function onDownload() {
   speed.value = 0;
   phase.value = '准备中…';
   const stats = { received: 0, total: 0 };
-  const t0 = performance.now();
+  const samples: { t: number; r: number }[] = []; // 5s 滑动窗口，算真实瞬时速度（替代全程平均）
+  // 每段密文到达即刷新进度 / 速度，不再依赖 setInterval 轮询（治 UI 滞后 + 速度失真）
+  const onChunk = (delta: number) => {
+    stats.received += delta;
+    progress.value = stats.total ? Math.min(1, stats.received / stats.total) : 0;
+    const now = performance.now();
+    samples.push({ t: now, r: stats.received });
+    while (samples.length > 1 && now - samples[0].t > 5000) samples.shift();
+    if (samples.length >= 2) {
+      const dt = (samples[samples.length - 1].t - samples[0].t) / 1000;
+      if (dt > 0) speed.value = (samples[samples.length - 1].r - samples[0].r) / 1048576 / dt;
+    }
+  };
   const abortCtrl = new AbortController();
   activeAbort = abortCtrl; // 暴露给取消按钮
-  // 进度 / 速度轮询：拉取阶段每 200ms 刷新一次 UI（解密瞬间完成，无需单独计速）
-  const timer = setInterval(() => {
-    const sec = (performance.now() - t0) / 1000;
-    progress.value = stats.total ? Math.min(1, stats.received / stats.total) : 0;
-    speed.value = sec > 0 ? stats.received / 1048576 / sec : 0;
-  }, 200);
   try {
     const base = resolveTusBase();
     const manifestUrl = `${base}/download/${props.code}/${props.file.id}`;
@@ -139,9 +179,11 @@ async function onDownload() {
     const manifest: DownloadManifest = await mResp.json();
     stats.total = manifest.total;
     phase.value = '拉取加密数据中…';
-    const cipher = await downloadAll(base, manifest, stats, abortCtrl);
+    const cipher = await downloadAll(base, manifest, onChunk, abortCtrl);
     phase.value = '本地解密中…';
-    const plain = props.e2eeKey ? await decryptBlob(cipher, props.e2eeKey) : cipher;
+    const plain = props.e2eeKey
+      ? await decryptBlob(cipher, props.e2eeKey, (r) => { phase.value = `本地解密中… ${(r * 100).toFixed(0)}%`; })
+      : cipher;
     phase.value = '已保存到本机';
     progress.value = 1;
     done.value = true;
@@ -151,7 +193,6 @@ async function onDownload() {
     abortCtrl.abort(); // 出错/取消时立即终止所有后台 fetch，避免继续拉取浪费流量
     err.value = wasCancelled ? '已取消下载' : (e?.message || '下载失败');
   } finally {
-    clearInterval(timer);
     busy.value = false;
     activeAbort = null;
   }
