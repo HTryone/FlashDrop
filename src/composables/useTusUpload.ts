@@ -1,7 +1,7 @@
 // 中转上传：加密后浏览器直传 R2（presigned PUT），Worker 仅做控制面（创建文件 / 索引 / commit）。
 // 大体积密文流绕过 Worker 的 request.body pipe，避免 CF 边缘对大请求体流式透传的字节损坏
 // （HMAC 校验失败根因：tus PATCH 把 80MiB 流穿过 CF 边缘→Worker→FixedLengthStream→R2，损坏且静默入库）。
-// 直传 R2 后数据不经 Worker 字节处理，R2 原生按 content-length 接收，损坏消失；块大小策略：默认 80MB，55s 看门狗触发则后续降 40MB，失败/连续看门狗锁定最小成功块；看门狗不中断当前块，commit 异步流水线。
+// 直传 R2 后数据不经 Worker 字节处理，R2 原生按 content-length 接收，损坏消失；块大小策略：默认 80MB，55s 看门狗触发则降 40MB（80/2），再触发降 16MB（兜底）；看门狗不中断当前块，commit 异步流水线。
 
 import { encryptFile, deriveKey } from '@/crypto/tus-crypto';
 import { resolveTusBase } from '@/transfer/room';
@@ -21,12 +21,10 @@ export interface UploadOptions {
 
 /** 默认块大小：快链直接用 80MB（用户指定不再更大）。 */
 const BLOCK = 80 * 1024 * 1024;
-/** 看门狗（秒）：单块到时仍未传完 → 后续块降为 FALLBACK；不中断当前块（让其自然完成或撞 60s 边缘）。 */
+/** 看门狗（秒）：单块到时仍未传完 → 触发降档（不中断当前块，让其自然完成或撞 60s 边缘）。 */
 const WATCHDOG = 55;
-/** 降档块大小：触发看门狗或失败时，后续块用 40MB。 */
-const FALLBACK = 40 * 1024 * 1024;
-/** 极端弱网兜底块大小：连续失败后锁定的最小块。 */
-const MIN_SEG = 4 * 1024 * 1024;
+/** 看门狗/失败降档序列（单调不回升）：80 → 40(=80/2) → 16(兜底)。每次触发升一档，封顶 16MB。 */
+const TIERS = [BLOCK, BLOCK / 2, 16 * 1024 * 1024];
 /** 单区间重试次数（每次失败自动降档，不会同尺寸反复重试）。 */
 const RETRIES = 5;
 
@@ -104,7 +102,7 @@ function uploadSliceXHR(
     const timer = setTimeout(() => {
       if (watchdogCalled) return;
       watchdogCalled = true;
-      console.warn(`[upload] 单块已超 ${WATCHDOG}s 看门狗，后续块降为 ${FALLBACK / 1048576}MB`);
+      console.warn(`[upload] 单块已超 ${WATCHDOG}s 看门狗，触发降档（后续块用更小尺寸）`);
       onWatchdog?.();
     }, WATCHDOG * 1000);
     xhr.open('PUT', url);
@@ -147,20 +145,20 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
     const fileId = await createUpload(tusBase, meta);
 
     // 块大小策略（用户指定，2026-08-04）：
-    // 默认 80MB；看门狗 55s 到时未传完 → 后续块降 40MB；失败或连续 2 次看门狗 → 锁定最小成功块。
-    // 看门狗不中断当前块（让其自然完成或撞 60s 边缘）；commit 异步 + 下一块预签名流水线，消串行空挡；不靠测速。
+    // 默认 80MB；看门狗 55s 到时未传完 → 后续块降 40MB（=80/2）；再触发看门狗 → 降 16MB（兜底）。
+    // 看门狗/失败降档单调不回升；看门狗不中断当前块（让其自然完成或撞 60s 边缘）；
+    // commit 异步 + 下一块预签名流水线，消串行空挡；不靠测速。
     let off = 0;
-    let downshift = false;        // 是否启用降档块（40MB）
-    let locked = 0;               // >0 表示已锁定稳态块大小
-    let consecutiveBad = 0;       // 连续看门狗/失败计数
-    let minSuccessSeg = BLOCK;    // 历史最小成功块（锁定依据）
+    let tier = 0;                 // 降档档位：0=80, 1=40, 2=16（兜底），单调不回升
     let committed = 0;            // 已落库字节（commit 成功）
     let inflight = 0;             // 当前块已上行字节（仅 UI 进度反馈）
     const pf: { cur: Prefetched | null } = { cur: null };
     const commitJobs: Promise<void>[] = [];
     const commitRetries: Array<() => Promise<void>> = [];
 
-    const pickSeg = (): number => (locked > 0 ? locked : downshift ? FALLBACK : BLOCK);
+    const pickSeg = (): number => TIERS[Math.min(tier, TIERS.length - 1)];
+    // 触发一次降档（看门狗或失败）：档位升一档（封顶 16MB），作废已预取的 presign（尺寸变了）
+    const downgrade = () => { tier = Math.min(tier + 1, TIERS.length - 1); pf.cur = null; };
 
     const report = () => {
       const up = committed + inflight;
@@ -184,7 +182,6 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
 
       const blob = cipher.slice(off, end);
       inflight = 0;
-      let watchdogFired = false;
 
       // 流水线：当前块上传同时，预取下一块 presign（按当前假设尺寸，降档时作废）
       let prefetchP: Promise<void> = Promise.resolve();
@@ -199,7 +196,7 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
       const r = await uploadSliceXHR(
         url, blob,
         (sent) => { inflight = sent; report(); },
-        () => { watchdogFired = true; },
+        () => { downgrade(); },
       );
       await prefetchP;
 
@@ -211,22 +208,10 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
         inflight = 0;
         off = end;
         report();
-        minSuccessSeg = Math.min(minSuccessSeg, blob.size);
-        if (watchdogFired) {
-          consecutiveBad++;
-          downshift = true;
-          // 连续 2 次看门狗 → 锁定最小成功块（仅 80MB 成功则锁 40MB 兜底，避免贴 60s 悬崖）
-          if (consecutiveBad >= 2) { locked = minSuccessSeg === BLOCK ? FALLBACK : Math.max(minSuccessSeg, MIN_SEG); downshift = false; }
-          pf.cur = null; // 降档，预取尺寸作废
-        } else {
-          consecutiveBad = 0;
-        }
+        // 看门狗已在回调里 downgrade()（当前块用旧档位，下一块起用新档位）；正常完成不回升。
       } else {
-        // 失败（含撞 60s 边缘）：降档，作废预取，同区间用更小块重传（不反复同尺寸）
-        pf.cur = null;
-        consecutiveBad++;
-        downshift = true;
-        if (consecutiveBad >= 2) { locked = Math.max(minSuccessSeg === BLOCK ? MIN_SEG : minSuccessSeg, MIN_SEG); downshift = false; }
+        // 失败（含撞 60s 边缘）：首次失败升一档，同区间用更小块重传；重试仍失败再升一档（封顶 16MB），不反复同尺寸。
+        downgrade();
         let curSeg = pickSeg();
         let ok = false;
         let lastErr = '网络错误，正在降档重试';
@@ -243,10 +228,9 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
             inflight = 0;
             off = cEnd;
             report();
-            minSuccessSeg = Math.min(minSuccessSeg, cb.size);
-            consecutiveBad = 0;
             ok = true;
           } else {
+            downgrade();
             curSeg = pickSeg();
           }
         }
