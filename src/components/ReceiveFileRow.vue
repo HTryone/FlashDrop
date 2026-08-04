@@ -31,15 +31,19 @@ function triggerDownload(blob: Blob, name: string) {
 interface PartInfo { key: string; offset: number; size: number }
 interface DownloadManifest { parts: PartInfo[]; total: number; filename: string }
 
-// 每次最多取 8MiB（实证安全线：CF 对本路径单响应流有上限，>~16MiB 流式透传 R2 时会字节损坏→下载 HMAC 校验失败；8MiB 远低于该上限稳定可用。减 RTT 应改提 CONCURRENCY，勿加大本值）
-const SUB_CHUNK = 8 * 1024 * 1024;
-const CONCURRENCY = 12;
-// 单块取数超时：不稳定网络下连接可能“挂死不报错”，必须主动掐断后重试，否则整链卡死
+// 每次最多取 16MiB：上传已改为浏览器直传 R2，大对象流损坏根因已消除；16MiB 减少请求数/RTT。
+// 若弱网 16MiB 在 FETCH_TIMEOUT 内下不完，单次 Range 会被 CF 截断，fetchRange 允许收下已传部分并推进。
+const SUB_CHUNK = 16 * 1024 * 1024;
+const CONCURRENCY = 6;
+// 单路取数超时：不稳定网络下连接可能“挂死不报错”，必须主动掐断后重试，否则整链卡死
 const FETCH_TIMEOUT = 30_000;
 
-async function fetchRange(url: string, start: number, end: number): Promise<ArrayBuffer> {
+async function fetchRange(url: string, start: number, end: number, signal?: AbortSignal): Promise<ArrayBuffer> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT);
+  if (signal) {
+    signal.addEventListener('abort', () => ctrl.abort(), { once: true });
+  }
   try {
     const resp = await fetch(url, { headers: { Range: `bytes=${start}-${end}` }, signal: ctrl.signal });
     if (resp.status !== 206 && resp.status !== 200) throw new Error('分片下载失败 ' + resp.status);
@@ -49,18 +53,25 @@ async function fetchRange(url: string, start: number, end: number): Promise<Arra
   }
 }
 
-// 单个分片：按 ≤8MB 子范围多次取；超时 / 截断自动重试（覆盖 CF 截断；8MiB 为安全线，勿超）
-async function downloadPart(url: string, size: number, stats: { received: number }): Promise<ArrayBuffer[]> {
+// 单个分片：按 ≤16MB 子范围多次取；超时 / 截断自动重试；允许部分返回并推进（弱网不断档）
+async function downloadPart(
+  url: string,
+  size: number,
+  stats: { received: number },
+  signal?: AbortSignal,
+): Promise<ArrayBuffer[]> {
   const chunks: ArrayBuffer[] = [];
   let pos = 0;
   while (pos < size) {
+    if (signal?.aborted) throw new Error('下载已取消');
     const end = Math.min(pos + SUB_CHUNK, size) - 1;
     const want = end - pos + 1;
     let buf: ArrayBuffer | null = null;
     for (let attempt = 1; attempt <= 5; attempt++) {
+      if (signal?.aborted) throw new Error('下载已取消');
       try {
-        const b = await fetchRange(url, pos, end);
-        if (b.byteLength === want) { buf = b; break; }
+        const b = await fetchRange(url, pos, end, signal);
+        if (b.byteLength > 0) { buf = b; break; }
       } catch {
         /* 超时 / 网络错误：继续重试 */
       }
@@ -70,21 +81,27 @@ async function downloadPart(url: string, size: number, stats: { received: number
     if (!buf) throw new Error('网络不稳定，下载中断，请重试');
     chunks.push(buf);
     stats.received += buf.byteLength;
-    pos = end + 1;
+    pos += buf.byteLength; // 部分返回也能推进，弱网不卡死
   }
   return chunks;
 }
 
-// 并发拉取所有分片，按 offset 拼成完整密文 Blob
-async function downloadAll(base: string, manifest: DownloadManifest, stats: { received: number }): Promise<Blob> {
+// 并发拉取所有分片；共享 AbortController，任一路失败或外层取消时立即终止所有后台请求
+async function downloadAll(
+  base: string,
+  manifest: DownloadManifest,
+  stats: { received: number },
+  abortCtrl: AbortController,
+): Promise<Blob> {
   const results: (ArrayBuffer[] | null)[] = new Array(manifest.parts.length).fill(null);
   let next = 0;
   async function worker() {
     while (next < manifest.parts.length) {
+      if (abortCtrl.signal.aborted) throw new Error('下载已取消');
       const i = next++;
       const part = manifest.parts[i];
       const url = `${base}/download/${props.code}/${props.file.id}/part/${encodeURIComponent(part.key)}`;
-      results[i] = await downloadPart(url, part.size, stats);
+      results[i] = await downloadPart(url, part.size, stats, abortCtrl.signal);
     }
   }
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, manifest.parts.length) }, worker));
@@ -102,6 +119,7 @@ async function onDownload() {
   phase.value = '准备中…';
   const stats = { received: 0, total: 0 };
   const t0 = performance.now();
+  const abortCtrl = new AbortController();
   // 进度 / 速度轮询：拉取阶段每 200ms 刷新一次 UI（解密瞬间完成，无需单独计速）
   const timer = setInterval(() => {
     const sec = (performance.now() - t0) / 1000;
@@ -116,13 +134,14 @@ async function onDownload() {
     const manifest: DownloadManifest = await mResp.json();
     stats.total = manifest.total;
     phase.value = '拉取加密数据中…';
-    const cipher = await downloadAll(base, manifest, stats);
+    const cipher = await downloadAll(base, manifest, stats, abortCtrl);
     phase.value = '本地解密中…';
     const plain = props.e2eeKey ? await decryptBlob(cipher, props.e2eeKey) : cipher;
     phase.value = '已保存到本机';
     progress.value = 1;
     triggerDownload(plain, props.file.name);
   } catch (e: any) {
+    abortCtrl.abort(); // 出错/取消时立即终止所有后台 fetch，避免继续拉取浪费流量
     err.value = e?.message || '下载失败';
   } finally {
     clearInterval(timer);
