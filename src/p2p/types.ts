@@ -1,4 +1,4 @@
-// P2P 直连传输模块 — 类型与常量（独立于 HTTP，仅只读引用 @/crypto/e2ee 与 @/composables/useLocalCrypto）
+// P2P 直连传输模块 — 类型与常量（独立于 HTTP，仅只读引用 @/crypto/e2ee 与 @/https/useLocalCrypto）
 
 export type P2PRole = 'sender' | 'receiver';
 

@@ -6,7 +6,7 @@ import { encodeMsg, FRAME_HDR } from './frame';
 import { resolveRelayBase, genRoomCode } from '@/transfer/room';
 import { segRoom, SEGMENT_TIME_MS, SEGMENT_MIN_BYTES } from './segment';
 import { RelayControl } from './control';
-import { encryptChunkAsync } from '@/composables/useLocalCrypto';
+import { encryptChunkAsync } from '@/https/useLocalCrypto';
 import { deriveKey, LOCAL_SALT, LOCAL_CHUNK_SIZE, randomPassphrase } from '@/crypto/e2ee';
 
 export interface SenderCallbacks {

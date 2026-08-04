@@ -8,7 +8,7 @@ import { segRoom } from './segment';
 import { RelayControl } from './control';
 import { makeSinks, pickSaveDir } from './sink';
 import type { FileMeta, Sink } from './types';
-import { decryptChunkAsync } from '@/composables/useLocalCrypto';
+import { decryptChunkAsync } from '@/https/useLocalCrypto';
 import { deriveKey, LOCAL_SALT, LOCAL_CHUNK_SIZE } from '@/crypto/e2ee';
 
 export interface ReceiverCallbacks {
