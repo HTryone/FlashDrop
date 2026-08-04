@@ -1,7 +1,7 @@
 // 中转上传：加密后浏览器直传 R2（presigned PUT），Worker 仅做控制面（创建文件 / 索引 / commit）。
 // 大体积密文流绕过 Worker 的 request.body pipe，避免 CF 边缘对大请求体流式透传的字节损坏
 // （HMAC 校验失败根因：tus PATCH 把 80MiB 流穿过 CF 边缘→Worker→FixedLengthStream→R2，损坏且静默入库）。
-// 直传 R2 后数据不经 Worker 字节处理，R2 原生按 content-length 接收，损坏消失；块大小策略：默认 80MB，55s 看门狗触发则降 40MB（80/2），再触发降 16MB（兜底）；看门狗不中断当前块，commit 异步流水线。
+// 直传 R2 后数据不经 Worker 字节处理，R2 原生按 content-length 接收，损坏消失；块大小策略：默认 80MB，55s 看门狗触发则降 40MB（80/2），再触发降 16MB（兜底）；兜底档(16MB)连续真实失败 3 次则中止上传报错；看门狗不中断当前块，commit 异步流水线。
 
 import { encryptFile, deriveKey } from '@/crypto/tus-crypto';
 import { resolveTusBase } from '@/transfer/room';
@@ -27,6 +27,8 @@ const WATCHDOG = 55;
 const TIERS = [BLOCK, BLOCK / 2, 16 * 1024 * 1024];
 /** 单区间重试次数（每次失败自动降档，不会同尺寸反复重试）。 */
 const RETRIES = 5;
+/** 兜底档(16MB)连续真实失败(neterr)上限：达到后判定网络不可用，直接中止上传并报错。看门狗超时(慢)不算失败。 */
+const MAX_BOTTOM_RETRIES = 3;
 
 /** 步骤1：POST /files 创建文件记录，返回 fileId。 */
 async function createUpload(tusBase: string, meta: Record<string, string>): Promise<string> {
@@ -146,6 +148,7 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
 
     // 块大小策略（用户指定，2026-08-04）：
     // 默认 80MB；看门狗 55s 到时未传完 → 后续块降 40MB（=80/2）；再触发看门狗 → 降 16MB（兜底）。
+    // 兜底档(16MB)连续真实失败(neterr)达 3 次 → 判定网络不可用，直接中止上传并报错（看门狗超时<慢>不算失败）。
     // 看门狗/失败降档单调不回升；看门狗不中断当前块（让其自然完成或撞 60s 边缘）；
     // commit 异步 + 下一块预签名流水线，消串行空挡；不靠测速。
     let off = 0;
@@ -159,6 +162,19 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
     const pickSeg = (): number => TIERS[Math.min(tier, TIERS.length - 1)];
     // 触发一次降档（看门狗或失败）：档位升一档（封顶 16MB），作废已预取的 presign（尺寸变了）
     const downgrade = () => { tier = Math.min(tier + 1, TIERS.length - 1); pf.cur = null; };
+    const topTierIdx = TIERS.length - 1;        // 兜底档索引（16MB）
+    let bottomFails = 0;                        // 兜底档连续真实失败(neterr)计数
+    // 兜底档(16MB)出现一次真实失败(neterr)即计入；累计达上限则中止任务并报错。看门狗超时(慢)不算失败。
+    const registerBottomFail = (curSeg: number) => {
+      if (tier >= topTierIdx) {
+        bottomFails++;
+        if (bottomFails >= MAX_BOTTOM_RETRIES) {
+          throw new Error(`兜底块(${Math.round(curSeg / 1048576)}MB)连续失败 ${bottomFails} 次，网络不可用，已中止上传`);
+        }
+      }
+    };
+    // 任何块成功落库 → 网络已恢复，重置兜底失败计数
+    const onBlockSuccess = () => { bottomFails = 0; };
 
     const report = () => {
       const up = committed + inflight;
@@ -208,8 +224,11 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
         inflight = 0;
         off = end;
         report();
+        onBlockSuccess();
         // 看门狗已在回调里 downgrade()（当前块用旧档位，下一块起用新档位）；正常完成不回升。
       } else {
+        // 主尝试失败(neterr)：若在兜底档则计入兜底失败次数；看门狗超时(慢)不算失败
+        registerBottomFail(seg);
         // 失败（含撞 60s 边缘）：首次失败升一档，同区间用更小块重传；重试仍失败再升一档（封顶 16MB），不反复同尺寸。
         downgrade();
         let curSeg = pickSeg();
@@ -229,7 +248,9 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
             off = cEnd;
             report();
             ok = true;
+            onBlockSuccess();
           } else {
+            registerBottomFail(curSeg);
             downgrade();
             curSeg = pickSeg();
           }
