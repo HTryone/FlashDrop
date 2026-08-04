@@ -34,7 +34,7 @@ interface DownloadManifest { parts: PartInfo[]; total: number; filename: string 
 // 每次最多取 16MiB：上传已改为浏览器直传 R2，大对象流损坏根因已消除；16MiB 减少请求数/RTT。
 // 若弱网 16MiB 在 FETCH_TIMEOUT 内下不完，单次 Range 会被 CF 截断，fetchRange 允许收下已传部分并推进。
 const SUB_CHUNK = 16 * 1024 * 1024;
-const CONCURRENCY = 6;
+const CONCURRENCY = 12;
 // 单路取数超时：不稳定网络下连接可能“挂死不报错”，必须主动掐断后重试，否则整链卡死
 const FETCH_TIMEOUT = 30_000;
 
