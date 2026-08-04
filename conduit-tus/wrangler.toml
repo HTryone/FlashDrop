@@ -22,7 +22,7 @@ DEFAULT_TTL_HOURS = "24"
 # 上线稳定后请到 R2 轮换令牌并更新本值，或改用 wrangler secret 注入。
 R2_ACCOUNT_ID = "da94b5e41f7c56ff2df7043718a53616"
 R2_ACCESS_KEY_ID = "39305e4d3cbf6f41477be63a9aa479e6"
-R2_SECRET_ACCESS_KEY = "aaaa2c322081e2f3e0b314dddc288b51b0b5d960df7838aa405863d31d3cad"
+R2_SECRET_ACCESS_KEY = "aaaa2c322081e2f3e0b314dddc288b51b0b0b5d960df7838aa405863d31d3cad"
 
 # 每小时跑一次 sweeper，清理 D1 中过期 24h 的 transfer/files/codes 记录。
 # R2 文件体由 bucket 生命周期规则自动过期（已在 CF 控制台配置）。
