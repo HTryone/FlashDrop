@@ -12,6 +12,7 @@ const props = defineProps<{
 }>();
 
 const busy = ref(false);
+const done = ref(false);
 const err = ref('');
 const progress = ref(0); // 0~1
 const speed = ref(0);    // MB/s
@@ -115,6 +116,7 @@ async function downloadAll(
 
 async function onDownload() {
   err.value = '';
+  done.value = false;
   busy.value = true;
   progress.value = 0;
   speed.value = 0;
@@ -142,6 +144,7 @@ async function onDownload() {
     const plain = props.e2eeKey ? await decryptBlob(cipher, props.e2eeKey) : cipher;
     phase.value = '已保存到本机';
     progress.value = 1;
+    done.value = true;
     triggerDownload(plain, props.file.name);
   } catch (e: any) {
     const wasCancelled = abortCtrl.signal.aborted; // 用户主动取消时，catch 触发前信号已置位
@@ -182,6 +185,7 @@ function fmt(n: number) {
     <template v-if="encrypted && !e2eeKey">
       <span class="lock-hint muted">🔒 输入口令后下载</span>
     </template>
+      <span v-else-if="done" class="done-hint">✓ 已保存到本机</span>
       <button v-else-if="!busy" class="btn sm primary" @click="onDownload">
         {{ e2eeKey ? '解密下载' : '下载' }}
       </button>
@@ -210,6 +214,7 @@ function fmt(n: number) {
 .prog-text { color: var(--accent-2); }
 .err { color: var(--danger); }
 .lock-hint { font-size: 12px; white-space: nowrap; }
+.done-hint { font-size: 12px; white-space: nowrap; color: var(--accent-2); }
 .bar { height: 8px; background: var(--bg-soft); border-radius: 999px; overflow: hidden; margin-top: 8px; }
 .fill { height: 100%; background: var(--accent-grad); transition: width 0.2s; }
 .btn.cancel {
