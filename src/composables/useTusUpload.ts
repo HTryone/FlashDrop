@@ -21,9 +21,9 @@ export interface UploadOptions {
 const BASE_SEG = 80 * 1024 * 1024;
 /** 单条连接时间预算（秒）：到时若当前块仍在传，不中断、不重传，让其自然完成（远在 R2 60s 墙内）。用户指定"用秒记"。 */
 const SLICE_SECONDS = 50;
-/** 块大小上下限（防极端慢链请求数爆炸 / 防单 PUT 撞 R2 60s 硬超时）。 */
+/** 块大小上下限：上限锁 80MiB（用户指定不能再大），下限 8MiB 防极端慢链请求数爆炸。 */
 const MIN_SEG = 8 * 1024 * 1024;
-const MAX_SEG = 200 * 1024 * 1024;
+const MAX_SEG = 80 * 1024 * 1024;
 /** 网络错误（断线 / 5xx）重试次数。注意：超时≠错误，超时只软监控、绝不重传。 */
 const RETRIES = 5;
 
