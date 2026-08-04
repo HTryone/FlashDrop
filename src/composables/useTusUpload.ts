@@ -1,12 +1,14 @@
 // 中转上传：加密后浏览器直传 R2（presigned PUT），Worker 仅做控制面（创建文件 / 索引 / commit）。
 // 大体积密文流绕过 Worker 的 request.body pipe，避免 CF 边缘对大请求体流式透传的字节损坏
 // （HMAC 校验失败根因：tus PATCH 把 80MiB 流穿过 CF 边缘→Worker→FixedLengthStream→R2，损坏且静默入库）。
-// 直传 R2 后数据不经 Worker 字节处理，R2 原生按 content-length 接收，损坏消失；网络块大小按"50s 时间预算"动态决定，绝不因超时重传。
+// 直传 R2 后数据不经 Worker 字节处理，R2 原生按 content-length 接收，损坏消失；块大小策略：默认 80MB，55s 看门狗触发则后续降 40MB，失败/连续看门狗锁定最小成功块；看门狗不中断当前块，commit 异步流水线。
 
 import { encryptFile, deriveKey } from '@/crypto/tus-crypto';
 import { resolveTusBase } from '@/transfer/room';
 import { encodeMetadata } from '@/transfer/tus/tus-protocol';
 import type { QueuedFile } from '@/types/transfer';
+
+interface Prefetched { off: number; len: number; url: string }
 
 export interface UploadOptions {
   transferId: string;
@@ -17,14 +19,15 @@ export interface UploadOptions {
   onError: (msg: string) => void;
 }
 
-/** 单块大小初始值（快链起点）。实际每块大小由"时间预算"动态决定（见上传循环）。 */
-const BASE_SEG = 80 * 1024 * 1024;
-/** 单条连接时间预算（秒）：到时若当前块仍在传，不中断、不重传，让其自然完成（远在 R2 60s 墙内）。用户指定"用秒记"。 */
-const SLICE_SECONDS = 50;
-/** 块大小上下限：上限锁 80MiB（用户指定不能再大），下限 8MiB 防极端慢链请求数爆炸。 */
-const MIN_SEG = 8 * 1024 * 1024;
-const MAX_SEG = 80 * 1024 * 1024;
-/** 网络错误（断线 / 5xx）重试次数。注意：超时≠错误，超时只软监控、绝不重传。 */
+/** 默认块大小：快链直接用 80MB（用户指定不再更大）。 */
+const BLOCK = 80 * 1024 * 1024;
+/** 看门狗（秒）：单块到时仍未传完 → 后续块降为 FALLBACK；不中断当前块（让其自然完成或撞 60s 边缘）。 */
+const WATCHDOG = 55;
+/** 降档块大小：触发看门狗或失败时，后续块用 40MB。 */
+const FALLBACK = 40 * 1024 * 1024;
+/** 极端弱网兜底块大小：连续失败后锁定的最小块。 */
+const MIN_SEG = 4 * 1024 * 1024;
+/** 单区间重试次数（每次失败自动降档，不会同尺寸反复重试）。 */
 const RETRIES = 5;
 
 /** 步骤1：POST /files 创建文件记录，返回 fileId。 */
@@ -77,28 +80,33 @@ async function commit(
 }
 
 /** 单块 PUT（XHR）：带上传进度；成功返回 'done'，真实网络错误返回 'neterr'。
- * 关键（用户要求"不重传、只看时间"）：SLICE_SECONDS 预算到时【不 abort、不切小】，仅打日志，
- * 让当前 PUT 自然完成（块可能略超 50s，但远在 R2 边缘 60s 硬超时内）。绝不因超时重传。
- * 只有真正的网络错误（onerror / 非 2xx）才允许上层重试。 */
+ * 看门狗（WATCHDOG 秒）到时调用 onWatchdog()：仅作降档信号，【不 abort、不切小】当前块，
+ * 让当前 PUT 自然完成（可能略超 55s，只要不撞 R2 边缘 60s 即可；若真超 60s 边缘会失败，上层按失败降档重传）。
+ * 只有真正的网络错误（onerror / 非 2xx）才返回 'neterr' 允许上层降档重试。 */
 function uploadSliceXHR(
   url: string,
   blob: Blob,
   onProgress: (sent: number) => void,
+  onWatchdog?: () => void,
 ): Promise<'done' | 'neterr'> {
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
     let sent = 0;
     let settled = false;
+    let watchdogCalled = false;
     const finish = (r: 'done' | 'neterr') => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       resolve(r);
     };
-    // 软预算：仅监控，不中断、不重传
+    // 看门狗：仅通知上层降档，不中断当前传输
     const timer = setTimeout(() => {
-      console.warn(`[upload] 单块已超 ${SLICE_SECONDS}s 预算，继续等待自然完成（不重传）`);
-    }, SLICE_SECONDS * 1000);
+      if (watchdogCalled) return;
+      watchdogCalled = true;
+      console.warn(`[upload] 单块已超 ${WATCHDOG}s 看门狗，后续块降为 ${FALLBACK / 1048576}MB`);
+      onWatchdog?.();
+    }, WATCHDOG * 1000);
     xhr.open('PUT', url);
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
     xhr.setRequestHeader('Content-Length', String(blob.size));
@@ -138,14 +146,21 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
 
     const fileId = await createUpload(tusBase, meta);
 
-    // 单发 + 用秒记（时间驱动动态块，不重传）：
-    // 顺序传；每块按 SLICE_SECONDS 预算自然完成，绝不因超时 abort 重传；
-    // 块大小随"本块实际耗时"动态调节（趋近 50s 预算），不看瞬时速度、不预测网络。
-    // 只有真实网络错误才重试（RETRIES）。
+    // 块大小策略（用户指定，2026-08-04）：
+    // 默认 80MB；看门狗 55s 到时未传完 → 后续块降 40MB；失败或连续 2 次看门狗 → 锁定最小成功块。
+    // 看门狗不中断当前块（让其自然完成或撞 60s 边缘）；commit 异步 + 下一块预签名流水线，消串行空挡；不靠测速。
     let off = 0;
-    let seg = BASE_SEG;
-    let committed = 0; // 已落库字节（commit 成功）
-    let inflight = 0; // 当前块已上行字节（仅 UI 进度反馈）
+    let downshift = false;        // 是否启用降档块（40MB）
+    let locked = 0;               // >0 表示已锁定稳态块大小
+    let consecutiveBad = 0;       // 连续看门狗/失败计数
+    let minSuccessSeg = BLOCK;    // 历史最小成功块（锁定依据）
+    let committed = 0;            // 已落库字节（commit 成功）
+    let inflight = 0;             // 当前块已上行字节（仅 UI 进度反馈）
+    const pf: { cur: Prefetched | null } = { cur: null };
+    const commitJobs: Promise<void>[] = [];
+    const commitRetries: Array<() => Promise<void>> = [];
+
+    const pickSeg = (): number => (locked > 0 ? locked : downshift ? FALLBACK : BLOCK);
 
     const report = () => {
       const up = committed + inflight;
@@ -154,37 +169,99 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
     };
 
     while (off < size) {
+      const seg = pickSeg();
       const end = Math.min(off + seg, size);
+      const blobLen = end - off;
+
+      // 流水线：优先用预取的 presign（尺寸/偏移匹配），否则现签
+      let url: string;
+      if (pf.cur && pf.cur.off === off && pf.cur.len === blobLen) {
+        url = pf.cur.url;
+        pf.cur = null;
+      } else {
+        url = await presign(tusBase, fileId, off, blobLen);
+      }
+
       const blob = cipher.slice(off, end);
-      let done = false;
-      let lastErr: string | undefined;
-      for (let attempt = 0; attempt < RETRIES && !done; attempt++) {
-        const url = await presign(tusBase, fileId, off, blob.size);
+      inflight = 0;
+      let watchdogFired = false;
+
+      // 流水线：当前块上传同时，预取下一块 presign（按当前假设尺寸，降档时作废）
+      let prefetchP: Promise<void> = Promise.resolve();
+      if (end < size) {
+        const nSeg = pickSeg();
+        const nEnd = Math.min(end + nSeg, size);
+        prefetchP = presign(tusBase, fileId, end, nEnd - end)
+          .then((u) => { pf.cur = { off: end, len: nEnd - end, url: u }; })
+          .catch(() => { pf.cur = null; });
+      }
+
+      const r = await uploadSliceXHR(
+        url, blob,
+        (sent) => { inflight = sent; report(); },
+        () => { watchdogFired = true; },
+      );
+      await prefetchP;
+
+      if (r === 'done') {
+        const job = () => commit(tusBase, fileId, off + blob.size, blob.size);
+        commitJobs.push(job().catch(() => {}));
+        commitRetries.push(job);
+        committed += blob.size;
         inflight = 0;
-        const t0 = Date.now();
-        const r = await uploadSliceXHR(url, blob, (sent) => {
-          inflight = sent;
-          report();
-        });
-        if (r === 'done') {
-          await commit(tusBase, fileId, off + blob.size, blob.size);
-          const dt = (Date.now() - t0) / 1000;
-          committed += blob.size;
-          inflight = 0;
-          off = end;
-          report();
-          done = true;
-          // 时间驱动动态块：用本块实际耗时反推下一块大小，使下一块趋近 SLICE_SECONDS 预算
-          if (dt > 0.5) {
-            const est = Math.floor(blob.size * (SLICE_SECONDS / dt));
-            seg = Math.min(MAX_SEG, Math.max(MIN_SEG, est));
-          }
+        off = end;
+        report();
+        minSuccessSeg = Math.min(minSuccessSeg, blob.size);
+        if (watchdogFired) {
+          consecutiveBad++;
+          downshift = true;
+          // 连续 2 次看门狗 → 锁定最小成功块（仅 80MB 成功则锁 40MB 兜底，避免贴 60s 悬崖）
+          if (consecutiveBad >= 2) { locked = minSuccessSeg === BLOCK ? FALLBACK : Math.max(minSuccessSeg, MIN_SEG); downshift = false; }
+          pf.cur = null; // 降档，预取尺寸作废
         } else {
-          lastErr = '网络错误，正在重试';
-          // 仅网络错误重试；超时不会走到这里（超时只软监控，块自然完成）
+          consecutiveBad = 0;
+        }
+      } else {
+        // 失败（含撞 60s 边缘）：降档，作废预取，同区间用更小块重传（不反复同尺寸）
+        pf.cur = null;
+        consecutiveBad++;
+        downshift = true;
+        if (consecutiveBad >= 2) { locked = Math.max(minSuccessSeg === BLOCK ? MIN_SEG : minSuccessSeg, MIN_SEG); downshift = false; }
+        let curSeg = pickSeg();
+        let ok = false;
+        let lastErr = '网络错误，正在降档重试';
+        for (let a = 0; a < RETRIES && !ok; a++) {
+          const cEnd = Math.min(off + curSeg, size);
+          const cb = cipher.slice(off, cEnd);
+          const curl = await presign(tusBase, fileId, off, cb.size);
+          const cr = await uploadSliceXHR(curl, cb, (s) => { inflight = s; report(); });
+          if (cr === 'done') {
+            const job = () => commit(tusBase, fileId, off + cb.size, cb.size);
+            commitJobs.push(job().catch(() => {}));
+            commitRetries.push(job);
+            committed += cb.size;
+            inflight = 0;
+            off = cEnd;
+            report();
+            minSuccessSeg = Math.min(minSuccessSeg, cb.size);
+            consecutiveBad = 0;
+            ok = true;
+          } else {
+            curSeg = pickSeg();
+          }
+        }
+        if (!ok) throw new Error(lastErr);
+      }
+    }
+
+    // 收尾：确保所有 commit 完成（失败的异步 commit 重试 3 次）
+    const settled = await Promise.allSettled(commitJobs);
+    for (let i = 0; i < settled.length; i++) {
+      if (settled[i].status === 'rejected') {
+        for (let k = 0; k < 3; k++) {
+          try { await commitRetries[i](); break; } catch { /* 继续重试 */ }
         }
       }
-      if (!done) throw new Error(lastErr || '上传块失败');
     }
 
     opts.onSuccess();
