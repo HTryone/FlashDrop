@@ -8,6 +8,7 @@ import SendFileRow from './SendFileRow.vue';
 import { LocalSender } from '@/https';
 import { resolveRelayBase } from '@/transfer/room';
 import { createP2PSender } from '@/p2p';
+import { SignalingClient } from '@/p2p/signaling';
 
 const emit = defineEmits<{
   (e: 'gotLoginCode', code: string): void;
@@ -56,11 +57,48 @@ const sender = new LocalSender({
   onRoom: (room, link, pass) => { lRoom.value = room; lSendLink.value = link; lPassphrase.value = pass; },
 });
 
-function genRoom() { sender.genRoom(); }
+function genRoom() {
+  // 先清理旧的提前信令（重新生成房间时）
+  if (p2pEarlySig) { p2pEarlySig.close(); p2pEarlySig = null; }
+  sender.genRoom();
+}
 
 // ---------- P2P 直连发送（独立模块 @/p2p，复用同一房间码/口令/文件，不触碰 HTTP 代码）----------
 const localTransport = ref<'http' | 'p2p'>('http');
 let p2pSender: ReturnType<typeof createP2PSender> | null = null;
+// P2P 提前信令：genRoom 时即连 WS，不等点"开始传输"。
+// 这样对方一点"连接接收"，relay 就能通过 peer-joined 通知发送端亮灯。
+let p2pEarlySig: SignalingClient | null = null;
+
+// P2P 模式下，房间一生成立即连信令 WS（不等点"开始传输"），
+// 对方一加入 relay 就能通过 peer-joined 通知发送端亮灯。
+watch(lRoom, (room) => {
+  if (!room || localTransport.value !== 'p2p') return;
+  // 防重复：已在连接中则跳过
+  if (p2pEarlySig) return;
+  p2pEarlySig = new SignalingClient({
+    relayBase: resolveRelayBase(),
+    room,
+    role: 'sender',
+    onSignal: () => {}, // 占位：PeerLink 建立后会通过 setOnSignal 接管
+    onPeerConnected: (role) => {
+      if (role === 'receiver' && !lSending.value && !lDone.value) {
+        lPeerOnline.value = true;
+        lStatus.value = '对方已加入，可点「开始传输」';
+      }
+    },
+  });
+  p2pEarlySig.connect();
+});
+
+// 从 P2P 切换到 HTTP 时，断开提前信令
+watch(localTransport, (mode) => {
+  if (mode !== 'p2p' && p2pEarlySig) {
+    p2pEarlySig.close();
+    p2pEarlySig = null;
+    lPeerOnline.value = false;
+  }
+});
 
 async function runP2PLocalSend() {
   if (!lRoom.value || !lPassphrase.value) { lStatus.value = '请先生成房间'; return; }
@@ -83,16 +121,21 @@ async function runP2PLocalSend() {
     },
     // 接收端已加入房间并开始协商：提前点亮在线指示灯，给出「对方来了」的反馈
     // （不等 DataChannel open，避免 LAN 首轮 ICE 期间 UI 一直显示「等待加入…」）。
+    // 注意：提前信令的 onPeerConnected 已在 watch(lRoom) 里处理了"对方加入但还没点发送"的场景，
+    // 这里的 onPeerJoined 只处理"点了发送之后、RTC 协商期间对方信令到达"的场景。
     onPeerJoined: () => {
-      lPeerOnline.value = true;
-      lStatus.value = '对方已加入，可点「开始传输」';
+      if (!lPeerOnline.value) {
+        lPeerOnline.value = true;
+        lStatus.value = 'P2P 信令已接通，正在建立直连…';
+      }
     },
     onProgress: (p) => { lProgress.value = p.total ? p.sent / p.total : 0; },
     onFail: (e) => { lStatus.value = `P2P 传输失败：${e.message}`; lDone.value = false; },
   });
   p2pSender = sender;
   try {
-    await sender.connect();
+    await sender.connect(p2pEarlySig || undefined); // 复用提前连好的信令 WS
+    p2pEarlySig = null; // 所有权已转移给 sender，避免重复 close
   } catch (e: any) {
     lStatus.value = `P2P 连接失败：${e?.message || e}`;
     lSending.value = false;
@@ -105,6 +148,7 @@ function startLocalSend() {
 }
 function cancelLocalSend() {
   if (p2pSender) { p2pSender.abort(); p2pSender = null; }
+  if (p2pEarlySig) { p2pEarlySig.close(); p2pEarlySig = null; }
   sender.cancel();
 }
 function copyLocalLink() { navigator.clipboard?.writeText(sender.link); lStatus.value = '链接已复制'; }
@@ -295,8 +339,8 @@ watch(message, async (v) => {
   }
 });
 
-// 组件卸载时清理本地直传连接
-onUnmounted(() => { sender.close(); });
+// 组件卸载时清理本地直传连接 + 提前信令
+onUnmounted(() => { sender.close(); if (p2pEarlySig) { p2pEarlySig.close(); p2pEarlySig = null; } });
 </script>
 
 <template>

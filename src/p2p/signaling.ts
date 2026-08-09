@@ -9,6 +9,7 @@ export class SignalingClient {
   private onOpen: (() => void) | null;
   private onClose: (() => void) | null;
   private onReconnecting: (() => void) | null;
+  private onPeerConnected: ((role: string) => void) | null;
   private shouldClose = false;
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -23,6 +24,7 @@ export class SignalingClient {
     onOpen?: () => void;
     onClose?: () => void;
     onReconnecting?: () => void;
+    onPeerConnected?: (role: string) => void;
   }) {
     const proto = opts.relayBase.startsWith('https') ? 'wss' : 'ws';
     const host = opts.relayBase.replace(/^https?:\/\//, '');
@@ -32,6 +34,7 @@ export class SignalingClient {
     this.onOpen = opts.onOpen || null;
     this.onClose = opts.onClose || null;
     this.onReconnecting = opts.onReconnecting || null;
+    this.onPeerConnected = opts.onPeerConnected || null;
   }
 
   connect() {
@@ -55,6 +58,7 @@ export class SignalingClient {
       try {
         const msg = JSON.parse(ev.data as string);
         if (msg && msg.type === 'rtc-signal' && msg.data) this.onSignal(msg.data);
+        else if (msg?.type === 'peer-joined') this.onPeerConnected?.(msg.role);
       } catch (e) {
         console.warn('[p2p] 信令解析失败:', e);
       }
@@ -97,6 +101,9 @@ export class SignalingClient {
     }
     this.rawSend(data);
   }
+
+  // 允许外部替换 onSignal 目标（提前连 WS 后，PeerLink 建立时需重新接线）
+  setOnSignal(fn: (data: any) => void) { this.onSignal = fn; }
 
   close() {
     this.shouldClose = true;

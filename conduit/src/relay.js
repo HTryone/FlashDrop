@@ -297,8 +297,16 @@ export class Relay {
       // onopen 回调内同步 send 在 CF DO 上偶发静默丢失，改用微任务异步发送，确保 pull/ready 必达。
       if (entry.getConnected) Promise.resolve().then(() => { if (server.readyState === 1) this.sendJSON(server, { type: 'pull' }); });
       if (entry.ready) Promise.resolve().then(() => { if (server.readyState === 1) this.sendJSON(server, { type: 'ready' }); });
+      // 通知接收端：发送端已上线（接收端可能已在等待）
+      if (entry.wsReceiver && entry.wsReceiver.readyState === 1) {
+        Promise.resolve().then(() => { if (entry.wsReceiver && entry.wsReceiver.readyState === 1) this.sendJSON(entry.wsReceiver, { type: 'peer-joined', role: 'sender' }); });
+      }
     } else {
       entry.wsReceiver = server;
+      // 通知发送端：接收端已加入（发送端可能已在等待对方）
+      if (entry.wsSender && entry.wsSender.readyState === 1) {
+        Promise.resolve().then(() => { if (entry.wsSender && entry.wsSender.readyState === 1) this.sendJSON(entry.wsSender, { type: 'peer-joined', role: 'receiver' }); });
+      }
     }
 
     // 回放对端已缓冲的信令（晚加入/重连场景）：让刚连上的对端立即拿到 offer/候选，首轮即连上，

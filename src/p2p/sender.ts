@@ -13,7 +13,7 @@ import type { SenderOpts, P2PState, P2PFileMeta } from './types';
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export interface P2PSender {
-  connect(): Promise<void>;
+  connect(externalSig?: SignalingClient): Promise<void>;
   abort(): void;
 }
 
@@ -159,16 +159,23 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
     } catch { /* ignore */ }
   }
 
-  async function connect(): Promise<void> {
+  async function connect(externalSig?: SignalingClient): Promise<void> {
     cryptoCtx = await deriveP2PKey(opts.pass);
     setState('signaling');
-    sig = new SignalingClient({
-      relayBase: opts.relayBase,
-      room: opts.room,
-      role: 'sender',
-      onSignal: (d) => peer?.onSignal(d),
-      onReconnecting: () => setState('signaling', '信令重连中'),
-    });
+    if (externalSig) {
+      // 复用提前连好的信令 WS（genRoom 时已连），重新接线到本 PeerLink
+      sig = externalSig;
+      sig.setOnSignal((d) => peer?.onSignal(d));
+    } else {
+      sig = new SignalingClient({
+        relayBase: opts.relayBase,
+        room: opts.room,
+        role: 'sender',
+        onSignal: (d) => peer?.onSignal(d),
+        onReconnecting: () => setState('signaling', '信令重连中'),
+      });
+      sig.connect();
+    }
     const ice = await fetchIceServers(opts.relayBase, opts.relayBase.startsWith('https') ? 'wss' : 'ws');
     peer = new PeerLink({
       role: 'sender',
@@ -184,7 +191,6 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
       },
       onPeerJoined: () => opts.onPeerJoined?.(),
     });
-    sig.connect();
     peer.connect(ice);
   }
 
