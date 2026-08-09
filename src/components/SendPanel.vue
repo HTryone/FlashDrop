@@ -111,23 +111,19 @@ async function runP2PLocalSend() {
     pass: lPassphrase.value,
     files: files.value.map((f) => f.file),
     onState: (s, d) => {
-      // 对端在线指示灯原先只有 HTTP 链路会置位，P2P 下永远停在「等待加入…」。
-      // 这里在 vue 薄壳层同步，P2P 模块保持零改动。
-      if (s === 'connected') { lPeerOnline.value = true; lStatus.value = 'P2P 直连已建立，开始传输…'; }
+      if (s === 'signaling') { lStatus.value = 'P2P 信令已接通，等待 ICE 协商…'; }
+      else if (s === 'connecting') { lPeerOnline.value = true; lStatus.value = 'ICE 协商中，正在建立直连…'; }
+      else if (s === 'connected') { lPeerOnline.value = true; lStatus.value = 'P2P 直连已建立，开始传输…'; }
       else if (s === 'transferring') { lPeerOnline.value = true; lStatus.value = 'P2P 传输中…'; }
       else if (s === 'done') { lDone.value = true; lStatus.value = 'P2P 发送完成'; }
       else if (s === 'error') { lPeerOnline.value = false; lStatus.value = `P2P 出错：${d || ''}`; }
       else if (s === 'aborted') { lPeerOnline.value = false; lStatus.value = '已取消'; }
     },
-    // 接收端已加入房间并开始协商：提前点亮在线指示灯，给出「对方来了」的反馈
-    // （不等 DataChannel open，避免 LAN 首轮 ICE 期间 UI 一直显示「等待加入…」）。
-    // 注意：提前信令的 onPeerConnected 已在 watch(lRoom) 里处理了"对方加入但还没点发送"的场景，
-    // 这里的 onPeerJoined 只处理"点了发送之后、RTC 协商期间对方信令到达"的场景。
+    // 对端信令到达（offer/answer）：更新状态反映协商进展。
+    // 不再守卫 lPeerOnline——提前信令已在对方加入时亮灯，这里负责"点了发送后"的状态推进。
     onPeerJoined: () => {
-      if (!lPeerOnline.value) {
-        lPeerOnline.value = true;
-        lStatus.value = 'P2P 信令已接通，正在建立直连…';
-      }
+      if (!lSending.value) return; // 还没点发送，不重复提示（提前信令的 onPeerConnected 已处理）
+      lStatus.value = '对端已响应，ICE 协商中…';
     },
     onProgress: (p) => { lProgress.value = p.total ? p.sent / p.total : 0; },
     onFail: (e) => { lStatus.value = `P2P 传输失败：${e.message}`; lDone.value = false; },

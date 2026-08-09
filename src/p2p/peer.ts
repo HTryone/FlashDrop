@@ -70,11 +70,17 @@ export class PeerLink {
       this.pc = new RTCPeerConnection({ iceServers: stunOnly });
     }
     this.pc.onicecandidate = (e) => {
-      if (e.candidate) this.sendSignal({ type: 'candidate', candidate: e.candidate.toJSON() });
+      if (e.candidate) {
+        console.log(`[p2p] 本地 ICE 候选: ${e.candidate.candidate.substring(0, 80)}`);
+        this.sendSignal({ type: 'candidate', candidate: e.candidate.toJSON() });
+      } else {
+        console.log('[p2p] ICE 候选收集完毕(null candidate)');
+      }
     };
     this.pc.onconnectionstatechange = () => {
       if (!this.pc) return;
       const st = this.pc.connectionState;
+      console.log(`[p2p] ICE connectionState: ${st}${st === 'connected' ? ' ✅' : st === 'failed' ? ' ❌ 将重连' : ''}`);
       if (st === 'connected') {
         this.gotRemote = true;
         this.clearOfferTimer();
@@ -114,6 +120,7 @@ export class PeerLink {
     try {
       const offer = await this.pc.createOffer();
       await this.pc.setLocalDescription(offer);
+      console.log('[p2p] offer 已创建并发送');
       this.sendSignal({ type: 'offer', sdp: this.pc.localDescription?.sdp });
       // 重发 offer 直到收到对端响应（防 relay 未缓冲早期 offer 导致接收端永远收不到）
       this.clearOfferTimer();
@@ -155,6 +162,7 @@ export class PeerLink {
       if (data?.type === 'offer') {
         if (this.role !== 'receiver') return; // sender 忽略自己的 offer 回声
         if (this.gotRemote) return; // 忽略重复 offer（relay 回放 + 发送端重发可能重复投递）
+        console.log('[p2p] 收到 offer，开始创建 answer…');
         await p.setRemoteDescription({ type: 'offer', sdp: data.sdp } as RTCSessionDescriptionInit);
         this.gotRemote = true;
         this.notifyPeerJoined();
@@ -163,13 +171,16 @@ export class PeerLink {
         this.sendSignal({ type: 'answer', sdp: p.localDescription?.sdp });
       } else if (data?.type === 'answer') {
         if (this.role !== 'sender') return;
+        console.log('[p2p] 收到 answer，ICE 协商开始…');
         this.gotRemote = true;
         this.notifyPeerJoined();
         this.clearOfferTimer();
         await p.setRemoteDescription({ type: 'answer', sdp: data.sdp } as RTCSessionDescriptionInit);
       } else if (data?.type === 'candidate') {
         try {
-          await p.addIceCandidate(data.candidate as RTCIceCandidateInit);
+          const c = data.candidate as RTCIceCandidateInit;
+          console.log(`[p2p] 收到远程候选: ${(c.candidate || '').substring(0, 80)}`);
+          await p.addIceCandidate(c);
         } catch (e) {
           console.warn('[p2p] addIceCandidate 失败:', e);
         }
