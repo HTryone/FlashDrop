@@ -211,6 +211,7 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
       onState: (c) => {
         if (c) setState('connecting');
       },
+      onPeerJoined: () => opts.onPeerJoined?.(),
     });
     sig.connect();
     peer.connect(ice);

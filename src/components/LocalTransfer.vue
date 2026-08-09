@@ -106,6 +106,11 @@ async function runP2PRecv() {
       else if (s === 'error') { senderOnline.value = false; recvStatus.value = `P2P 出错：${d || ''}`; }
       else if (s === 'aborted') { senderOnline.value = false; recvStatus.value = '已取消'; }
     },
+    // 发送端已加入房间并开始协商：提前点亮在线指示灯，给出「发送端在线」反馈
+    onPeerJoined: () => {
+      senderOnline.value = true;
+      recvStatus.value = '发送端已连接，正在建立直连…';
+    },
     onProgress: (p) => { recvProgress.value = p.total ? p.received / p.total : 0; },
     onFail: (e) => { recvStatus.value = `P2P 接收失败：${e.message}`; receiving.value = false; },
   });

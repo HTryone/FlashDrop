@@ -64,6 +64,7 @@ export interface SenderOpts {
   onState?: (s: P2PState, detail?: string) => void;
   onProgress?: (p: P2PProgress) => void;
   onFail?: (err: Error) => void;
+  onPeerJoined?: () => void; // 对方（接收端）已加入房间并开始协商
   signal?: AbortSignal;
 }
 
@@ -76,5 +77,6 @@ export interface ReceiverOpts {
   onState?: (s: P2PState, detail?: string) => void;
   onProgress?: (p: P2PProgress) => void;
   onFail?: (err: Error) => void;
+  onPeerJoined?: () => void; // 对方（发送端）已加入房间并开始协商
   signal?: AbortSignal;
 }

@@ -81,6 +81,12 @@ async function runP2PLocalSend() {
       else if (s === 'error') { lPeerOnline.value = false; lStatus.value = `P2P 出错：${d || ''}`; }
       else if (s === 'aborted') { lPeerOnline.value = false; lStatus.value = '已取消'; }
     },
+    // 接收端已加入房间并开始协商：提前点亮在线指示灯，给出「对方来了」的反馈
+    // （不等 DataChannel open，避免 LAN 首轮 ICE 期间 UI 一直显示「等待加入…」）。
+    onPeerJoined: () => {
+      lPeerOnline.value = true;
+      lStatus.value = '对方已加入，可点「开始传输」';
+    },
     onProgress: (p) => { lProgress.value = p.total ? p.sent / p.total : 0; },
     onFail: (e) => { lStatus.value = `P2P 传输失败：${e.message}`; lDone.value = false; },
   });
@@ -470,7 +476,7 @@ onUnmounted(() => { sender.close(); });
         </div>
         <div class="actions">
           <button v-if="!lSending" class="btn primary" :disabled="lDone || !lRoom" @click="startLocalSend">
-            {{ lDone ? '已完成' : '开始传输' }}
+            {{ lDone ? '已完成' : lPeerOnline ? '对方已就位，开始传输' : '开始传输' }}
           </button>
           <button v-else class="btn danger" @click="cancelLocalSend">取消发送</button>
         </div>

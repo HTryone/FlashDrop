@@ -16,6 +16,9 @@ export class PeerLink {
   private onDcMsgCb: MsgHandler | null = null;
   private onStateCb: StateHandler | null = null;
   private onReconnectCb: ReconnectHandler | null = null;
+  private onPeerJoinedCb: (() => void) | null = null;
+  private pendingSignals: any[] = []; // pc 就绪前到达的信令（relay 回放可能早于 pc），就绪后按序冲刷
+  private peerJoinedNotified = false;
 
   private pc: RTCPeerConnection | null = null;
   private dc: RTCDataChannel | null = null;
@@ -31,6 +34,7 @@ export class PeerLink {
     onDcMessage?: MsgHandler;
     onState?: StateHandler;
     onReconnect?: ReconnectHandler;
+    onPeerJoined?: () => void;
   }) {
     this.role = opts.role;
     this.sendSignal = opts.sendSignal;
@@ -38,6 +42,7 @@ export class PeerLink {
     this.onDcMsgCb = opts.onDcMessage || null;
     this.onStateCb = opts.onState || null;
     this.onReconnectCb = opts.onReconnect || null;
+    this.onPeerJoinedCb = opts.onPeerJoined || null;
   }
 
   private wireDc(dc: RTCDataChannel) {
@@ -92,6 +97,10 @@ export class PeerLink {
   async connect(iceServers: RTCIceServer[]) {
     this.iceServers = iceServers;
     this.ensurePc();
+    // 冲刷 connect 之前到达的缓冲信令（relay 回放可能早于 pc 就绪），按到达顺序处理
+    const pend = this.pendingSignals;
+    this.pendingSignals = [];
+    for (const d of pend) { try { await this.onSignal(d); } catch { /* ignore */ } }
     if (this.role === 'sender') {
       this.dc = this.pc!.createDataChannel('flashdrop');
       this.wireDc(this.dc);
@@ -129,20 +138,33 @@ export class PeerLink {
     }
   }
 
+  // 首条对端信令到达（接收端拿到 offer / 发送端拿到 answer）即视为「对方已加入」，
+  // 供 UI 提前点亮在线指示灯与状态提示，不等 DataChannel 真正 open。
+  private notifyPeerJoined() {
+    if (this.peerJoinedNotified) return;
+    this.peerJoinedNotified = true;
+    this.onPeerJoinedCb?.();
+  }
+
   async onSignal(data: any) {
+    if (this.destroyed) return;
+    // pc 尚未就绪（relay 回放可能早于 PeerLink.connect）→ 先缓冲，connect 后按序冲刷
+    if (!this.pc) { this.pendingSignals.push(data); return; }
     const p = this.pc;
-    if (!p || this.destroyed) return;
     try {
       if (data?.type === 'offer') {
         if (this.role !== 'receiver') return; // sender 忽略自己的 offer 回声
+        if (this.gotRemote) return; // 忽略重复 offer（relay 回放 + 发送端重发可能重复投递）
         await p.setRemoteDescription({ type: 'offer', sdp: data.sdp } as RTCSessionDescriptionInit);
         this.gotRemote = true;
+        this.notifyPeerJoined();
         const answer = await p.createAnswer();
         await p.setLocalDescription(answer);
         this.sendSignal({ type: 'answer', sdp: p.localDescription?.sdp });
       } else if (data?.type === 'answer') {
         if (this.role !== 'sender') return;
         this.gotRemote = true;
+        this.notifyPeerJoined();
         this.clearOfferTimer();
         await p.setRemoteDescription({ type: 'answer', sdp: data.sdp } as RTCSessionDescriptionInit);
       } else if (data?.type === 'candidate') {

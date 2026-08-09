@@ -182,6 +182,7 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
         // 重连后续传：从已确认的最高序号之后继续，不重发已落盘帧
         sentSeq = lastAcked;
       },
+      onPeerJoined: () => opts.onPeerJoined?.(),
     });
     sig.connect();
     peer.connect(ice);

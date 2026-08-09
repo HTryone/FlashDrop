@@ -301,6 +301,15 @@ export class Relay {
       entry.wsReceiver = server;
     }
 
+    // 回放对端已缓冲的信令（晚加入/重连场景）：让刚连上的对端立即拿到 offer/候选，首轮即连上，
+    // 不再因「早发信令被丢弃→首轮 ICE 失败→重协商」而拖慢。只回放另一端的信令，避免把自身旧消息回灌给自己。
+    const log = entry.signalLog;
+    if (log && log.length) {
+      for (const item of log) {
+        if (item.from !== role && server.readyState === 1) this.sendJSON(server, item.data);
+      }
+    }
+
     server.addEventListener('message', (event) => {
       try {
         // 房间可能在 GET 重连时被重建，必须实时取当前 entry，不能用闭包里的旧引用
@@ -317,6 +326,12 @@ export class Relay {
           // 信令房间用 `${room}::p2p` 命名空间，与 HTTP 控制通道互不干扰；
           // 此分支只处理 P2P 信令，绝不动 HTTP 的 ready/progress 等控制消息。
           const target = role === 'sender' ? cur.wsReceiver : cur.wsSender;
+          // 缓冲对端信令，供晚加入/重连的对端立即回放：
+          // 否则发送端在接收端连上前发出的 offer/候选被丢弃，接收端首轮缺候选→ICE 超时→
+          // 重协商，表现为「信令长时间协商、连接慢」。缓冲后首轮即带齐候选，LAN 主机候选瞬间接通。
+          cur.signalLog = cur.signalLog || [];
+          cur.signalLog.push({ from: role, data });
+          if (cur.signalLog.length > 200) cur.signalLog.shift();
           if (target) this.sendJSON(target, data);
         }
       } catch (e) {
@@ -381,6 +396,7 @@ export class Relay {
     entry.writeChain = Promise.resolve();  // 串行化各 POST 的 enqueue，保证帧连续不交叉
     entry.ready = false;
     entry.getConnected = false;
+    entry.signalLog = []; // P2P 信令缓冲（offer/候选），供晚加入/重连的对端回放，避免首轮 ICE 因缺候选而失败
     entry.closed = false;
     entry.posts = 0;
     entry.enqueued = 0;
