@@ -177,7 +177,7 @@ onUnmounted(() => {
       </div>
       <div class="presence">
         <span class="dot" :class="{ on: senderOnline }"></span>
-        配对状态：{{ senderOnline ? '匹配成功 ✓' : '等待匹配…' }}
+        配对状态：{{ senderOnline ? '匹配成功 ✓' : '等待连接' }}
         <span class="transport" v-if="localTransport === 'http'">HTTP 流式中继</span>
         <span class="transport p2p" v-else>P2P 直连</span>
       </div>
