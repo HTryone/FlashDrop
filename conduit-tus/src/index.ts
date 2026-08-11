@@ -23,6 +23,7 @@ export default {
 
       const url = new URL(request.url);
       const pathname = url.pathname;
+      const ttl = Number(env.DEFAULT_TTL_HOURS || 24);
 
       if (pathname === '/health') {
         return new Response('flashdrop-tus online', {
@@ -42,10 +43,18 @@ export default {
           : await handler.handleCommit(request, origin);
       }
 
+      const mFiles = /^\/api\/transfers\/([^/]+)\/files$/.exec(pathname);
+      if (mFiles && (request.method === 'DELETE' || request.method === 'OPTIONS')) {
+        return await new TransferHandler(index, storage, ttl).deleteTransferFiles(
+          decodeURIComponent(mFiles[1]),
+          origin,
+          request.method,
+        );
+      }
+
       if (pathname === '/api/transfers' || pathname.startsWith('/api/transfer/')) {
         // 有效期由服务端锁定为 DEFAULT_TTL_HOURS（24 小时）；客户端传入的 ttlHours
         // 已被 TransferHandler 忽略，确保"房间 24 小时后自动清除"为硬保证、不可被前端/API 改写。
-        const ttl = Number(env.DEFAULT_TTL_HOURS || 24);
         return await new TransferHandler(index, ttl).handle(request);
       }
 

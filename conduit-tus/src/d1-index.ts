@@ -168,6 +168,10 @@ export class D1IndexBackend implements IndexBackend {
     await this.db.prepare(`DELETE FROM transfers WHERE id = ?`).bind(id).run();
   }
 
+  async deleteTransferFiles(id: string): Promise<void> {
+    await this.db.prepare(`DELETE FROM files WHERE transfer_id = ?`).bind(id).run();
+  }
+
   private rowToTransfer(row: TransferRow, files: FileRecord[]): TransferRecord {
     return {
       id: row.id,

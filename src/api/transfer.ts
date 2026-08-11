@@ -48,6 +48,11 @@ export function clearTransfer(transferId: string): Promise<void> {
   return apiDelete(tusApi(`/api/transfers/${encodeURIComponent(transferId)}`));
 }
 
+/** 仅清空传输下的文件（删除 D1 文件行 + R2 分片，保留分享码/登录码/传输记录），用于重传前清掉失效旧文件 */
+export function clearTransferFiles(transferId: string): Promise<void> {
+  return apiDelete(tusApi(`/api/transfers/${encodeURIComponent(transferId)}/files`));
+}
+
 /** 单文件下载地址（绝对地址，指向 tus Worker） */
 export function fileUrl(code: string, fileId: string): string {
   return tusApi(`/download/${encodeURIComponent(code)}/${encodeURIComponent(fileId)}`);

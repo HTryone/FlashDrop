@@ -69,6 +69,8 @@ export interface IndexBackend {
   isExpired(id: string): Promise<boolean>;
   terminate(id: string): Promise<void>;
   deleteTransfer(id: string): Promise<void>;
+  /** 仅清空传输下的文件（D1 文件行），保留传输记录与分享码/登录码。R2 分片由调用方另行删除。重传前清失效旧文件用。 */
+  deleteTransferFiles(id: string): Promise<void>;
 }
 
 /** 清理器：定期删除过期文件体与索引，避免无限堆积。 */

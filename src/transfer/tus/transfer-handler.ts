@@ -1,7 +1,7 @@
 // 中转业务 API：创建传输 / 按分享码查询。
 // 与 server.mjs 的 /api/transfers、/api/transfer/:code 行为对齐。
 
-import { IndexBackend, TransferRecord, TransferError } from './types';
+import { IndexBackend, StorageBackend, TransferRecord, TransferError } from './types';
 import { corsHeaders } from './tus-protocol';
 
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // 排除 0/O/1/I
@@ -37,6 +37,7 @@ function json(body: unknown, status = 200, origin: string | null): Response {
 export class TransferHandler {
   constructor(
     private readonly index: IndexBackend,
+    private readonly storage?: StorageBackend,
     private readonly defaultTtlHours = 24,
   ) {}
 
@@ -147,11 +148,36 @@ export class TransferHandler {
         storage: 'r2',
         e2ee: t.e2ee,
         expiresAt: t.expiresAt,
-        files: t.files.map((f) => ({ id: f.id, name: f.relativePath, size: f.size })),
+        // 仅列出已完成上传的文件（offset >= size），避免把"已取消 / 上传中"的
+        // 失效文件暴露给接收端（用户反馈的"取消后还能看到旧文件"根因之一）。
+        files: t.files
+          .filter((f) => (f.offset ?? 0) >= f.size)
+          .map((f) => ({ id: f.id, name: f.relativePath, size: f.size })),
       },
       200,
       origin,
     );
+  }
+
+  /** 清空某传输下的文件（D1 文件行 + R2 分片），保留传输记录与分享码/登录码。用于重传前清掉失效旧文件。 */
+  async deleteTransferFiles(id: string, origin: string | null, method: string): Promise<Response> {
+    if (method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders(origin) });
+    if (method !== 'DELETE') {
+      return this.errorFrom(new TransferError('INDEX', 'Method Not Allowed'), origin);
+    }
+    try {
+      const files = await this.index.listFiles(id);
+      if (this.storage) {
+        for (const f of files) {
+          const parts = await this.storage.list(`${f.id}/`);
+          for (const p of parts) await this.storage.delete(p.key);
+        }
+      }
+      await this.index.deleteTransferFiles(id);
+      return json({ ok: true }, 200, origin);
+    } catch (e) {
+      return this.errorFrom(e, origin);
+    }
   }
 
   private errorFrom(e: unknown, origin: string | null): Response {

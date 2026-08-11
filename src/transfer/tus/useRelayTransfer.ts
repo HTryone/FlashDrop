@@ -4,7 +4,7 @@
 import { ref, computed, watch, onUnmounted, type Ref } from 'vue';
 import type { QueuedFile, StorageType } from '@/types/transfer';
 import {
-  createTransfer, refreshCode, setMessage, terminateTransfer, clearTransfer, zipUrl,
+  createTransfer, refreshCode, setMessage, terminateTransfer, clearTransfer, clearTransferFiles, zipUrl,
 } from '@/api/transfer';
 import { uploadAll } from '@/transfer/tus/useTusUpload';
 import { newSalt, E2EE_CHUNK_SIZE, randomPassphrase } from '@/crypto/tus-crypto';
@@ -98,6 +98,11 @@ export function useRelayTransfer(
     relayAbort = new AbortController();
     try {
       if (!transferId.value) await ensureTransfer();
+      else {
+        // 重传（复用同一 transferId）：先清掉上次（可能已取消/失效）的文件行 + R2 分片，
+        // 避免接收端把失效旧文件与新文件一并列出（用户反馈的"取消后还能看到旧文件"根因）。
+        try { await clearTransferFiles(transferId.value); } catch { /* 忽略：旧文件清理失败不阻断重传 */ }
+      }
       await uploadAll(files.value, {
         transferId: transferId.value,
         e2ee: { enabled: true, passphrase: passphrase.value }, // E2EE 始终开启
