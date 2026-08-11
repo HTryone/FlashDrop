@@ -30,7 +30,7 @@ function triggerDownload(blob: Blob, name: string) {
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
-interface PartInfo { key: string; offset: number; size: number }
+interface PartInfo { key: string; offset: number; size: number; url: string }
 interface DownloadManifest { parts: PartInfo[]; total: number; filename: string }
 
 // 每次最多取 16MiB：上传已改为浏览器直传 R2，大对象流损坏根因已消除；16MiB 减少请求数/RTT。
@@ -137,7 +137,9 @@ async function downloadAll(
       if (abortCtrl.signal.aborted) throw new Error('下载已取消');
       const i = next++;
       const part = manifest.parts[i];
-      const url = `${base}/download/${props.code}/${props.file.id}/part/${encodeURIComponent(part.key)}`;
+      // 优先用 Worker 清单返回的 presigned GET URL 直连 R2（绕过 Worker 中转，加速下载）
+      // 兜底：旧清单无 url 时仍走 Worker 代理（兼容未强制刷新的旧前端）
+      const url = part.url || `${base}/download/${props.code}/${props.file.id}/part/${encodeURIComponent(part.key)}`;
       results[i] = await downloadPart(url, part.size, onChunk, abortCtrl.signal);
     }
   }

@@ -55,12 +55,19 @@ export class DownloadHandler {
       }
 
       // 列出分片清单，前端分多次小块取回（与上传一致）
-      const manifestParts = parts
-        .map((p) => {
-          const mo = /part-(\d+)$/.exec(p.key);
-          return { key: p.key, offset: mo ? Number(mo[1]) : 0, size: p.size };
-        })
-        .sort((a, b) => a.offset - b.offset);
+      // 每个 part 附 presigned GET URL：浏览器直连 R2 取数据，绕过 Worker 中转（下载加速，方案 A）
+      const manifestParts = await Promise.all(
+        parts
+          .map((p) => {
+            const mo = /part-(\d+)$/.exec(p.key);
+            return { key: p.key, offset: mo ? Number(mo[1]) : 0, size: p.size };
+          })
+          .sort((a, b) => a.offset - b.offset)
+          .map(async (part) => ({
+            ...part,
+            url: await this.storage.createPresignedUrl(part.key, { method: 'GET', expiresIn: 3600 }),
+          })),
+      );
 
       return new Response(
         JSON.stringify({ parts: manifestParts, total, filename: file.relativePath }),
