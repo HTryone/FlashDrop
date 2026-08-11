@@ -14,16 +14,16 @@ export const FRAME_HDR = 12;
 // DataChannel 子帧头：u32 totalLen @0 | u32 offset @4（8 字节），其后为 piece
 export const SUB_HDR = 8;
 
-// 背压窗口：在途帧数上限（≈ WINDOW_FRAMES * P2P_CHUNK_SIZE ≈ 40MB）
+// 背压窗口：在途帧数上限（≈ WINDOW_FRAMES * P2P_CHUNK_SIZE ≈ 80MB）
 export const WINDOW_FRAMES = 10;
-// DC 缓冲阈值（bufferedAmount 超过则等待排空）
-export const RTC_LOW = 1 * 1024 * 1024;
+// DC 缓冲阈值（bufferedAmount 超过则等待排空）；提到 4MiB 让更多数据在途，喂饱带宽-延迟积，消除 drainDc 频繁等待
+export const RTC_LOW = 4 * 1024 * 1024;
 
 // ── P2P 专用大分块 ──
-// DC 底层 SCTP 自动分片，无 HTTP/WS 的 ~1MB 消息限制。用 4MB 分块替代
-// LOCAL_CHUNK_SIZE(896KB)，crypto 调用次数降 ~4.5 倍，帧头开销占比从 0.07% 降到 0.002%。
+// DC 底层 SCTP 自动分片，无 HTTP/WS 的 ~1MB 消息限制。用 8MB 分块替代
+// LOCAL_CHUNK_SIZE(896KB)，crypto 调用次数较 896KB 降 ~9 倍，帧头开销占比进一步降低。
 // HTTP 中转路径继续用 LOCAL_CHUNK_SIZE（受 DO WS 消息上限约束）。
-export const P2P_CHUNK_SIZE = 4 * 1024 * 1024; // 4MB
+export const P2P_CHUNK_SIZE = 8 * 1024 * 1024; // 8MB
 
 // DC 上的控制消息（字符串 JSON）。数据子帧为二进制，靠 typeof 区分。
 export interface ManifestMsg {

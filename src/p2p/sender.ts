@@ -64,7 +64,7 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
   // ── 预加密前瞻缓冲 ──
   // DC 发送当前块时，Worker 已在加密后续块，消除「等加密完才能发」的串行等待。
   // 用模块级游标 nextEncryptSeq 确保每个 seq 只加密一次（避免重复发送同一帧）。
-  const PRE_ENCRYPT_AHEAD = 2;
+  const PRE_ENCRYPT_AHEAD = 4;
   type EncryptedChunk = { seq: number; frame: Uint8Array };
   let encQueue: EncryptedChunk[] = [];  // 已加密待发送的帧队列
   let encrypting = false;               // 是否有预加密任务在跑
