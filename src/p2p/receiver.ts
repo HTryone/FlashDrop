@@ -27,6 +27,7 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
   let recvBytes = 0;
   let lastAcked = -1;
   let finished = false;
+  let senderDone = false; // 发送端已显式广播传输结束（收到 type:'done'）
   let aborted = false;
   let dc: RTCDataChannel | null = null;
   const reasm = new Reassembler();
@@ -50,6 +51,16 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
   const MAX_WRITE_QUEUE = 4; // 写队列上限（块数）：4×4MB ≈ 16MB，慢盘反压用
 
   const setState = (s: P2PState, d?: string) => opts.onState?.(s, d);
+
+  // 收尾判定：发送端已广播结束 且 本地已收齐全部字节 → 完成。
+  // 不依赖「最后一块 seq 恰好到达」的单点触发，recvBytes 到顶即兜底完成，
+  // 避免最后一块在息屏重连边界丢失时两端状态不一致（发送端 done、接收端卡中间态）。
+  const checkComplete = () => {
+    if (senderDone && !finished && recvBytes >= totalBytes) {
+      finished = true;
+      setState('done');
+    }
+  };
 
   const seqOf = (fi: number, ci: number) => {
     let s = 0;
@@ -79,6 +90,7 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
         if (sink) {
           await sink.writeChunk(job.fi, job.plain, job.position);
           recvBytes += job.plain.byteLength;
+          checkComplete(); // 收齐即完成（配合 senderDone 兜底，不依赖单点 seq 触发）
           if (job.seq > lastAcked) lastAcked = job.seq;
           opts.onProgress?.({ sent: 0, received: recvBytes, total: totalBytes });
           sinceAck++;
@@ -151,6 +163,7 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
     dc = d;
     setState('connected');
     // manifest 已在 dc open 后由发送端首条字符串消息送达；reconnect 后会再次送达（幂等）
+    checkComplete(); // 重连后若已收齐（senderDone 且 recvBytes 到顶）补触发完成态
   }
 
   async function onDcMessage(data: string | ArrayBuffer) {
@@ -182,6 +195,10 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
           return;
         }
         setState('transferring');
+      }
+      else if (msg.type === 'done') {
+        senderDone = true;
+        checkComplete(); // 已收齐 → 立即完成；未收齐 → 维持接收态等续传补齐
       }
       return;
     }

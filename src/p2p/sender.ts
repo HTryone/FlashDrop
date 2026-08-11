@@ -137,6 +137,11 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
       }
       if (!aborted) {
         finished = true;
+        // 显式广播传输结束，让接收端无论是否收齐最后一块都能进入收尾态，
+        // 避免息屏重连场景下最后一块 ack 丢失导致两端状态不一致（发送端已 done、接收端卡中间态）。
+        if (dc && dc.readyState === 'open') {
+          try { dc.send(JSON.stringify({ type: 'done' })); } catch { /* ignore */ }
+        }
         setState('done');
       }
     } catch (e: any) {
