@@ -114,7 +114,11 @@ async function runP2PRecv() {
     // 发送端经信令房上线（WS 连上即触发，早于 SDP）：立刻点亮在线灯，不等 offer 到达
     onPeerPresent: () => {
       senderOnline.value = true;
-      recvStatus.value = '发送端已就位，等待开始传输…';
+      // 仅在尚未开始传输时显示「就位」提示；传输中/完成/出错时不倒退状态。
+      // 否则息屏重连后 relay 再次推送 peer-joined 会把「接收中/已完成」覆盖回「等待开始传输」。
+      if (!receiving.value && recvProgress.value === 0) {
+        recvStatus.value = '发送端已就位，等待开始传输…';
+      }
     },
     onProgress: (p) => { recvProgress.value = p.total ? p.received / p.total : 0; },
     onFail: (e) => { recvStatus.value = `P2P 接收失败：${e.message}`; receiving.value = false; },

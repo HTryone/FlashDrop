@@ -171,6 +171,12 @@ export class PeerLink {
         this.sendSignal({ type: 'answer', sdp: p.localDescription?.sdp });
       } else if (data?.type === 'answer') {
         if (this.role !== 'sender') return;
+        // 状态守卫：仅在处于等待 answer 的状态时才处理。stable/已连接时收到旧 answer（息屏重连后 relay 回放）直接丢弃，
+        // 避免 'Failed to set remote answer sdp: Called in wrong state: stable' 的 InvalidStateError。
+        if (p.signalingState !== 'have-local-offer' && p.signalingState !== 'have-remote-pranswer') {
+          console.warn('[p2p] 丢弃过期 answer，当前 signalingState:', p.signalingState);
+          return;
+        }
         console.log('[p2p] 收到 answer，ICE 协商开始…');
         this.gotRemote = true;
         this.notifyPeerJoined();
