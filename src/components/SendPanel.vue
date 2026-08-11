@@ -478,12 +478,12 @@ onUnmounted(() => { sender.close(); relayAbort?.abort(); if (p2pEarlySig) { p2pE
         :disabled="!files.length"
         @click="relayPhase === 'idle' ? startTransfer() : resumeUpload()"
       >
-        {{ relayPhase === 'idle' ? '开始传输' : relayPhase === 'cancelled' ? '继续上传' : '重新传输' }}
+        {{ relayPhase === 'idle' ? '开始传输' : relayPhase === 'cancelled' ? '开始上传' : '重新传输' }}
       </button>
       <button v-else-if="relayPhase === 'uploading'" class="btn danger" @click="cancelUpload">取消</button>
       <button v-else-if="relayPhase === 'done'" class="btn primary" @click="startNewTransfer">开始新的传输</button>
       <span v-if="relayPhase === 'done'" class="ok-tag">✓ 全部完成</span>
-      <span v-else-if="relayPhase === 'cancelled'" class="hint-start faint">已取消，可重新选择文件后点「继续上传」</span>
+      <span v-else-if="relayPhase === 'cancelled'" class="hint-start faint">已取消，可重新选择文件后点「开始上传」</span>
       <span v-else-if="relayPhase === 'failed'" class="hint-start faint">网络故障，点「重新传输」重试</span>
       <span v-else-if="relayPhase === 'idle' && files.length && !started" class="hint-start faint">已选中文件，点「开始传输」生成分享码</span>
     </div>

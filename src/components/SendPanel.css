@@ -54,7 +54,12 @@ textarea:focus, .pass:focus { outline: none; border-color: var(--accent); }
   color: var(--accent); margin: 6px 0 10px; user-select: all;
 }
 .code-actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
-.code-link { font-size: 14px; margin-top: 6px; word-break: break-all; color: var(--text); user-select: all; }
+.code-link {
+  font-size: 15px; font-family: monospace; line-height: 1.5;
+  margin-top: 6px; padding: 10px 12px;
+  background: var(--bg-soft); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  word-break: break-all; color: var(--text); user-select: all;
+}
 .pass-display { font-size: 20px; font-weight: 700; letter-spacing: 2px; font-family: monospace; color: var(--accent); margin: 4px 0 0; user-select: all; }
 .share-hint { font-size: 12px; color: var(--text-dim); margin: 8px 0 0; line-height: 1.5; }
 .share-hint b { color: var(--accent-2); }
