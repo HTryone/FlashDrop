@@ -70,15 +70,16 @@ let p2pSender: ReturnType<typeof createP2PSender> | null = null;
 // 这样对方一点"连接接收"，relay 就能通过 peer-joined 通知发送端亮灯。
 let p2pEarlySig: SignalingClient | null = null;
 
-// P2P 模式下，房间一生成立即连信令 WS（不等点"开始传输"），
-// 对方一加入 relay 就能通过 peer-joined 通知发送端亮灯。
-watch(lRoom, (room) => {
-  if (!room || localTransport.value !== 'p2p') return;
-  // 防重复：已在连接中则跳过
-  if (p2pEarlySig) return;
+// 确保提前信令 WS 已连：P2P 模式下、房间已存在、且尚未连接时才创建。
+// 关键修复：房间常在 http 模式下就生成（watch(lRoom) 当时因 mode!=='p2p' 已 return），
+// 用户之后才切到 P2P——必须在 watch(localTransport) 切到 p2p 时补连，否则发送端信令 WS 永不打开，
+// relay 的 peer-joined 无从送达，接收端一点「连接接收」发送端灯也不亮。
+function ensureEarlySig() {
+  if (localTransport.value !== 'p2p') return;
+  if (!lRoom.value || p2pEarlySig) return;
   p2pEarlySig = new SignalingClient({
     relayBase: resolveRelayBase(),
-    room,
+    room: lRoom.value,
     role: 'sender',
     onSignal: () => {}, // 占位：PeerLink 建立后会通过 setOnSignal 接管
     onPeerConnected: (role) => {
@@ -89,11 +90,14 @@ watch(lRoom, (room) => {
     },
   });
   p2pEarlySig.connect();
-});
+}
 
-// 从 P2P 切换到 HTTP 时，断开提前信令
+// 房间一生成（且当前已是 P2P 模式）即连提前信令
+watch(lRoom, () => ensureEarlySig());
+// 切到 P2P 模式（房间可能已先生成于 http 模式）时补连提前信令；切走则断开
 watch(localTransport, (mode) => {
-  if (mode !== 'p2p' && p2pEarlySig) {
+  if (mode === 'p2p') ensureEarlySig();
+  else if (p2pEarlySig) {
     p2pEarlySig.close();
     p2pEarlySig = null;
     lPeerOnline.value = false;
