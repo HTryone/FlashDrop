@@ -1,7 +1,7 @@
 // 中转上传：加密后浏览器直传 R2（presigned PUT），Worker 仅做控制面（创建文件 / 索引 / commit）。
 // 大体积密文流绕过 Worker 的 request.body pipe，避免 CF 边缘对大请求体流式透传的字节损坏
 // （HMAC 校验失败根因：tus PATCH 把 80MiB 流穿过 CF 边缘→Worker→FixedLengthStream→R2，损坏且静默入库）。
-// 直传 R2 后数据不经 Worker 字节处理，R2 原生按 content-length 接收，损坏消失；块大小策略：默认 80MB，55s 看门狗触发则降 40MB（80/2），再触发降 16MB（兜底）；兜底档(16MB)连续真实失败 3 次则中止上传报错；看门狗不中断当前块，commit 异步流水线。
+// 直传 R2 后数据不经 Worker 字节处理，R2 原生按 content-length 接收，损坏消失；块大小策略：默认 32MB，55s 看门狗触发则降 24MB，再触发降 16MB（兜底）；兜底档(16MB)连续真实失败 3 次则中止上传报错；看门狗不中断当前块，commit 异步流水线。
 
 import { encryptFile, deriveKey } from '@/crypto/tus-crypto';
 import { resolveTusBase } from '@/transfer/room';
@@ -25,12 +25,12 @@ export interface UploadOptions {
   onError: (msg: string) => void;
 }
 
-/** 默认块大小：快链直接用 80MB（用户指定不再更大）。 */
-const BLOCK = 80 * 1024 * 1024;
+/** 默认块大小：快链默认 32MB（用户指定最高档；降档序列 32 → 24 → 16）。 */
+const BLOCK = 32 * 1024 * 1024;
 /** 看门狗（秒）：单块到时仍未传完 → 触发降档（不中断当前块，让其自然完成或撞 60s 边缘）。 */
 const WATCHDOG = 55;
-/** 看门狗/失败降档序列（单调不回升）：80 → 40(=80/2) → 16(兜底)。每次触发升一档，封顶 16MB。 */
-const TIERS = [BLOCK, BLOCK / 2, 16 * 1024 * 1024];
+/** 看门狗/失败降档序列（单调不回升）：32 → 24 → 16(兜底)。每次触发升一档，封顶 16MB。 */
+const TIERS = [BLOCK, 24 * 1024 * 1024, 16 * 1024 * 1024];
 /** 单区间重试次数（每次失败自动降档，不会同尺寸反复重试）。 */
 const RETRIES = 5;
 /** 兜底档(16MB)连续真实失败(neterr)上限：达到后判定网络不可用，直接中止上传并报错。看门狗超时(慢)不算失败。 */
@@ -166,13 +166,13 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
 
     const fileId = await createUpload(tusBase, meta);
 
-    // 块大小策略（用户指定，2026-08-04）：
-    // 默认 80MB；看门狗 55s 到时未传完 → 后续块降 40MB（=80/2）；再触发看门狗 → 降 16MB（兜底）。
+    // 块大小策略（用户指定，2026-08-12 调整）：
+    // 默认 32MB；看门狗 55s 到时未传完 → 后续块降 24MB；再触发看门狗 → 降 16MB（兜底）。
     // 兜底档(16MB)连续真实失败(neterr)达 3 次 → 判定网络不可用，直接中止上传并报错（看门狗超时<慢>不算失败）。
     // 看门狗/失败降档单调不回升；看门狗不中断当前块（让其自然完成或撞 60s 边缘）；
     // commit 异步 + 下一块预签名流水线，消串行空挡；不靠测速。
     let off = 0;
-    let tier = 0;                 // 降档档位：0=80, 1=40, 2=16（兜底），单调不回升
+    let tier = 0;                 // 降档档位：0=32, 1=24, 2=16（兜底），单调不回升
     let committed = 0;            // 已落库字节（commit 成功）
     let inflight = 0;             // 当前块已上行字节（仅 UI 进度反馈）
     const pf: { cur: Prefetched | null } = { cur: null };
