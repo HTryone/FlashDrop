@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue';
 import type { QueuedFile, StorageType } from '@/types/transfer';
-import { createTransfer, refreshCode, setMessage, terminateTransfer, zipUrl } from '@/api/transfer';
+import { createTransfer, refreshCode, setMessage, terminateTransfer, clearTransfer, zipUrl } from '@/api/transfer';
 import { uploadAll } from '@/transfer/tus/useTusUpload';
 import { newSalt, E2EE_CHUNK_SIZE, randomPassphrase } from '@/crypto/tus-crypto';
 import SendFileRow from './SendFileRow.vue';
@@ -29,9 +29,16 @@ const code = ref('');
 const loginCode = ref('');       // 16 位登录码（带空格展示）
 const storage = ref<StorageType>('local');
 const started = ref(false);
-const uploading = ref(false);
 const dragOver = ref(false);
 const error = ref('');
+// 中转上传状态机（无暂停态）：idle / uploading / cancelled / failed / done
+const relayPhase = ref<'idle' | 'uploading' | 'cancelled' | 'failed' | 'done'>('idle');
+const uploading = computed(() => relayPhase.value === 'uploading');
+// 传输中锁定文件区：X / 拖入 / 选择 / 清空 全禁用
+const filesLocked = computed(() => relayPhase.value === 'uploading');
+let relayAbort: AbortController | null = null;
+let e2eeSaltRef = '';          // 跨重传复用 salt，避免重传后接收端解密失败
+let fatalTriggered = false;    // 网络兜底失败标志（区分 cancelled 与 failed）
 
 // 取消分享弹窗
 const showTerminateDialog = ref(false);
@@ -165,16 +172,19 @@ const totalSize = computed(() => files.value.reduce((s, f) => s + f.file.size, 0
 const doneCount = computed(() => files.value.filter((f) => f.status === 'done').length);
 const allDone = computed(() => files.value.length > 0 && doneCount.value === files.value.length);
 
-// 选中区状态：待传输 / 传输中 / 已完成
+// 选中区状态：待传输 / 传输中 / 已取消 / 网络故障 / 已完成
 const selStatus = computed(() => {
   if (!files.value.length) return '';
-  if (allDone.value) return '已完成';
-  if (uploading.value) return '传输中…';
+  if (relayPhase.value === 'uploading') return '传输中…';
+  if (relayPhase.value === 'cancelled') return '已取消，可继续上传';
+  if (relayPhase.value === 'failed') return '网络故障，可重新传输';
+  if (relayPhase.value === 'done') return '已完成';
+  if (files.value.every((f) => f.status === 'done')) return '已完成';
   return '待传输';
 });
 const selStatusClass = computed(() => {
-  if (selStatus.value === '已完成') return 'done';
-  if (selStatus.value === '传输中…') return 'busy';
+  if (relayPhase.value === 'done') return 'done';
+  if (relayPhase.value === 'uploading' || relayPhase.value === 'failed') return 'busy';
   return 'idle';
 });
 
@@ -248,41 +258,80 @@ function refreshPassphrase() {
   passphrase.value = randomPassphrase();
 }
 
-async function start() {
+// 创建传输（仅首次）：分配分享码/登录码/E2EE salt，并缓存 salt 供重传复用
+async function ensureTransfer() {
+  if (!transferId.value) transferId.value = generateUUID();
+  if (!e2eeSaltRef) e2eeSaltRef = newSalt();
+  const e2eeMeta = { salt: e2eeSaltRef, chunkSize: E2EE_CHUNK_SIZE };
+  const resp = await createTransfer(transferId.value, message.value, e2eeMeta, TTL_HOURS);
+  code.value = resp.code;
+  loginCode.value = resp.loginCode;   // 16 位登录码
+  storage.value = resp.storage;
+  started.value = true;
+  emit('gotLoginCode', resp.loginCode.replace(/\s/g, ''));
+}
+
+// 开始 / 继续上传：复用 transferId 与 e2eeSaltRef；未完成文件带 fileId 从 0 覆盖重传
+async function startTransfer() {
   error.value = '';
-  if (!files.value.length) {
-    error.value = '请先选择要发送的文件';
-    return;
-  }
-  // E2EE 使用 WebCrypto（tus-crypto.ts），AES-NI 硬件加速
-  uploading.value = true;
+  if (!files.value.length) { error.value = '请先选择要发送的文件'; return; }
+  relayPhase.value = 'uploading';
+  fatalTriggered = false;
+  relayAbort = new AbortController();
   try {
-    if (!transferId.value) transferId.value = generateUUID();
-    const e2eeMeta = { salt: newSalt(), chunkSize: E2EE_CHUNK_SIZE };
-    const resp = await createTransfer(transferId.value, message.value, e2eeMeta, TTL_HOURS);
-    code.value = resp.code;
-    loginCode.value = resp.loginCode;   // 16 位登录码
-    storage.value = resp.storage;
-    started.value = true;
-
-    // 通知父组件：拿到登录码了（用于"我的传输"入口）
-    emit('gotLoginCode', resp.loginCode.replace(/\s/g, ''));
-
-    const salt = e2eeMeta.salt;
+    if (!transferId.value) await ensureTransfer();
     await uploadAll(files.value, {
       transferId: transferId.value,
       e2ee: { enabled: true, passphrase: passphrase.value }, // E2EE 始终开启
-      e2eeSalt: salt,
+      e2eeSalt: e2eeSaltRef,
       concurrency: 3,
+      signal: relayAbort.signal,
+      onFatal: handleFatal,
       onItemProgress: (qf, u) => { qf.uploaded = u; },
       onItemSuccess: () => {},
       onItemError: (qf, m) => { error.value = `「${qf.relativePath}」失败：${m}`; },
     });
-  } catch (e: any) {
-    error.value = e?.message || '传输出错';
   } finally {
-    uploading.value = false;
+    if (fatalTriggered) relayPhase.value = 'failed';
+    else if (files.value.length && files.value.every((f) => f.status === 'done')) relayPhase.value = 'done';
+    else relayPhase.value = 'cancelled';
   }
+}
+
+// 取消（作废本次）：中断所有 worker，文件保留可重选，按钮变「继续上传」
+function cancelUpload() {
+  relayAbort?.abort();
+  relayPhase.value = 'cancelled';
+}
+
+// 网络兜底失败回调：标记 failed 并全局中断
+function handleFatal() {
+  fatalTriggered = true;
+  relayPhase.value = 'failed';
+  relayAbort?.abort();
+}
+
+// 取消/失败后继续：边界兜底——文件被清空则提示先选文件
+function resumeUpload() {
+  if (!files.value.length) { error.value = '请先选择要发送的文件'; return; }
+  void startTransfer();
+}
+
+// 开始新的传输：清服务器旧文件 + 本地全重置回初始态
+async function startNewTransfer() {
+  if (transferId.value) {
+    try { await clearTransfer(transferId.value); } catch { /* 忽略 */ }
+  }
+  files.value = [];
+  transferId.value = '';
+  code.value = '';
+  loginCode.value = '';
+  storage.value = 'local';
+  started.value = false;
+  error.value = '';
+  relayPhase.value = 'idle';
+  e2eeSaltRef = '';
+  passphrase.value = randomPassphrase();
 }
 
 async function onRefresh() {
@@ -343,8 +392,8 @@ watch(message, async (v) => {
   }
 });
 
-// 组件卸载时清理本地直传连接 + 提前信令
-onUnmounted(() => { sender.close(); if (p2pEarlySig) { p2pEarlySig.close(); p2pEarlySig = null; } });
+// 组件卸载时清理本地直传连接 + 提前信令 + 中止中的中转上传
+onUnmounted(() => { sender.close(); relayAbort?.abort(); if (p2pEarlySig) { p2pEarlySig.close(); p2pEarlySig = null; } });
 </script>
 
 <template>
@@ -377,13 +426,14 @@ onUnmounted(() => { sender.close(); if (p2pEarlySig) { p2pEarlySig.close(); p2pE
       <div class="sel-head">
         <span>已选 {{ files.length }} 个 · {{ fmt(totalSize) }}</span>
         <span class="sel-status" :class="selStatusClass">{{ selStatus }}</span>
-        <button class="btn sm ghost" @click="clearSelected" :disabled="uploading || lSending">清空所选</button>
+        <button class="btn sm ghost" @click="clearSelected" :disabled="filesLocked || lSending">清空所选</button>
       </div>
       <div class="file-list">
         <SendFileRow
           v-for="(f, i) in files"
           :key="i + f.relativePath"
           :qf="f"
+          :disabled="filesLocked"
           @remove="removeFile(i)"
         />
       </div>
@@ -422,11 +472,20 @@ onUnmounted(() => { sender.close(); if (p2pEarlySig) { p2pEarlySig.close(); p2pE
     <div v-if="error" class="err-box">{{ error }}</div>
 
     <div class="actions">
-      <button class="btn primary" :disabled="uploading || allDone || !files.length" @click="start">
-        {{ uploading ? '传输中…' : started ? '继续传输' : '开始传输' }}
+      <button
+        v-if="relayPhase === 'idle' || relayPhase === 'cancelled' || relayPhase === 'failed'"
+        class="btn primary"
+        :disabled="!files.length"
+        @click="relayPhase === 'idle' ? startTransfer() : resumeUpload()"
+      >
+        {{ relayPhase === 'idle' ? '开始传输' : relayPhase === 'cancelled' ? '继续上传' : '重新传输' }}
       </button>
-      <span v-if="allDone" class="ok-tag">✓ 全部完成</span>
-      <span v-else-if="files.length && !started" class="hint-start faint">已选中文件，点「开始传输」生成分享码</span>
+      <button v-else-if="relayPhase === 'uploading'" class="btn danger" @click="cancelUpload">取消</button>
+      <button v-else-if="relayPhase === 'done'" class="btn primary" @click="startNewTransfer">开始新的传输</button>
+      <span v-if="relayPhase === 'done'" class="ok-tag">✓ 全部完成</span>
+      <span v-else-if="relayPhase === 'cancelled'" class="hint-start faint">已取消，可重新选择文件后点「继续上传」</span>
+      <span v-else-if="relayPhase === 'failed'" class="hint-start faint">网络故障，点「重新传输」重试</span>
+      <span v-else-if="relayPhase === 'idle' && files.length && !started" class="hint-start faint">已选中文件，点「开始传输」生成分享码</span>
     </div>
 
     <!-- 分享码 + 登录码 -->
@@ -443,7 +502,7 @@ onUnmounted(() => { sender.close(); if (p2pEarlySig) { p2pEarlySig.close(); p2pE
           <button class="btn sm primary" @click="copyShareAll">一键复制</button>
           <button class="btn sm" @click="onRefresh">刷新换码</button>
           <a class="btn sm" :href="zipUrl(code)" v-if="storage !== 'r2'">打包下载全部</a>
-          <button class="btn sm danger" @click="showTerminateDialog = true" v-if="!uploading">取消分享</button>
+          <button class="btn sm danger" @click="showTerminateDialog = true" v-if="relayPhase !== 'uploading'">取消分享</button>
         </div>
         <p class="share-hint">📤 把<b>分享链接</b>和<b>解密口令</b>一起发给对方——对方必须输入口令才能解密下载。</p>
       </div>

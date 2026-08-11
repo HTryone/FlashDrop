@@ -14,6 +14,12 @@ export interface UploadOptions {
   transferId: string;
   e2ee: { enabled: boolean; passphrase: string };
   _e2eeSalt?: string;
+  /** 中止信号：取消/故障兜底时统一中断所有 worker */
+  signal?: AbortSignal;
+  /** 网络兜底失败（达到上限）回调：上层据此进入 failed 态并 abort */
+  onFatal?: () => void;
+  /** 重传时复用首次的 fileId（跳过 createUpload，从 0 覆盖，避免重复文件） */
+  resumeFileId?: string;
   onProgress: (uploaded: number, size: number) => void;
   onSuccess: () => void;
   onError: (msg: string) => void;
@@ -79,22 +85,23 @@ async function commit(
   if (!res.ok) throw new Error(`commit 失败 ${res.status}`);
 }
 
-/** 单块 PUT（XHR）：带上传进度；成功返回 'done'，真实网络错误返回 'neterr'。
+/** 单块 PUT（XHR）：带上传进度；成功返回 'done'，真实网络错误返回 'neterr'，外部 abort 返回 'aborted'。
  * 看门狗（WATCHDOG 秒）到时调用 onWatchdog()：仅作降档信号，【不 abort、不切小】当前块，
  * 让当前 PUT 自然完成（可能略超 55s，只要不撞 R2 边缘 60s 即可；若真超 60s 边缘会失败，上层按失败降档重传）。
- * 只有真正的网络错误（onerror / 非 2xx）才返回 'neterr' 允许上层降档重试。 */
+ * 只有真正的网络错误（onerror / 非 2xx）才返回 'neterr' 允许上层降档重试；外部 signal abort 返回 'aborted' 直接退出。 */
 function uploadSliceXHR(
   url: string,
   blob: Blob,
   onProgress: (sent: number) => void,
   onWatchdog?: () => void,
-): Promise<'done' | 'neterr'> {
+  signal?: AbortSignal,
+): Promise<'done' | 'neterr' | 'aborted'> {
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
     let sent = 0;
     let settled = false;
     let watchdogCalled = false;
-    const finish = (r: 'done' | 'neterr') => {
+    const finish = (r: 'done' | 'neterr' | 'aborted') => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -107,6 +114,11 @@ function uploadSliceXHR(
       console.warn(`[upload] 单块已超 ${WATCHDOG}s 看门狗，触发降档（后续块用更小尺寸）`);
       onWatchdog?.();
     }, WATCHDOG * 1000);
+    // 外部中止：立即中断当前 XHR，返回 'aborted'（区别于真实网络错误）
+    if (signal) {
+      if (signal.aborted) return finish('aborted');
+      signal.addEventListener('abort', () => { try { xhr.abort(); } catch { /* 已结束 */ } }, { once: true });
+    }
     xhr.open('PUT', url);
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
     xhr.setRequestHeader('Content-Length', String(blob.size));
@@ -118,7 +130,7 @@ function uploadSliceXHR(
     };
     xhr.onload = () => finish(xhr.status >= 200 && xhr.status < 300 ? 'done' : 'neterr');
     xhr.onerror = () => finish('neterr');
-    xhr.onabort = () => finish('neterr');
+    xhr.onabort = () => finish('aborted');
     xhr.send(blob);
   });
 }
@@ -126,6 +138,14 @@ function uploadSliceXHR(
 /** 上传单个文件（E2EE 开启时先加密为密文 Blob 再直传 R2）。 */
 export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<void> {
   try {
+    const checkAbort = () => {
+      if (opts.signal?.aborted) {
+        const e = new Error('aborted');
+        (e as any).name = 'AbortError';
+        throw e;
+      }
+    };
+    checkAbort();
     const tusBase = resolveTusBase();
     const key = await deriveKey(opts.e2ee.passphrase, opts._e2eeSalt!);
     const cipher = await encryptFile(qf.file, key, (r) => {
@@ -169,6 +189,7 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
       if (tier >= topTierIdx) {
         bottomFails++;
         if (bottomFails >= MAX_BOTTOM_RETRIES) {
+          opts.onFatal?.();   // 通知上层进入 failed 态并全局 abort
           throw new Error(`兜底块(${Math.round(curSeg / 1048576)}MB)连续失败 ${bottomFails} 次，网络不可用，已中止上传`);
         }
       }
@@ -183,6 +204,7 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
     };
 
     while (off < size) {
+      checkAbort();
       const seg = pickSeg();
       const end = Math.min(off + seg, size);
       const blobLen = end - off;
@@ -213,7 +235,9 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
         url, blob,
         (sent) => { inflight = sent; report(); },
         () => { downgrade(); },
+        opts.signal,
       );
+      if (r === 'aborted') { const e = new Error('aborted'); (e as any).name = 'AbortError'; throw e; }
       await prefetchP;
 
       if (r === 'done') {
@@ -238,7 +262,8 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
           const cEnd = Math.min(off + curSeg, size);
           const cb = cipher.slice(off, cEnd);
           const curl = await presign(tusBase, fileId, off, cb.size);
-          const cr = await uploadSliceXHR(curl, cb, (s) => { inflight = s; report(); });
+          const cr = await uploadSliceXHR(curl, cb, (s) => { inflight = s; report(); }, undefined, opts.signal);
+          if (cr === 'aborted') { const e = new Error('aborted'); (e as any).name = 'AbortError'; throw e; }
           if (cr === 'done') {
             const job = () => commit(tusBase, fileId, off + cb.size, cb.size);
             commitJobs.push(job().catch(() => {}));
@@ -271,6 +296,7 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
 
     opts.onSuccess();
   } catch (e: any) {
+    if ((e as any)?.name === 'AbortError') throw e;  // 取消/故障中止：不报错，交上层处理
     opts.onError(e?.message || String(e));
     throw e;
   }
@@ -300,6 +326,9 @@ export async function uploadAll(
           transferId: opts.transferId,
           e2ee: opts.e2ee,
           _e2eeSalt: opts.e2eeSalt,
+          signal: opts.signal,
+          onFatal: opts.onFatal,
+          resumeFileId: qf.fileId,
           onProgress: (u, s) => opts.onItemProgress?.(qf, u, s),
           onSuccess: () => opts.onItemSuccess?.(qf),
           onError: (m) => opts.onItemError?.(qf, m),
@@ -307,9 +336,14 @@ export async function uploadAll(
         qf.status = 'done';
         opts.onItemSuccess?.(qf);
       } catch (e: any) {
-        qf.status = 'error';
-        qf.error = e?.message || String(e);
-        opts.onItemError?.(qf, qf.error || '未知错误');
+        if ((e as any)?.name === 'AbortError') {
+          // 取消/故障中止：回到 pending，允许后续「继续上传/重新传输」
+          if (qf.status !== 'done') qf.status = 'pending';
+        } else {
+          qf.status = 'error';
+          qf.error = e?.message || String(e);
+          opts.onItemError?.(qf, qf.error || '未知错误');
+        }
       }
     }
   }

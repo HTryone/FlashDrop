@@ -2,7 +2,7 @@
 import { computed } from 'vue';
 import type { QueuedFile } from '@/types/transfer';
 
-const props = defineProps<{ qf: QueuedFile }>();
+const props = defineProps<{ qf: QueuedFile; disabled?: boolean }>();
 defineEmits<{ remove: [] }>();
 
 const pct = computed(() => {
@@ -15,7 +15,6 @@ const label = computed(() => {
     case 'done': return '已完成';
     case 'uploading': return '传输中';
     case 'error': return '失败';
-    case 'paused': return '已暂停';
     default: return '待发送';
   }
 });
@@ -38,7 +37,7 @@ function fmt(n: number) {
       </div>
       <div class="bar"><div class="fill" :style="{ width: pct + '%' }"></div></div>
     </div>
-    <button class="rm" title="移除" @click="$emit('remove')">✕</button>
+    <button class="rm" title="移除" :disabled="disabled" @click="$emit('remove')">✕</button>
   </div>
 </template>
 
@@ -62,4 +61,6 @@ function fmt(n: number) {
   font-size: 14px; padding: 4px; border-radius: 6px;
 }
 .rm:hover { color: var(--danger); background: rgba(255, 107, 129, 0.1); }
+.rm:disabled { color: var(--text-faint); opacity: 0.4; cursor: not-allowed; }
+.rm:disabled:hover { background: none; color: var(--text-faint); }
 </style>

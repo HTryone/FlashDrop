@@ -7,11 +7,13 @@ export interface QueuedFile {
   /** 相对路径（文件夹场景下的子路径，单文件则为文件名） */
   relativePath: string;
   /** 上传状态 */
-  status: 'pending' | 'uploading' | 'done' | 'error' | 'paused';
+  status: 'pending' | 'uploading' | 'done' | 'error';
   /** 已上传字节数 */
   uploaded: number;
   /** 错误文案 */
   error?: string;
+  /** tus 文件 ID（创建/重传复用，避免接收端列表出现重复文件） */
+  fileId?: string;
   /** tus 实例（运行时） */
   _upload?: any;
 }
