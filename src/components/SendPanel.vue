@@ -434,12 +434,12 @@ onUnmounted(() => { sender.close(); if (p2pEarlySig) { p2pEarlySig.close(); p2pE
       <!-- 分享信息（给接收方）：链接 + 解密口令 -->
       <div class="code-section">
         <div class="code-label muted">分享链接</div>
-        <div class="code-link faint">{{ shareLink }}</div>
+        <div class="code-link">{{ shareLink }}</div>
 
-        <div class="code-label muted" style="margin-top:8px">解密口令</div>
+        <div class="code-label muted" style="margin-top:6px">解密口令</div>
         <div class="pass-display">{{ passphrase }}</div>
 
-        <div class="code-actions" style="margin-top:10px">
+        <div class="code-actions" style="margin-top:8px">
           <button class="btn sm primary" @click="copyShareAll">一键复制</button>
           <button class="btn sm" @click="onRefresh">刷新换码</button>
           <a class="btn sm" :href="zipUrl(code)" v-if="storage !== 'r2'">打包下载全部</a>
