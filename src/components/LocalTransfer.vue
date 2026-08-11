@@ -104,7 +104,7 @@ async function runP2PRecv() {
       else if (s === 'transferring') { senderOnline.value = true; recvStatus.value = 'P2P 接收中…'; }
       else if (s === 'done') { receiving.value = false; recvStatus.value = 'P2P 接收完成，文件已保存'; }
       else if (s === 'error') { senderOnline.value = false; recvStatus.value = `P2P 出错：${d || ''}`; }
-      else if (s === 'aborted') { senderOnline.value = false; recvStatus.value = '已取消'; }
+      else if (s === 'aborted') { senderOnline.value = false; receiving.value = false; recvStatus.value = '已取消'; }
     },
     // 发送端已加入房间并开始协商：提前点亮在线指示灯，给出「发送端在线」反馈
     onPeerJoined: () => {
@@ -139,6 +139,8 @@ function startRecv() {
 function onCancelRecv() {
   if (p2pReceiver) { p2pReceiver.abort(); p2pReceiver = null; }
   receiver.cancel();
+  receiving.value = false;
+  recvProgress.value = 0;
 }
 
 function fmt(n: number) {
@@ -180,7 +182,8 @@ onUnmounted(() => {
         <span class="transport p2p" v-else>P2P 直连</span>
       </div>
       <div class="actions">
-        <button class="btn primary" :disabled="receiving" @click="startRecv">连接接收</button>
+        <button v-if="!receiving" class="btn primary" :disabled="receiving" @click="startRecv">连接接收</button>
+        <button v-else class="btn danger" @click="onCancelRecv">取消接收</button>
       </div>
       <div v-if="recvFiles.length" class="filelist">
         <div v-for="f in recvFiles" :key="f.name" class="frow">
@@ -242,5 +245,6 @@ hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
   .transport-switch { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-dim); }
   .btn.sm.on { background: var(--accent-grad); color: #07101f; border: none; }
   .transport.p2p { color: #7aa2ff; border-color: #7aa2ff; }
+  .btn.danger { background: var(--danger, #e24b4a); color: #fff; border: none; }
   input[type=file] { font-size: 13px; color: var(--text-dim); }
 </style>

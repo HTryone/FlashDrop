@@ -79,8 +79,11 @@ export class LocalReceiver {
     this.writers = [];
     this.recvAborted = false;
     this.resetReceiver();
-    this.closeConn();
-    this.cb.onStatus('对方已取消发送，已重置为初始状态，可重新接收');
+    this.cb.onReceiving(false);
+    // 通知发送端"我取消了"，避免对方一直等待/重发
+    if (this.ctrl?.isOpen) { try { this.ctrl.send({ type: 'cancel' }); } catch { /* ignore */ } }
+    setTimeout(() => this.closeConn(), 300);
+    this.cb.onStatus('已取消接收，可重新连接接收');
   }
 
   /** 组件卸载清理 */
@@ -171,7 +174,15 @@ export class LocalReceiver {
     // 接收端 WS 是 progress 的唯一上行通道，而发送端靠 progress 推进 24MB ack 窗口：
     // WS 一旦断开且不重连，progress 停 → 发送端窗口卡死。故必须开自动重连。
     this.ctrl = new RelayControl({
-      base, room, role: 'receiver', onMessage: () => {},
+      base, room, role: 'receiver',
+      onMessage: (data: any) => {
+        if (data && data.type === 'cancel') {
+          this.recvAborted = true;
+          this.cb.onReceiving(false);
+          this.cb.onStatus('对方已取消发送，已重置为初始状态，可重新接收');
+          this.closeConn();
+        }
+      },
       reconnect: true, reconnectDelay: 1000,
       shouldReconnect: () => this.receiving && !this.recvAborted,
     });

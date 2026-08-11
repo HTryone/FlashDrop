@@ -129,6 +129,14 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
 
           // 后台补充预加密（不阻塞发送循环）
           void preEncrypt();
+        } else if (!dc || dc.readyState === 'closed' || dc.readyState === 'closing') {
+          // 对端断开（取消/掉线）且未显式收到 cancel 帧：立即中止，避免无限空转
+          if (!aborted) {
+            aborted = true; finished = true;
+            peer?.destroy(); sig?.close();
+            setState('error', '连接已断开，传输中止');
+          }
+          break;
         } else {
           // dc 未就绪 → 等
           encQueue.unshift({ seq: next, frame });
@@ -161,6 +169,7 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
       const msg = JSON.parse(data);
       if (msg.type === 'ack') { if (msg.seq > lastAcked) lastAcked = msg.seq; }
       else if (msg.type === 'done') finished = true;
+      else if (msg.type === 'cancel') remoteAbort('对方已取消接收');
     } catch { /* ignore */ }
   }
 
@@ -202,9 +211,20 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
 
   function abort() {
     aborted = true;
+    if (dc && dc.readyState === 'open') {
+      try { dc.send(JSON.stringify({ type: 'cancel' })); } catch { /* ignore */ }
+    }
+    // 延迟销毁，确保 cancel 帧先经 DC 发出，对方能收到"已取消"
+    setTimeout(() => { peer?.destroy(); sig?.close(); }, 150);
+    setState('aborted');
+  }
+
+  function remoteAbort(reason: string) {
+    if (aborted) return;
+    aborted = true;
     peer?.destroy();
     sig?.close();
-    setState('aborted');
+    setState('aborted', reason);
   }
 
   return { connect, abort };

@@ -46,6 +46,8 @@ const lProgress = ref(0);
 const lStatus = ref('');
 const lPeerOnline = ref(false);
 const lSegIndex = ref(0);   // 当前段（0 基），用于 UI 展示
+// 发送端自身状态灯：房间一生成即亮，独立于对方是否在线（解决"只能靠接收端才亮"）
+const lSelfActive = computed(() => !!lRoom.value);
 
 const sender = new LocalSender({
   onStatus: (s) => { lStatus.value = s; },
@@ -517,6 +519,10 @@ onUnmounted(() => { sender.close(); if (p2pEarlySig) { p2pEarlySig.close(); p2pE
         <div class="link">
           <input :value="lSendLink" readonly />
           <button class="btn sm" @click="copyLocalLink">复制链接</button>
+        </div>
+        <div class="presence">
+          <span class="dot" :class="{ on: lSelfActive }"></span>
+          我（发送端）：{{ lSelfActive ? (lSending ? '传输中…' : '已就绪，等待对方') : '未开始' }}
         </div>
         <div class="presence">
           <span class="dot" :class="{ on: lPeerOnline }"></span>

@@ -98,10 +98,14 @@ export class LocalSender {
   // ============ 取消 / 关闭 ============
   cancel() {
     if (!this.sending) return;
-    if (this.abort) { try { this.abort.abort(); } catch { /* ignore */ } }
+    // 先通知接收端"我取消了"，再延迟中止，确保控制消息先经 WS 发出
+    if (this.ctrl?.isOpen) { try { this.ctrl.send({ type: 'cancel' }); } catch { /* ignore */ } }
+    setTimeout(() => {
+      if (this.abort) { try { this.abort.abort(); } catch { /* ignore */ } }
+      this.close();
+    }, 250);
     this.cb.onStatus('已取消发送，可重新传输');
     this.setSending(false);
-    this.close();
   }
 
   close() {
@@ -221,6 +225,10 @@ export class LocalSender {
         this.setSending(false);
         this.cb.onStatus('传输完成');
         this.close();
+      } else if (data.type === 'cancel') {
+        this.cb.onStatus('对方已取消接收');
+        this.setSending(false);
+        this.close();
       }
     };
 
@@ -254,31 +262,62 @@ export class LocalSender {
       const RECV_RETRY = 8;
       const RECV_WAIT = 15_000;
       while (true) {
+        const r: { reason: 'ready' | 'cancel' | 'timeout' } = { reason: 'ready' };
         try {
           await Promise.race([
-            this.recvReadyPromise,
+            this.recvReadyPromise.then(() => { r.reason = 'ready'; }),
+            new Promise<void>((res) => {
+              const h = () => { r.reason = 'cancel'; res(); };
+              this.abort!.signal.addEventListener('abort', h, { once: true });
+            }),
             new Promise<void>((_, rej) => setTimeout(() => rej(new Error('TIMEOUT')), RECV_WAIT)),
           ]);
-          break;
         } catch {
-          attempts++;
-          if (attempts >= RECV_RETRY) {
-            this.cb.onStatus(`无法开始传输：对方未开始接收（重试 ${RECV_RETRY} 次仍超时）。请确认对方已点「连接接收」且页面未关闭。`);
-            this.setSending(false);
-            segClosed = true;
-            try { ctrl.close(); } catch { /* ignore */ }
-            throw new Error(`第 ${seg + 1} 段：对方未开始接收（${RECV_RETRY} 次重试超时）`);
-          }
-          try { ctrl.nudgeReconnect(); } catch { /* ignore */ } // 关 WS 触发 onclose 自动重连（勿用 close() 永久阻断）
-          this.armRecvReady();
-          postOfferSeg().catch(() => {});
+          r.reason = 'timeout';
         }
+        if (r.reason === 'cancel') {
+          this.cb.onStatus('已取消发送');
+          this.setSending(false);
+          segClosed = true;
+          try { ctrl.close(); } catch { /* ignore */ }
+          throw new Error('已取消');
+        }
+        if (r.reason === 'ready') break;
+        // timeout：重试
+        attempts++;
+        if (attempts >= RECV_RETRY) {
+          this.cb.onStatus(`无法开始传输：对方未开始接收（重试 ${RECV_RETRY} 次仍超时）。请确认对方已点「连接接收」且页面未关闭。`);
+          this.setSending(false);
+          segClosed = true;
+          try { ctrl.close(); } catch { /* ignore */ }
+          throw new Error(`第 ${seg + 1} 段：对方未开始接收（${RECV_RETRY} 次重试超时）`);
+        }
+        try { ctrl.nudgeReconnect(); } catch { /* ignore */ } // 关 WS 触发 onclose 自动重连（勿用 close() 永久阻断）
+        this.armRecvReady();
+        postOfferSeg().catch(() => {});
       }
     } else {
-      await Promise.race([
-        this.recvReadyPromise,
-        new Promise<void>((res) => setTimeout(res, 3_000)),
-      ]);
+      const r: { reason: 'ready' | 'cancel' | 'timeout' } = { reason: 'ready' };
+      try {
+        await Promise.race([
+          this.recvReadyPromise.then(() => { r.reason = 'ready'; }),
+          new Promise<void>((res) => {
+            const h = () => { r.reason = 'cancel'; res(); };
+            this.abort!.signal.addEventListener('abort', h, { once: true });
+          }),
+          new Promise<void>((_, rej) => setTimeout(() => rej(new Error('TIMEOUT')), 3_000)),
+        ]);
+      } catch {
+        r.reason = 'timeout';
+      }
+      if (r.reason === 'cancel') {
+        this.cb.onStatus('已取消发送');
+        this.setSending(false);
+        segClosed = true;
+        try { ctrl.close(); } catch { /* ignore */ }
+        throw new Error('已取消');
+      }
+      // ready 或超时都继续开推
     }
     await offerP;
     this.cb.onStatus(`第 ${seg + 1} 段：开始传输数据…`);

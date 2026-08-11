@@ -200,6 +200,9 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
         senderDone = true;
         checkComplete(); // 已收齐 → 立即完成；未收齐 → 维持接收态等续传补齐
       }
+      else if (msg.type === 'cancel') {
+        remoteAbort('对方已取消发送');
+      }
       return;
     }
     const frame = reasm.feed(new Uint8Array(data as ArrayBuffer));
@@ -237,10 +240,21 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
 
   function abort() {
     aborted = true;
+    if (dc && dc.readyState === 'open') {
+      try { dc.send(JSON.stringify({ type: 'cancel' })); } catch { /* ignore */ }
+    }
+    // 延迟销毁，确保 cancel 帧先经 DC 发出，对方能收到"已取消"
+    setTimeout(() => { sink?.abort(); peer?.destroy(); sig?.close(); }, 150);
+    setState('aborted');
+  }
+
+  function remoteAbort(reason: string) {
+    if (aborted) return;
+    aborted = true;
     sink?.abort();
     peer?.destroy();
     sig?.close();
-    setState('aborted');
+    setState('aborted', reason);
   }
 
   return { connect, abort };
