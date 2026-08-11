@@ -305,18 +305,16 @@ async function confirmTerminate() {
   }
 }
 
-function copyLink() {
-  if (!shareLink.value) return;
-  navigator.clipboard?.writeText(shareLink.value);
+/** 一键复制：分享链接 + 解密口令（类似百度网盘分享格式） */
+function copyShareAll() {
+  if (!shareLink.value || !passphrase.value) return;
+  const text = `分享链接：${shareLink.value}\n解密口令：${passphrase.value}`;
+  navigator.clipboard?.writeText(text);
 }
 
 function copyLoginCode() {
   if (!loginCode.value) return;
   navigator.clipboard?.writeText(loginCode.value.replace(/\s/g, ''));
-}
-
-function copyPassphrase() {
-  navigator.clipboard?.writeText(passphrase.value);
 }
 
 function fmt(n: number) {
@@ -421,20 +419,6 @@ onUnmounted(() => { sender.close(); if (p2pEarlySig) { p2pEarlySig.close(); p2pE
       <textarea v-model="message" rows="2" placeholder="例如：这是 20G 的设计素材，注意解压密码…"></textarea>
     </div>
 
-    <!-- 加密口令（E2EE 强制开启） -->
-    <div class="field e2ee-field">
-      <label>
-        🔒 端到端加密口令
-        <span class="badge">必须</span>
-        <span class="muted hint">· 把这个口令告诉接收方，对方用它解密文件</span>
-      </label>
-      <div class="pass-row">
-        <input v-model="passphrase" type="text" class="pass" placeholder="自动生成的随机口令" />
-        <button class="btn sm" @click="refreshPassphrase" title="换一个随机口令">🔄 刷新</button>
-        <button class="btn sm ghost" @click="copyPassphrase" title="复制口令">📋 复制</button>
-      </div>
-    </div>
-
     <div v-if="error" class="err-box">{{ error }}</div>
 
     <div class="actions">
@@ -447,18 +431,21 @@ onUnmounted(() => { sender.close(); if (p2pEarlySig) { p2pEarlySig.close(); p2pE
 
     <!-- 分享码 + 登录码 -->
     <div v-if="code" class="code-card">
-      <!-- 分享码（给接收方） -->
+      <!-- 分享信息（给接收方）：链接 + 解密口令 -->
       <div class="code-section">
-        <div class="code-label muted">分享码（发给接收方）</div>
-        <div class="code-value gradient-text">{{ code }}</div>
-        <div class="code-actions">
-          <button class="btn sm" @click="copyLink">复制链接</button>
+        <div class="code-label muted">分享链接</div>
+        <div class="code-link faint">{{ shareLink }}</div>
+
+        <div class="code-label muted" style="margin-top:8px">解密口令</div>
+        <div class="pass-display">{{ passphrase }}</div>
+
+        <div class="code-actions" style="margin-top:10px">
+          <button class="btn sm primary" @click="copyShareAll">一键复制</button>
           <button class="btn sm" @click="onRefresh">刷新换码</button>
           <a class="btn sm" :href="zipUrl(code)" v-if="storage !== 'r2'">打包下载全部</a>
           <button class="btn sm danger" @click="showTerminateDialog = true" v-if="!uploading">取消分享</button>
         </div>
-        <div class="code-link faint">{{ shareLink }}</div>
-        <p class="share-hint">📤 把<b>分享码</b>和<b>口令</b>一起发给对方——对方必须输入口令才能解密下载。</p>
+        <p class="share-hint">📤 把<b>分享链接</b>和<b>解密口令</b>一起发给对方——对方必须输入口令才能解密下载。</p>
       </div>
 
       <!-- 分隔线 -->
