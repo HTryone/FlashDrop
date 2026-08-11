@@ -88,6 +88,8 @@ async function fetchRange(
 }
 
 // 单个分片：按 ≤16MB 子范围多次取；看门狗 abort 后保留已收字节、从断点续传（零流量浪费）
+// 块内流水线（2026-08-12，方案 A）：取当前段的同时后台预取下一段，使相邻段传输重叠，
+// 吃掉段间「请求建立 + R2 首字节」延迟空挡；命中预取则直接等已在飞的下一段，不现发请求。
 async function downloadPart(
   url: string,
   size: number,
@@ -96,21 +98,34 @@ async function downloadPart(
 ): Promise<ArrayBuffer[]> {
   const chunks: ArrayBuffer[] = [];
   let pos = 0;
+  let ahead: Promise<{ buf: ArrayBuffer; received: number }> | null = null; // 上轮预取的下一段
+  let aheadStart = -1;
   while (pos < size) {
     if (signal?.aborted) throw new Error('下载已取消');
     const startPos = pos;
     const end = Math.min(pos + SUB_CHUNK, size) - 1;
+    // 流水线：当前段传输前，后台预取再下一段（与当前段传输重叠）
+    let next: Promise<{ buf: ArrayBuffer; received: number }> | null = null;
+    if (end + 1 < size) {
+      const aStart = end + 1;
+      next = fetchRange(url, aStart, Math.min(aStart + SUB_CHUNK, size) - 1, onChunk, signal);
+    }
+    let result: { buf: ArrayBuffer; received: number } | null = null;
     for (let attempt = 1; attempt <= 5; attempt++) {
       if (signal?.aborted) throw new Error('下载已取消');
       try {
-        const { buf, received } = await fetchRange(url, pos, end, onChunk, signal);
-        chunks.push(buf);
-        pos += received;
+        if (attempt === 1 && ahead && aheadStart === pos) {
+          result = await ahead; // 命中上轮预取：下一段已在后台传输，重叠请求延迟
+        } else {
+          result = await fetchRange(url, pos, end, onChunk, signal);
+        }
+        chunks.push(result.buf);
+        pos += result.received;
         break;
       } catch (e: any) {
+        ahead = null; // 失败则作废预取（位置可能已变），后续重试现取
         if (signal?.aborted) throw new Error('下载已取消');
         if (e?.partialBuf) {
-          // 看门狗 abort 前已收一部分：保存已收字节，外层 while 从断点继续
           chunks.push(e.partialBuf);
           pos += e.partialBytes;
           break;
@@ -119,6 +134,9 @@ async function downloadPart(
       }
     }
     if (pos <= startPos) throw new Error('网络不稳定，下载中断，请重试');
+    if (pos < end + 1) next = null; // 部分完成：下一段预取范围已偏移，作废
+    ahead = next;
+    aheadStart = end + 1;
   }
   return chunks;
 }
