@@ -45,6 +45,7 @@ export class LocalSender {
   private segIndex = 0;
   private abort: AbortController | null = null;
   private ctrl: RelayControl | null = null;
+  private remoteAborted = false; // 对方（接收端）取消，区别于本地取消
 
   // 端到端滑动窗口状态（控制通道 onmessage 与发送流 pull 共享）
   private ackBytes = 0;
@@ -109,7 +110,9 @@ export class LocalSender {
   }
 
   close() {
-    if (this.abort) { try { this.abort.abort(); } catch { /* ignore */ } this.abort = null; }
+    // 注意：不在此处置空/abort this.abort。置空会使 pump 的 this.abort?.signal.aborted 检测失效、
+    // 在途 fetch 因 this.abort!.signal 空引用抛错被误判为「网络抖动」重试，并覆盖取消状态。
+    // 中止由调用方（handleCtrlMsg 的 cancel 分支 / cancel()）显式触发。
     if (this.ctrl) { this.ctrl.close(); this.ctrl = null; }
   }
 
@@ -153,6 +156,7 @@ export class LocalSender {
     this.setDone(false);
     this.cb.onStatus('正在建立控制通道…');
     this.abort = new AbortController();
+    this.remoteAborted = false;
 
     try {
       let startIdx = 0;
@@ -177,7 +181,8 @@ export class LocalSender {
         }, 30000);
       }
     } catch (e: any) {
-      if (this.abort?.signal.aborted) this.cb.onStatus('已取消发送');
+      if (this.remoteAborted) this.cb.onStatus('对方已取消接收');
+      else if (this.abort?.signal.aborted) this.cb.onStatus('已取消发送');
       else this.cb.onStatus(`传输出错: ${e?.message || e}`);
       this.setSending(false);
       this.close();
@@ -226,6 +231,8 @@ export class LocalSender {
         this.cb.onStatus('传输完成');
         this.close();
       } else if (data.type === 'cancel') {
+        this.remoteAborted = true;
+        this.abort?.abort();
         this.cb.onStatus('对方已取消接收');
         this.setSending(false);
         this.close();
