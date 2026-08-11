@@ -125,6 +125,10 @@ async function runP2PLocalSend() {
       if (!lSending.value) return; // 还没点发送，不重复提示（提前信令的 onPeerConnected 已处理）
       lStatus.value = '对端已响应，ICE 协商中…';
     },
+    // 对端经信令房上线（WS 连上即触发，早于 SDP）：兜底点亮在线灯（提前信令 WS 异常时仍能亮）
+    onPeerPresent: (role) => {
+      if (role === 'receiver') { lPeerOnline.value = true; lStatus.value = '对方已就位，可点「开始传输」'; }
+    },
     onProgress: (p) => { lProgress.value = p.total ? p.sent / p.total : 0; },
     onFail: (e) => { lStatus.value = `P2P 传输失败：${e.message}`; lDone.value = false; },
   });

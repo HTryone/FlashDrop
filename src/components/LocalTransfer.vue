@@ -111,6 +111,11 @@ async function runP2PRecv() {
       senderOnline.value = true;
       recvStatus.value = '发送端已连接，正在建立直连…';
     },
+    // 发送端经信令房上线（WS 连上即触发，早于 SDP）：立刻点亮在线灯，不等 offer 到达
+    onPeerPresent: () => {
+      senderOnline.value = true;
+      recvStatus.value = '发送端已就位，等待开始传输…';
+    },
     onProgress: (p) => { recvProgress.value = p.total ? p.received / p.total : 0; },
     onFail: (e) => { recvStatus.value = `P2P 接收失败：${e.message}`; receiving.value = false; },
   });

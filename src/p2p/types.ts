@@ -65,6 +65,7 @@ export interface SenderOpts {
   onProgress?: (p: P2PProgress) => void;
   onFail?: (err: Error) => void;
   onPeerJoined?: () => void; // 对方（接收端）已加入房间并开始协商
+  onPeerPresent?: (role: P2PRole) => void; // 对方经信令房上线（WS 连上即触发，不等 SDP），用于提前点亮在线灯
   signal?: AbortSignal;
 }
 
@@ -78,5 +79,6 @@ export interface ReceiverOpts {
   onProgress?: (p: P2PProgress) => void;
   onFail?: (err: Error) => void;
   onPeerJoined?: () => void; // 对方（发送端）已加入房间并开始协商
+  onPeerPresent?: (role: P2PRole) => void; // 对方经信令房上线（WS 连上即触发，不等 SDP），用于提前点亮在线灯
   signal?: AbortSignal;
 }

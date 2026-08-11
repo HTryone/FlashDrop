@@ -201,6 +201,7 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
       role: 'receiver',
       onSignal: (d) => peer?.onSignal(d),
       onReconnecting: () => setState('signaling', '信令重连中'),
+      onPeerConnected: (role) => { if (role === 'sender') opts.onPeerPresent?.('sender'); },
     });
     const ice = await fetchIceServers(opts.relayBase, opts.relayBase.startsWith('https') ? 'wss' : 'ws');
     peer = new PeerLink({

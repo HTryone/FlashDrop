@@ -291,22 +291,31 @@ export class Relay {
     const url = new URL(request.url);
     const role = url.searchParams.get('role') || 'sender';
 
+    // 在线通知：任一端连上信令房，都向「已在场的另一端」与「刚连上的自己」双向各推一条 peer-joined。
+    // 这样无论哪端先连，另一端都能在 WS 建立瞬间点亮「对方在线」灯，不依赖后续 SDP(offer/answer)到达。
+    // 修复两类现象：①接收端先连、发送端后连→发送端灯不亮；②发送端先连、接收端后连→接收端灯不亮。
+    const notifyPeerJoined = (ws, roleName) => {
+      if (ws && ws.readyState === 1) {
+        Promise.resolve().then(() => { if (ws.readyState === 1) this.sendJSON(ws, { type: 'peer-joined', role: roleName }); });
+      }
+    };
+
     if (role === 'sender') {
       entry.wsSender = server;
       // 接收端 GET 已连上则立即驱动发送端推数据（即使 pull 在 GET 时因 WS 未连而没发出）。
       // onopen 回调内同步 send 在 CF DO 上偶发静默丢失，改用微任务异步发送，确保 pull/ready 必达。
       if (entry.getConnected) Promise.resolve().then(() => { if (server.readyState === 1) this.sendJSON(server, { type: 'pull' }); });
       if (entry.ready) Promise.resolve().then(() => { if (server.readyState === 1) this.sendJSON(server, { type: 'ready' }); });
-      // 通知接收端：发送端已上线（接收端可能已在等待）
-      if (entry.wsReceiver && entry.wsReceiver.readyState === 1) {
-        Promise.resolve().then(() => { if (entry.wsReceiver && entry.wsReceiver.readyState === 1) this.sendJSON(entry.wsReceiver, { type: 'peer-joined', role: 'sender' }); });
-      }
+      // 通知已在场的接收端：发送端已上线
+      if (entry.wsReceiver && entry.wsReceiver.readyState === 1) notifyPeerJoined(entry.wsReceiver, 'sender');
+      // 通知刚连上的发送端：接收端已在场（修复「接收端先连、发送端后连」时发送端灯不亮）
+      if (entry.wsReceiver && entry.wsReceiver !== server) notifyPeerJoined(server, 'receiver');
     } else {
       entry.wsReceiver = server;
-      // 通知发送端：接收端已加入（发送端可能已在等待对方）
-      if (entry.wsSender && entry.wsSender.readyState === 1) {
-        Promise.resolve().then(() => { if (entry.wsSender && entry.wsSender.readyState === 1) this.sendJSON(entry.wsSender, { type: 'peer-joined', role: 'receiver' }); });
-      }
+      // 通知已在场的发送端：接收端已上线
+      if (entry.wsSender && entry.wsSender.readyState === 1) notifyPeerJoined(entry.wsSender, 'receiver');
+      // 通知刚连上的接收端：发送端已在场（修复「发送端先连、接收端后连」时接收端灯不亮）
+      if (entry.wsSender && entry.wsSender !== server) notifyPeerJoined(server, 'sender');
     }
 
     // 回放对端已缓冲的信令（晚加入/重连场景）：让刚连上的对端立即拿到 offer/候选，首轮即连上，

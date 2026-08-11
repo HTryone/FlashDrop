@@ -173,6 +173,7 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
         role: 'sender',
         onSignal: (d) => peer?.onSignal(d),
         onReconnecting: () => setState('signaling', '信令重连中'),
+        onPeerConnected: (role) => { if (role === 'receiver') opts.onPeerPresent?.('receiver'); },
       });
       sig.connect();
     }
