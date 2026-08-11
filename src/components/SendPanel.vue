@@ -1,15 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue';
-import type { QueuedFile, StorageType } from '@/types/transfer';
-import { createTransfer, refreshCode, setMessage, terminateTransfer, clearTransfer, zipUrl } from '@/api/transfer';
-import { uploadAll } from '@/transfer/tus/useTusUpload';
-import { newSalt, E2EE_CHUNK_SIZE, randomPassphrase } from '@/crypto/tus-crypto';
+import type { QueuedFile } from '@/types/transfer';
 import SendFileRow from './SendFileRow.vue';
 import { LocalSender } from '@/https';
 import { resolveRelayBase } from '@/transfer/room';
 import { createP2PSender } from '@/p2p';
 import { SignalingClient } from '@/p2p/signaling';
 import { useFileSelection } from '@/composables/useFileSelection';
+import { useRelayTransfer } from '@/transfer/tus/useRelayTransfer';
 
 const emit = defineEmits<{
   (e: 'gotLoginCode', code: string): void;
@@ -19,31 +17,16 @@ const emit = defineEmits<{
 const sendMode = ref<'relay' | 'local'>('relay');
 
 // 通用文件选择（拖拽/增删/fmt/uuid）
-const { files, dragOver, totalSize, doneCount, allDone, addFiles, onDrop, onPick, removeFile, clearSelected, fmt, generateUUID } = useFileSelection();
+const { files, dragOver, totalSize, doneCount, allDone, addFiles, onDrop, onPick, removeFile, clearSelected, fmt } = useFileSelection();
 
-const message = ref('');
-// E2EE 始终开启，不可关闭
-const passphrase = ref(randomPassphrase());
-// 有效期固定 24 小时（房间自动清除，不可更改）：分享码 / 登录码 / 文件统一过期
-const TTL_HOURS = 24;
-
-const transferId = ref('');
-const code = ref('');
-const loginCode = ref('');       // 16 位登录码（带空格展示）
-const storage = ref<StorageType>('local');
-const started = ref(false);
-const error = ref('');
-// 中转上传状态机（无暂停态）：idle / uploading / cancelled / failed / done
-const relayPhase = ref<'idle' | 'uploading' | 'cancelled' | 'failed' | 'done'>('idle');
-const uploading = computed(() => relayPhase.value === 'uploading');
-// 传输中锁定文件区：X / 拖入 / 选择 / 清空 全禁用
-const filesLocked = computed(() => relayPhase.value === 'uploading');
-let relayAbort: AbortController | null = null;
-let e2eeSaltRef = '';          // 跨重传复用 salt，避免重传后接收端解密失败
-let fatalTriggered = false;    // 网络兜底失败标志（区分 cancelled 与 failed）
-
-// 取消分享弹窗
-const showTerminateDialog = ref(false);
+// 中转发送状态机已抽到 src/transfer/tus/useRelayTransfer.ts（与本地直传分离）
+const {
+  passphrase, code, loginCode, storage, started, error,
+  relayPhase, filesLocked, message, showTerminateDialog,
+  shareLink, selStatus, selStatusClass,
+  startTransfer, cancelUpload, resumeUpload, startNewTransfer,
+  onRefresh, confirmTerminate, copyShareAll, copyLoginCode, zipUrl,
+} = useRelayTransfer(files, (c) => emit('gotLoginCode', c));
 
 // ========== 本地直传（HTTP 流式中继）—— 核心逻辑在 src/transfer/local/sender.ts ==========
 const lRoom = ref('');
@@ -168,151 +151,10 @@ function cancelLocalSend() {
 }
 function copyLocalLink() { navigator.clipboard?.writeText(sender.link); lStatus.value = '链接已复制'; }
 
-// ========== 中转发送（原有逻辑）==========
+// 中转发送状态机已抽到 src/transfer/tus/useRelayTransfer.ts（relay 实例在文件顶部创建）
 
-// 选中区状态：待传输 / 传输中 / 已取消 / 网络故障 / 已完成
-const selStatus = computed(() => {
-  if (!files.value.length) return '';
-  if (relayPhase.value === 'uploading') return '传输中…';
-  if (relayPhase.value === 'cancelled') return '已取消，可继续上传';
-  if (relayPhase.value === 'failed') return '网络故障，可重新传输';
-  if (relayPhase.value === 'done') return '已完成';
-  if (files.value.every((f) => f.status === 'done')) return '已完成';
-  return '待传输';
-});
-const selStatusClass = computed(() => {
-  if (relayPhase.value === 'done') return 'done';
-  if (relayPhase.value === 'uploading' || relayPhase.value === 'failed') return 'busy';
-  return 'idle';
-});
-
-const shareLink = computed(() => (code.value ? `${location.origin}/?code=${code.value}` : ''));
-
-/** 刷新加密口令（随机生成新口令） */
-function refreshPassphrase() {
-  passphrase.value = randomPassphrase();
-}
-
-// 创建传输（仅首次）：分配分享码/登录码/E2EE salt，并缓存 salt 供重传复用
-async function ensureTransfer() {
-  if (!transferId.value) transferId.value = generateUUID();
-  if (!e2eeSaltRef) e2eeSaltRef = newSalt();
-  const e2eeMeta = { salt: e2eeSaltRef, chunkSize: E2EE_CHUNK_SIZE };
-  const resp = await createTransfer(transferId.value, message.value, e2eeMeta, TTL_HOURS);
-  code.value = resp.code;
-  loginCode.value = resp.loginCode;   // 16 位登录码
-  storage.value = resp.storage;
-  started.value = true;
-  emit('gotLoginCode', resp.loginCode.replace(/\s/g, ''));
-}
-
-// 开始 / 继续上传：复用 transferId 与 e2eeSaltRef；未完成文件带 fileId 从 0 覆盖重传
-async function startTransfer() {
-  error.value = '';
-  if (!files.value.length) { error.value = '请先选择要发送的文件'; return; }
-  relayPhase.value = 'uploading';
-  fatalTriggered = false;
-  relayAbort = new AbortController();
-  try {
-    if (!transferId.value) await ensureTransfer();
-    await uploadAll(files.value, {
-      transferId: transferId.value,
-      e2ee: { enabled: true, passphrase: passphrase.value }, // E2EE 始终开启
-      e2eeSalt: e2eeSaltRef,
-      concurrency: 3,
-      signal: relayAbort.signal,
-      onFatal: handleFatal,
-      onItemProgress: (qf, u) => { qf.uploaded = u; },
-      onItemSuccess: () => {},
-      onItemError: (qf, m) => { error.value = `「${qf.relativePath}」失败：${m}`; },
-    });
-  } finally {
-    if (fatalTriggered) relayPhase.value = 'failed';
-    else if (files.value.length && files.value.every((f) => f.status === 'done')) relayPhase.value = 'done';
-    else relayPhase.value = 'cancelled';
-  }
-}
-
-// 取消（作废本次）：中断所有 worker，文件保留可重选，按钮变「继续上传」
-function cancelUpload() {
-  relayAbort?.abort();
-  relayPhase.value = 'cancelled';
-}
-
-// 网络兜底失败回调：标记 failed 并全局中断
-function handleFatal() {
-  fatalTriggered = true;
-  relayPhase.value = 'failed';
-  relayAbort?.abort();
-}
-
-// 取消/失败后继续：边界兜底——文件被清空则提示先选文件
-function resumeUpload() {
-  if (!files.value.length) { error.value = '请先选择要发送的文件'; return; }
-  void startTransfer();
-}
-
-// 开始新的传输：清服务器旧文件 + 本地全重置回初始态
-async function startNewTransfer() {
-  if (transferId.value) {
-    try { await clearTransfer(transferId.value); } catch { /* 忽略 */ }
-  }
-  files.value = [];
-  transferId.value = '';
-  code.value = '';
-  loginCode.value = '';
-  storage.value = 'local';
-  started.value = false;
-  error.value = '';
-  relayPhase.value = 'idle';
-  e2eeSaltRef = '';
-  passphrase.value = randomPassphrase();
-}
-
-async function onRefresh() {
-  if (!transferId.value) return;
-  const r = await refreshCode(transferId.value);
-  code.value = r.code;
-}
-
-/** 确认终止传输 */
-async function confirmTerminate() {
-  if (!transferId.value) return;
-  try {
-    await terminateTransfer(transferId.value);
-    showTerminateDialog.value = false;
-    // 清理本地状态，刷新页面
-    alert('传输已终止，分享码和登录码均已失效。页面即将刷新。');
-    location.reload();
-  } catch (e: any) {
-    error.value = e?.message || '终止失败';
-  }
-}
-
-/** 一键复制：分享链接 + 解密口令（类似百度网盘分享格式） */
-function copyShareAll() {
-  if (!shareLink.value || !passphrase.value) return;
-  const text = `分享链接：${shareLink.value}\n解密口令：${passphrase.value}`;
-  navigator.clipboard?.writeText(text);
-}
-
-function copyLoginCode() {
-  if (!loginCode.value) return;
-  navigator.clipboard?.writeText(loginCode.value.replace(/\s/g, ''));
-}
-
-// 留言实时同步到服务端
-watch(message, async (v) => {
-  if (!transferId.value) return;
-  try {
-    await setMessage(transferId.value, v);
-  } catch {
-    /* 忽略 */
-  }
-});
-
-// 组件卸载时清理本地直传连接 + 提前信令 + 中止中的中转上传
-onUnmounted(() => { sender.close(); relayAbort?.abort(); if (p2pEarlySig) { p2pEarlySig.close(); p2pEarlySig = null; } });
+// 组件卸载时清理本地直传连接 + 提前信令（中转上传 abort 已在 useRelayTransfer 内处理）
+onUnmounted(() => { sender.close(); if (p2pEarlySig) { p2pEarlySig.close(); p2pEarlySig = null; } });
 </script>
 
 <template>
