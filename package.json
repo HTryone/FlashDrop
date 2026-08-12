@@ -7,10 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
-    "preview": "vite preview",
-    "server": "node server.mjs",
-    "start": "node server.mjs",
-    "dev:server": "nodemon --watch server.mjs server.mjs"
+    "preview": "vite preview"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1095.0",
