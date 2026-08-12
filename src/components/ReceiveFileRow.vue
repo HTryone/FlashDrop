@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import type { ReceivedFile } from '@/types/transfer';
 import { resolveTusBase } from '@/transfer/room';
 import { streamDownloadToSink, type DownloadManifest } from '@/transfer/tus/stream-download';
@@ -18,6 +18,14 @@ const progress = ref(0); // 0~1
 const speed = ref(0);    // MB/s
 const phase = ref('');
 let activeAbort: AbortController | null = null; // 当前下载的 AbortController，供“取消”按钮中断后台请求
+
+// 网络类错误（超时/失败）才提示网络原因；取消、授权失败不算网络问题
+const isNetworkError = computed(() => {
+  const m = err.value;
+  if (!m) return false;
+  if (m.includes('取消') || m.includes('授权')) return false;
+  return true;
+});
 
 async function onDownload() {
   err.value = '';
@@ -92,11 +100,11 @@ function fmt(n: number) {
       <div class="sub muted">
         {{ fmt(file.size) }}
         <span v-if="busy" class="prog-text"> · {{ phase }} {{ (progress * 100).toFixed(0) }}% · {{ speed.toFixed(1) }} MB/s</span>
-        <span v-if="err" class="err"> · {{ err }}</span>
       </div>
       <div v-if="busy" class="bar">
         <div class="fill" :style="{ width: (progress * 100) + '%' }"></div>
       </div>
+      <div v-if="err" class="err-line">⚠ {{ err }}<span v-if="isNetworkError" class="err-hint">（多为网络不稳定或跨境链路拥塞，请重试或更换网络）</span></div>
     </div>
     <template v-if="encrypted && !e2eeKey">
       <span class="lock-hint muted">🔒 输入口令后下载</span>
@@ -129,6 +137,8 @@ function fmt(n: number) {
 .sub { font-size: 12px; margin-top: 3px; }
 .prog-text { color: var(--accent-2); }
 .err { color: var(--danger); }
+.err-line { color: var(--danger); font-size: 12px; margin-top: 6px; line-height: 1.4; }
+.err-hint { opacity: 0.82; margin-left: 2px; }
 .lock-hint { font-size: 12px; white-space: nowrap; }
 .done-hint { font-size: 12px; white-space: nowrap; color: var(--accent-2); }
 .bar { height: 8px; background: var(--bg-soft); border-radius: 999px; overflow: hidden; margin-top: 8px; }
