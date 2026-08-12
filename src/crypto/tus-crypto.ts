@@ -7,9 +7,9 @@
 // （口令均按 UTF-8 编码、salt 均为 base64 的 16 字节），故 crypto-js 加密的数据可由本文件解密，反之亦然。
 
 const PBKDF2_ITERS = 150_000;
-const IV_LEN = 16;
-const TAG_LEN = 32;
-const HEADER_LEN = 8; // 4B 明文长度 + 4B 密文长度
+export const IV_LEN = 16;
+export const TAG_LEN = 32;
+export const HEADER_LEN = 8; // 4B 明文长度 + 4B 密文长度
 export const E2EE_CHUNK_SIZE = 8 * 1024 * 1024; // 8MiB 一片（与 e2ee.ts 一致）
 
 /** 生成随机 salt（base64，16 字节） */
@@ -38,7 +38,7 @@ function hexToBytes(hex: string): Uint8Array<ArrayBuffer> {
 }
 
 /** 由派生出的 32 字节密钥导入 AES-CBC 与 HMAC 两把 CryptoKey（与 crypto-js 单 key 双用同源） */
-async function importRelayKeys(keyHex: string): Promise<{ aesKey: CryptoKey; hmacKey: CryptoKey }> {
+export async function importRelayKeys(keyHex: string): Promise<{ aesKey: CryptoKey; hmacKey: CryptoKey }> {
   const keyBytes = hexToBytes(keyHex);
   const aesKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-CBC' }, false, ['encrypt', 'decrypt']);
   const hmacKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
@@ -67,11 +67,17 @@ export async function deriveKey(passphrase: string, saltB64: string): Promise<st
 }
 
 /** 恒定时间比较两段 HMAC，防时序侧信道 */
-function hmacEqual(a: Uint8Array, b: Uint8Array): boolean {
+export function hmacEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
   return diff === 0;
+}
+
+/** 解密单个 E2EE 帧密文为明文（去 PKCS7 填充），供流式 FrameDecoder 复用，与 decryptBlob 同源 */
+export async function decryptFrame(aesKey: CryptoKey, iv: Uint8Array<ArrayBuffer> | ArrayBuffer, ct: Uint8Array<ArrayBuffer> | ArrayBuffer, plainLen: number): Promise<Uint8Array<ArrayBuffer>> {
+  const plainAll = await crypto.subtle.decrypt({ name: 'AES-CBC', iv }, aesKey, ct);
+  return new Uint8Array(plainAll).slice(0, plainLen);
 }
 
 /** 加密一个文件为密文 Blob（WebCrypto，逐 8MiB 分块；帧格式与 e2ee.ts 一致） */
@@ -136,8 +142,7 @@ export async function decryptBlob(
       throw new Error('完整性校验失败：数据可能被篡改');
     }
 
-    const plainAll = await crypto.subtle.decrypt({ name: 'AES-CBC', iv: ivBuf }, aesKey, ctBuf);
-    parts.push(new Blob([plainAll.slice(0, plainLen)])); // 去掉 PKCS7 填充
+    parts.push(new Blob([await decryptFrame(aesKey, ivBuf, ctBuf, plainLen)])); // 去掉 PKCS7 填充
     onProgress?.(offset / total);
   }
   return new Blob(parts);

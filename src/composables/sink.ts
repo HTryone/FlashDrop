@@ -1,9 +1,19 @@
-// 接收端「写入落盘」抽象：安全上下文用 StreamSaver 流式写盘（不爆内存），
+// 接收端「写入落盘」抽象（公共件）：安全上下文用 StreamSaver 流式写盘（不爆内存），
 // 非安全上下文（手机经 http 局域网访问）Service Worker 不可用 → 降级为浏览器 Blob 下载。
 // Chromium 优先走 File System Access API 直写磁盘（无 SW/iframe，避开扩展消息污染导致的崩溃）。
-// 纯浏览器 API，无 Vue 依赖。
+// 纯浏览器 API，无 Vue 依赖。由 https/sink.ts 迁入 composables 成为全工作区共用落盘件。
 
-import type { FileMeta, Sink } from './types';
+export interface FileMeta {
+  name: string;
+  size: number;
+}
+
+/** 落盘 Sink：接收端写入抽象（FSA / StreamSaver / Blob 兜底） */
+export interface Sink {
+  write(p: Uint8Array): Promise<void> | void;
+  close(): Promise<void>;
+  abort(): void;
+}
 
 let _ssPromise: Promise<any> | null = null;
 function ensureStreamSaver(): Promise<any> {
