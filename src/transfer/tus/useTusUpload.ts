@@ -33,8 +33,8 @@ const WATCHDOG = 55;
 const TIERS = [BLOCK, 24 * 1024 * 1024, 16 * 1024 * 1024];
 /** 单区间重试次数（每次失败自动降档，不会同尺寸反复重试）。 */
 const RETRIES = 5;
-/** 兜底档(16MB)连续真实失败(neterr)上限：达到后判定网络不可用，直接中止上传并报错。看门狗超时(慢)不算失败。 */
-const MAX_BOTTOM_RETRIES = 3;
+/** 兜底档(16MB)连续失败上限：含看门狗超时(慢)与真实连接失败(neterr)，达到后判定网络不可用，直接中止上传并报错。 */
+const MAX_BOTTOM_RETRIES = 2;
 
 /** 步骤1：POST /files 创建文件记录，返回 fileId。 */
 async function createUpload(tusBase: string, meta: Record<string, string>): Promise<string> {
@@ -93,7 +93,7 @@ function uploadSliceXHR(
   url: string,
   blob: Blob,
   onProgress: (sent: number) => void,
-  onWatchdog?: () => void,
+  onWatchdog?: () => boolean,
   signal?: AbortSignal,
 ): Promise<'done' | 'neterr' | 'aborted'> {
   return new Promise((resolve) => {
@@ -107,12 +107,16 @@ function uploadSliceXHR(
       clearTimeout(timer);
       resolve(r);
     };
-    // 看门狗：仅通知上层降档，不中断当前传输
+    // 看门狗：通知上层降档；若上层返回 true（兜底档失败达上限）则立即中止当前块并判为失败(neterr)
     const timer = setTimeout(() => {
       if (watchdogCalled) return;
       watchdogCalled = true;
       console.warn(`[upload] 单块已超 ${WATCHDOG}s 看门狗，触发降档（后续块用更小尺寸）`);
-      onWatchdog?.();
+      const abortNow = onWatchdog?.() === true;
+      if (abortNow) {
+        try { xhr.abort(); } catch { /* 已结束 */ }
+        finish('neterr');
+      }
     }, WATCHDOG * 1000);
     // 外部中止：立即中断当前 XHR，返回 'aborted'（区别于真实网络错误）
     if (signal) {
@@ -168,7 +172,7 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
 
     // 块大小策略（用户指定，2026-08-12 调整）：
     // 默认 32MB；看门狗 55s 到时未传完 → 后续块降 24MB；再触发看门狗 → 降 16MB（兜底）。
-    // 兜底档(16MB)连续真实失败(neterr)达 3 次 → 判定网络不可用，直接中止上传并报错（看门狗超时<慢>不算失败）。
+    // 兜底档(16MB)连续失败（看门狗超时<慢> 或 真实连接失败neterr 均计）达 2 次 → 判定网络不可用，直接中止上传并报错。
     // 看门狗/失败降档单调不回升；看门狗不中断当前块（让其自然完成或撞 60s 边缘）；
     // commit 异步 + 下一块预签名流水线，消串行空挡；不靠测速。
     let off = 0;
@@ -183,8 +187,9 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
     // 触发一次降档（看门狗或失败）：档位升一档（封顶 16MB），作废已预取的 presign（尺寸变了）
     const downgrade = () => { tier = Math.min(tier + 1, TIERS.length - 1); pf.cur = null; };
     const topTierIdx = TIERS.length - 1;        // 兜底档索引（16MB）
-    let bottomFails = 0;                        // 兜底档连续真实失败(neterr)计数
-    // 兜底档(16MB)出现一次真实失败(neterr)即计入；累计达上限则中止任务并报错。看门狗超时(慢)不算失败。
+    let bottomFails = 0;                        // 兜底档连续失败计数（看门狗超时<慢> 或 neterr 均计）
+    let fatalTriggered = false;                // 兜底档失败达上限 → 看门狗回调置位，主循环据此中止
+    // 兜底档(16MB)出现一次失败（看门狗超时 或 真实连接失败neterr）即计入；累计达上限则中止任务并报错。
     const registerBottomFail = (curSeg: number) => {
       if (tier >= topTierIdx) {
         bottomFails++;
@@ -234,10 +239,23 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
       const r = await uploadSliceXHR(
         url, blob,
         (sent) => { inflight = sent; report(); },
-        () => { downgrade(); },
+        () => {
+          downgrade();
+          // 已在兜底档(16MB)还被看门狗掐断(极慢) → 计一次失败；达上限置位 fatalTriggered 让主循环中止
+          if (tier >= topTierIdx) {
+            bottomFails++;
+            if (bottomFails >= MAX_BOTTOM_RETRIES) {
+              opts.onFatal?.();
+              fatalTriggered = true;
+              return true;   // 通知 uploadSliceXHR 立即中止当前块并判为失败
+            }
+          }
+          return false;
+        },
         opts.signal,
       );
       if (r === 'aborted') { const e = new Error('aborted'); (e as any).name = 'AbortError'; throw e; }
+      if (fatalTriggered) throw new Error(`兜底块(16MB)连续 ${bottomFails} 次看门狗超时(55s)，网络不可用，已中止上传`);
       await prefetchP;
 
       if (r === 'done') {
@@ -251,7 +269,7 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
         onBlockSuccess();
         // 看门狗已在回调里 downgrade()（当前块用旧档位，下一块起用新档位）；正常完成不回升。
       } else {
-        // 主尝试失败(neterr)：若在兜底档则计入兜底失败次数；看门狗超时(慢)不算失败
+        // 主尝试失败(neterr 或 看门狗兜底档中止)：在兜底档计入兜底失败次数
         registerBottomFail(seg);
         // 失败（含撞 60s 边缘）：首次失败升一档，同区间用更小块重传；重试仍失败再升一档（封顶 16MB），不反复同尺寸。
         downgrade();

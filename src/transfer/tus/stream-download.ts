@@ -97,6 +97,8 @@ async function fetchWindow(
 ): Promise<ArrayBuffer> {
   const specs = resolveRanges(manifest, gStart, gEnd);
   const bufs: Uint8Array<ArrayBuffer>[] = [];
+  let windowFails = 0;
+  const MAX_WINDOW_FAILS = 3; // 单窗口(16MiB块)被看门狗掐断累计达此值且仍未完整 → 判错
   for (const spec of specs) {
     let pos = spec.start;
     const end = spec.end;
@@ -109,6 +111,13 @@ async function fetchWindow(
       } catch (e: any) {
         if (signal?.aborted) throw new Error('下载已取消');
         if (e?.message === 'SAVE_DIR_DENIED') throw e; // 落盘授权失败：非网络故障，直接透传
+        // 单窗口被看门狗掐断（慢/零字节）累计达上限且仍未完整 → 判错（防永久卡死/无限等待）
+        if (pos <= end) {
+          windowFails++;
+          if (windowFails >= MAX_WINDOW_FAILS) {
+            throw new Error(`下载失败：分块连续 ${MAX_WINDOW_FAILS} 次超时仍未下载完整，请重试`);
+          }
+        }
         if (e?.partialBuf) {
           bufs.push(new Uint8Array(e.partialBuf));
           pos += e.partialBytes; // 从断点续传（已收字节计入进度，不重取）

@@ -103,7 +103,7 @@ function fmt(n: number) {
     </template>
       <span v-else-if="done" class="done-hint">✓ 已保存到本机</span>
       <button v-else-if="!busy" class="btn sm primary" @click="onDownload">
-        {{ e2eeKey ? '解密下载' : '下载' }}
+        {{ err ? '重新下载' : (e2eeKey ? '解密下载' : '下载') }}
       </button>
       <button v-else class="btn sm cancel" @click="cancelDownload">取消</button>
   </div>
