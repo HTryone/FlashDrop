@@ -84,8 +84,15 @@ class FSAccessSink implements Sink {
   private writable: any = null;
   constructor(private handle: any) {}
   async write(p: Uint8Array) {
-    const h = await this.handle; // getFileHandle() 返回 Promise，必须先 await 拿到真实句柄再 createWritable
-    if (!this.writable) this.writable = await h.createWritable();
+    const h = await this.handle; // makeSinks 已预解析为真实 FileSystemFileHandle
+    if (!this.writable) {
+      try {
+        this.writable = await h.createWritable();
+      } catch (e: any) {
+        // 极端情况下 createWritable 仍失败（如权限被中途撤销）→ 抛类型化错误供上层识别
+        throw new Error('SAVE_DIR_DENIED');
+      }
+    }
     await this.writable.write(p);
   }
   async close() {
@@ -111,6 +118,24 @@ export async function pickSaveDir(): Promise<any | null> {
 export interface MakeSinksResult {
   writers: Sink[];
   fallback: boolean; // 是否降级为 Blob 整文件下载
+  permissionFallback?: boolean; // FSA 授权失败，已降级 StreamSaver/Blob（用户仍拿到文件）
+}
+
+/** 显式把目录句柄提权到 readwrite：部分浏览器/上下文 picker 不隐式授予，
+ * 必须主动 requestPermission 才能 getFileHandle({create:true})，否则抛 SecurityError。
+ * queryPermission 已 granted 则跳过，避免多余弹窗。 */
+async function ensureRwPermission(dh: any): Promise<boolean> {
+  if (!dh || typeof dh.requestPermission !== 'function') return true;
+  try {
+    if (typeof dh.queryPermission === 'function') {
+      const q = await dh.queryPermission({ mode: 'readwrite' });
+      if (q === 'granted') return true;
+    }
+    const r = await dh.requestPermission({ mode: 'readwrite' });
+    return r === 'granted';
+  } catch {
+    return false;
+  }
 }
 
 /** 根据文件清单 + 目录句柄，构造一组落盘 Sink（优先级：FSA > StreamSaver > Blob） */
@@ -118,15 +143,26 @@ export async function makeSinks(files: FileMeta[], dirHandle?: any): Promise<Mak
   let writers: Sink[] = [];
   let fallback = false;
   if (dirHandle && !(dirHandle as any).__cancelled) {
-    try {
-      writers = files.map((f) => {
-        const safeName = String(f.name).replace(/[\\/]/g, '_');
-        return new FSAccessSink(dirHandle.getFileHandle(safeName, { create: true }));
-      });
-      return { writers, fallback };
-    } catch {
-      writers = [];
+    // 显式提权：消除「隐式授权不成立 → getFileHandle 抛 SecurityError」的真实用户路径
+    const permOk = await ensureRwPermission(dirHandle);
+    if (permOk) {
+      try {
+        // 预解析所有句柄并立即挂 .catch：拒绝在存入 Sink 前被标记 handled，
+        // 杜绝「裸存 rejected Promise → 后续 await 时早已 unhandledrejection」的缺陷。
+        const handles = await Promise.all(
+          files.map((f) => {
+            const safeName = String(f.name).replace(/[\\/]/g, '_');
+            return dirHandle.getFileHandle(safeName, { create: true });
+          }),
+        );
+        writers = handles.map((h: any) => new FSAccessSink(h));
+        return { writers, fallback };
+      } catch {
+        writers = [];
+      }
     }
+    // 提权失败或句柄解析失败 → 降级 StreamSaver/Blob（用户仍拿到文件），不抛错
+    return { writers, fallback, permissionFallback: true };
   }
   let ss: any = null;
   if (isSecureContextForSW()) {

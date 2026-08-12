@@ -7,5 +7,5 @@ export type { ReceiverCallbacks } from './receiver';
 export { FRAME_HDR, encodeMsg, decodeFrame, FrameReader } from './frame';
 export { segRoom, SEGMENT_TIME_MS, SEGMENT_MIN_BYTES } from './segment';
 export { RelayControl, wsUrl } from './control';
-export { makeSinks, pickSaveDir } from '@/composables/sink';
+export { makeSinks, pickSaveDir } from '@/composables/filesink';
 export type { Sink, FileMeta, ChunkInfo } from './types';

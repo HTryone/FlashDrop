@@ -1,8 +1,8 @@
 // 中转下载（tus/R2）流式落盘实现（V1 简单方案）。
 // 从 ReceiveFileRow.vue 抽离：边下载边解密边落盘，不再把整文件密文/明文攒进内存。
-// 复用：@/composables/sink（落盘抽象，FSA/StreamSaver/Blob 三级）、@/crypto/tus-crypto（加解密原语）。
+// 复用：@/composables/filesink（落盘抽象，FSA/StreamSaver/Blob 三级）、@/crypto/tus-crypto（加解密原语）。
 
-import { makeSinks, pickSaveDir } from '@/composables/sink';
+import { makeSinks, pickSaveDir } from '@/composables/filesink';
 import { importRelayKeys, hmacEqual, decryptFrame, HEADER_LEN, IV_LEN, TAG_LEN } from '@/crypto/tus-crypto';
 
 export interface PartInfo { key: string; offset: number; size: number; url: string }
@@ -102,6 +102,8 @@ async function downloadPart(
       } catch (e: any) {
         ahead = null;
         if (signal?.aborted) throw new Error('下载已取消');
+        // 落盘授权失败（SAVE_DIR_DENIED 来自 FSAccessSink）：非网络故障，不再重试，直接透传
+        if (e?.message === 'SAVE_DIR_DENIED') throw e;
         if (e?.partialBuf) {
           await onCipher(new Uint8Array(e.partialBuf));
           pos += e.partialBytes;
@@ -173,10 +175,10 @@ export interface StreamDownloadOpts {
 
 // 主流程：用户手势内调用。先选保存目录（FSA 直写需用户授权，非 Chromium 返回 null 走 StreamSaver/Blob 兜底），
 // 再按 part 顺序流式下载 + 解密 + 落盘。V1：part 顺序处理，段内预取保留（取数↔解密重叠，吞吐不降、顺序正确）。
-export async function streamDownloadToSink(opts: StreamDownloadOpts): Promise<void> {
+export async function streamDownloadToSink(opts: StreamDownloadOpts): Promise<{ permissionFallback?: boolean }> {
   const { manifest, e2eeKey, onChunk, signal } = opts;
   const dirHandle = await pickSaveDir();
-  const { writers } = await makeSinks([{ name: manifest.filename, size: manifest.total }], dirHandle);
+  const { writers, permissionFallback } = await makeSinks([{ name: manifest.filename, size: manifest.total }], dirHandle);
   const sink = writers[0];
   try {
     if (!e2eeKey) {
@@ -201,4 +203,5 @@ export async function streamDownloadToSink(opts: StreamDownloadOpts): Promise<vo
   } finally {
     await sink.close();
   }
+  return { permissionFallback };
 }

@@ -51,14 +51,22 @@ async function onDownload() {
     stats.total = manifest.total;
     phase.value = '拉取加密数据中…';
     // 流式落盘（边下边解密边写盘）在中转下载模块内完成，此处只驱动进度与状态
-    await streamDownloadToSink({ manifest, e2eeKey: props.e2eeKey, onChunk, signal: abortCtrl.signal });
+    const res = await streamDownloadToSink({ manifest, e2eeKey: props.e2eeKey, onChunk, signal: abortCtrl.signal });
     phase.value = '已保存到本机';
     progress.value = 1;
     done.value = true;
+    if (res.permissionFallback) {
+      // FSA 授权失败，已降级 StreamSaver/Blob 浏览器下载，文件仍会落地；给轻提示让用户知情
+      err.value = '保存目录授权失败，已改用浏览器默认下载';
+    }
   } catch (e: any) {
     const wasCancelled = abortCtrl.signal.aborted; // 用户主动取消时，catch 触发前信号已置位
     abortCtrl.abort(); // 出错/取消时立即终止所有后台 fetch，避免继续拉取浪费流量
-    err.value = wasCancelled ? '已取消下载' : (e?.message || '下载失败');
+    if (e?.message === 'SAVE_DIR_DENIED') {
+      err.value = '保存目录授权失败，请重试';
+    } else {
+      err.value = wasCancelled ? '已取消下载' : (e?.message || '下载失败');
+    }
   } finally {
     busy.value = false;
     activeAbort = null;

@@ -6,7 +6,7 @@ import { decodeFrame, FrameReader, FRAME_HDR } from './frame';
 import { resolveRelayBase } from '@/transfer/room';
 import { segRoom } from './segment';
 import { RelayControl } from './control';
-import { makeSinks, pickSaveDir } from '@/composables/sink';
+import { makeSinks, pickSaveDir } from '@/composables/filesink';
 import type { FileMeta, Sink } from './types';
 import { decryptChunkAsync } from '@/https/useLocalCrypto';
 import { deriveKey, LOCAL_SALT, LOCAL_CHUNK_SIZE } from '@/crypto/e2ee';
