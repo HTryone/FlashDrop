@@ -155,9 +155,8 @@ async function downloadAll(
       if (abortCtrl.signal.aborted) throw new Error('下载已取消');
       const i = next++;
       const part = manifest.parts[i];
-      // 优先用 Worker 清单返回的 presigned GET URL 直连 R2（绕过 Worker 中转，加速下载）
-      // 兜底：旧清单无 url 时仍走 Worker 代理（兼容未强制刷新的旧前端）
-      const url = part.url || `${base}/download/${props.code}/${props.file.id}/part/${encodeURIComponent(part.key)}`;
+      // 直连 R2：清单已附 presigned GET URL，浏览器直接向 R2 取密文（绕过 Worker 中转）
+      const url = part.url;
       results[i] = await downloadPart(url, part.size, onChunk, abortCtrl.signal);
     }
   }

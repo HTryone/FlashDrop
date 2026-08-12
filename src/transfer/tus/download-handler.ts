@@ -1,5 +1,5 @@
-// 单文件下载：列出所有 tus 分片，前端分多次小块取回（与上传一致），绕过 CF 单响应截断。
-// URL：/download/:code/:fileId -> JSON 清单；/download/:code/:fileId/part/:key -> 单分片(支持 Range 子范围)
+// 单文件下载：列出所有 tus 分片并附 presigned GET URL，前端直连 R2 分多次小块取回（与上传一致），绕过 CF 单响应截断。
+// URL：/download/:code/:fileId -> JSON 清单（含每个 part 的 presigned GET URL，浏览器直连 R2 取数）
 
 import { StorageBackend, IndexBackend } from './types';
 import { corsHeaders } from './tus-protocol';
@@ -19,12 +19,6 @@ export class DownloadHandler {
     }
     if (request.method !== 'GET') {
       return new Response('Method Not Allowed', { status: 405, headers: corsHeaders(origin) });
-    }
-
-    // 单分片下载（支持 Range 子范围，兼容旧上传的大分片）
-    const partMatch = /^\/download\/([^/]+)\/([^/]+)\/part\/(.+)$/.exec(url.pathname);
-    if (partMatch) {
-      return this.handlePart(partMatch[1], partMatch[2], decodeURIComponent(partMatch[3]), request, origin);
     }
 
     const m = /^\/download\/([^/]+)\/([^/]+)$/.exec(url.pathname);
@@ -86,47 +80,4 @@ export class DownloadHandler {
     }
   }
 
-  private async handlePart(
-    _code: string,
-    _fileId: string,
-    partKey: string,
-    request: Request,
-    origin: string | null,
-  ): Promise<Response> {
-    try {
-      // 解析 Range: bytes=start-end（子范围，兼容 >30MB 的旧分片）
-      const rangeHdr = request.headers.get('Range');
-      let range: { start: number; end?: number } | undefined;
-      if (rangeHdr) {
-        const rm = /bytes=(\d+)-(\d*)/.exec(rangeHdr);
-        if (rm) {
-          const start = Number(rm[1]);
-          const end = rm[2] ? Number(rm[2]) : undefined;
-          range = end !== undefined ? { start, end } : { start };
-        }
-      }
-
-      const { body, size, contentRange } = await this.storage.get(partKey, range);
-      const headers: Record<string, string> = {
-        ...corsHeaders(origin),
-        'Content-Type': 'application/octet-stream',
-        'Cache-Control': 'no-store',
-      };
-
-      if (range) {
-        const end = range.end ?? size - 1;
-        const len = end - range.start + 1;
-        headers['Content-Range'] = contentRange || `bytes ${range.start}-${end}/${size}`;
-        headers['Content-Length'] = String(len);
-        return new Response(body, { status: 206, headers });
-      }
-
-      headers['Content-Length'] = String(size);
-      headers['Accept-Ranges'] = 'bytes';
-      return new Response(body, { status: 200, headers });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return new Response(msg, { status: 500, headers: corsHeaders(origin) });
-    }
-  }
 }
