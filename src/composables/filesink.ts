@@ -142,12 +142,13 @@ async function ensureRwPermission(dh: any): Promise<boolean> {
 export async function makeSinks(files: FileMeta[], dirHandle?: any): Promise<MakeSinksResult> {
   let writers: Sink[] = [];
   let fallback = false;
+  let permissionFallback = false;
   if (dirHandle && !(dirHandle as any).__cancelled) {
     // 显式提权：消除「隐式授权不成立 → getFileHandle 抛 SecurityError」的真实用户路径
     const permOk = await ensureRwPermission(dirHandle);
     if (permOk) {
       try {
-        // 预解析所有句柄并立即挂 .catch：拒绝在存入 Sink 前被标记 handled，
+        // 预解析所有句柄并立即 await：拒绝在存入 Sink 前被标记 handled，
         // 杜绝「裸存 rejected Promise → 后续 await 时早已 unhandledrejection」的缺陷。
         const handles = await Promise.all(
           files.map((f) => {
@@ -156,13 +157,14 @@ export async function makeSinks(files: FileMeta[], dirHandle?: any): Promise<Mak
           }),
         );
         writers = handles.map((h: any) => new FSAccessSink(h));
-        return { writers, fallback };
+        return { writers, fallback, permissionFallback };
       } catch {
         writers = [];
       }
     }
-    // 提权失败或句柄解析失败 → 降级 StreamSaver/Blob（用户仍拿到文件），不抛错
-    return { writers, fallback, permissionFallback: true };
+    // FSA 授权失败或句柄解析失败：标记降级后 fallthrough 到下方 StreamSaver/Blob 兜底，
+    // 用户仍拿到文件。注意：此处不能提前 return 空 writers，否则上层 sink=undefined 会崩。
+    permissionFallback = true;
   }
   let ss: any = null;
   if (isSecureContextForSW()) {
@@ -176,12 +178,12 @@ export async function makeSinks(files: FileMeta[], dirHandle?: any): Promise<Mak
   if (ss && ss.supported !== false) {
     try {
       writers = files.map((f) => new StreamSink(ss.createWriteStream(f.name, { size: f.size || undefined }).getWriter()));
-      return { writers, fallback };
+      return { writers, fallback, permissionFallback };
     } catch {
       /* fallthrough to Blob */
     }
   }
   fallback = true;
   writers = files.map((f) => new BlobSink(f.name));
-  return { writers, fallback };
+  return { writers, fallback, permissionFallback };
 }

@@ -180,6 +180,7 @@ export async function streamDownloadToSink(opts: StreamDownloadOpts): Promise<{ 
   const dirHandle = await pickSaveDir();
   const { writers, permissionFallback } = await makeSinks([{ name: manifest.filename, size: manifest.total }], dirHandle);
   const sink = writers[0];
+  if (!sink) throw new Error('无可用落盘 Sink');
   try {
     if (!e2eeKey) {
       // 无加密：密文即明文，直接落盘
