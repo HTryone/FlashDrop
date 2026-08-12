@@ -63,7 +63,6 @@ textarea:focus, .pass:focus { outline: none; border-color: var(--accent); }
 .pass-display { font-size: 20px; font-weight: 700; letter-spacing: 2px; font-family: monospace; color: var(--accent); margin: 4px 0 0; user-select: all; }
 .share-hint { font-size: 12px; color: var(--text-dim); margin: 8px 0 0; line-height: 1.5; }
 .share-hint b { color: var(--accent-2); }
-.divider { height: 1px; background: var(--border); margin: 16px 0; }
 
 /* 弹窗 */
 .modal-overlay {
@@ -81,6 +80,13 @@ textarea:focus, .pass:focus { outline: none; border-color: var(--accent); }
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; }
 .btn.danger { background: var(--danger); color: #fff; }
 .btn.danger:hover { opacity: 0.9; }
+
+/* 窄屏：外层容器拍平，但文件行恢复深色胶囊，保留列表间距 */
+@media (max-width: 900px) {
+  .selected { background: none; border: none; border-radius: 0; padding: 0; }
+  .file-list { gap: 8px; }
+  .drop { padding: 18px 14px; }
+}
 
 @media (max-width: 640px) { .opts { grid-template-columns: 1fr; } .pass-row { flex-wrap: wrap; } }
 

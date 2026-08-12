@@ -268,9 +268,6 @@ onUnmounted(() => { sender.close(); if (p2pEarlySig) { p2pEarlySig.close(); p2pE
         <p class="share-hint">📤 把<b>分享链接</b>和<b>解密口令</b>一起发给对方——对方必须输入口令才能解密下载。</p>
       </div>
 
-      <!-- 分隔线 -->
-      <div class="divider"></div>
-
       <!-- 登录码（发送者自己用，换电脑回看） -->
       <div class="code-section">
         <div class="code-label muted">🔑 登录码（你自己保存，换电脑后查看/管理）</div>

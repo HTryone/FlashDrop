@@ -95,8 +95,8 @@ function cancelDownload() {
     <div class="info">
       <div class="name" :title="file.name">{{ file.name }}</div>
       <div class="sub muted">
-        {{ formatBytes(file.size) }}
-        <span v-if="busy" class="prog-text"> · {{ phase }} {{ (progress * 100).toFixed(0) }}% · {{ speed.toFixed(1) }} MB/s</span>
+        <span class="sub-l">{{ formatBytes(file.size) }}<span v-if="busy" class="prog-text"> · {{ phase }} {{ (progress * 100).toFixed(0) }}%</span></span>
+        <span v-if="busy" class="speed">{{ speed.toFixed(1) }} MB/s</span>
       </div>
       <ProgressBar v-if="busy" :value="progress * 100" />
       <div v-if="err" class="err-line">⚠ {{ err }}<span v-if="isNetworkError" class="err-hint">（多为网络不稳定或跨境链路拥塞，请重试或更换网络）</span></div>
@@ -115,7 +115,7 @@ function cancelDownload() {
 <style scoped>
 .row {
   display: flex; align-items: center; gap: 12px;
-  background: var(--panel-2); border: 1px solid var(--border);
+  background: var(--panel); border: 1px solid rgba(255, 255, 255, 0.12);
   border-left: 3px solid var(--accent-2);
   border-radius: var(--radius-sm); padding: 10px 12px;
 }
@@ -129,8 +129,10 @@ function cancelDownload() {
 }
 .info { flex: 1; min-width: 0; }
 .name { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sub { font-size: 12px; margin-top: 3px; }
+.sub { font-size: 12px; margin-top: 3px; display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.sub-l { min-width: 0; }
 .prog-text { color: var(--accent-2); }
+.speed { flex: none; white-space: nowrap; color: var(--accent-2); font-variant-numeric: tabular-nums; }
 .err { color: var(--danger); }
 .err-line { color: var(--danger); font-size: 12px; margin-top: 6px; line-height: 1.4; }
 .err-hint { opacity: 0.82; margin-left: 2px; }
@@ -141,4 +143,5 @@ function cancelDownload() {
   border-color: var(--danger);
   background: transparent;
 }
+
 </style>

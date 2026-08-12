@@ -78,4 +78,14 @@ function onGotLoginCode(rawCode: string) {
   .tabs button { padding: 7px 12px; font-size: 12px; }
   .ext-btn { display: none; } /* 小屏隐藏扩展按钮 */
 }
+
+/* 手机/平板：面板铺满并去掉外层卡片框，减少层层叠靠 */
+@media (max-width: 900px) {
+  .topbar { padding: 12px 14px; }
+  .main { padding: 12px 6px 24px; }
+  .panel {
+    max-width: 100%; padding: 12px;
+    background: transparent; border: none; border-radius: 0; box-shadow: none;
+  }
+}
 </style>

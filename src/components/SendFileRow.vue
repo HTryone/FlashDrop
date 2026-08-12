@@ -40,7 +40,7 @@ const label = computed(() => {
 <style scoped>
 .row {
   display: flex; align-items: center; gap: 12px;
-  background: var(--panel-2); border: 1px solid var(--border);
+  background: var(--panel); border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: var(--radius-sm); padding: 10px 12px;
 }
 .row.done { border-color: rgba(75, 227, 160, 0.35); }
@@ -58,4 +58,5 @@ const label = computed(() => {
 .rm:hover { color: var(--danger); background: rgba(255, 107, 129, 0.1); }
 .rm:disabled { color: var(--text-faint); opacity: 0.4; cursor: not-allowed; }
 .rm:disabled:hover { background: none; color: var(--text-faint); }
+
 </style>
