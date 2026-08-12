@@ -1,5 +1,5 @@
 // DataChannel 层：子帧重组（接收端）、在途窗口（发送端 ack 流控）、分片发送 + DC 缓冲背压。
-import { SUB_HDR, RTC_LOW, WINDOW_FRAMES } from './types';
+import { SUB_HDR, RTC_LOW } from './types';
 import { subFrameIter } from './framing';
 
 // 接收端：把二进制子帧重组成完整逻辑帧（DC 本身有序，这里兜底稳健）。
@@ -29,58 +29,6 @@ export class Reassembler {
       return done;
     }
     return null;
-  }
-}
-
-// 发送端在途窗口：基于接收端 ack 推进，超限则阻塞（防发送端内存爆 + 防接收端磁盘写不及）。
-export class FlowWindow {
-  lastAcked = -1; // 已连续确认的最高全局序号
-  private waiters: Array<() => void> = [];
-  // 累计超时判死：连续 N 次 waitForAck 超时未收到真实 ack → 判定连接已断
-  private consecutiveTimeouts = 0;
-  static readonly MAX_CONSECUTIVE_TIMEOUTS = 10;
-
-  noteAck(seq: number) {
-    this.consecutiveTimeouts = 0; // 收到真实 ack，重置超时计数
-    if (seq > this.lastAcked) this.lastAcked = seq;
-    const ws = this.waiters;
-    this.waiters = [];
-    for (const w of ws) {
-      try { w(); } catch { /* ignore */ }
-    }
-  }
-
-  async waitIfNeeded(inflight: number, limit = WINDOW_FRAMES): Promise<void> {
-    if (inflight < limit) return;
-    await this.waitForAck();
-  }
-
-  // 等待下一个 ack（或 500ms 兜底），用于「全部已发待确认 / dc 未就绪」时避免空转。
-  // 连续超时达 MAX_CONSECUTIVE_TIMEOUTS 次后 reject，防止慢链路/对称 NAT 下假活不报错。
-  waitForAck(): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      let fired = false;
-      const once = () => {
-        if (fired) return;
-        fired = true;
-        resolve();
-      };
-      this.waiters.push(once);
-      // 兜底：ack 丢失也不永久挂起，超时后重评估
-      setTimeout(() => {
-        if (fired) return;
-        fired = true;
-        this.consecutiveTimeouts++;
-        if (this.consecutiveTimeouts >= FlowWindow.MAX_CONSECUTIVE_TIMEOUTS) {
-          reject(new Error(
-            'P2P 连接疑似断开：连续 ' + FlowWindow.MAX_CONSECUTIVE_TIMEOUTS +
-            ' 次 ack 超时无响应（500ms/次）',
-          ));
-          return;
-        }
-        resolve(); // 偶尔丢 ack 正常，继续等
-      }, 500);
-    });
   }
 }
 

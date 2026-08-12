@@ -33,7 +33,7 @@ export class R2StorageBackend implements StorageBackend {
     const res = await this.bucket.put(key, body, {
       contentLength: size,
       customMetadata: { size: String(size) },
-    });
+    } as any);
     if (!res) throw new TransferError('STORAGE', `R2 put 失败: ${key}`);
   }
 
@@ -45,7 +45,7 @@ export class R2StorageBackend implements StorageBackend {
     const obj = await this.bucket.get(
       key,
       range
-        ? { range: { offset: range.start, length: (range.end ?? Infinity) - range.start + 1 } }
+        ? { range: { offset: range.start, length: (range.end ?? Infinity) - range.start + 1 } as any }
         : undefined,
     );
     if (!obj) throw new TransferError('NOT_FOUND', `R2 对象不存在: ${key}`);
@@ -53,8 +53,8 @@ export class R2StorageBackend implements StorageBackend {
     const total = obj.size;
     let contentRange: string | undefined;
     if (range) {
-      const offset = obj.range?.offset ?? range.start;
-      const length = obj.range?.length ?? total - offset;
+      const offset = (obj.range as any)?.offset ?? range.start;
+      const length = (obj.range as any)?.length ?? total - offset;
       const end = offset + length - 1;
       contentRange = `bytes ${offset}-${end}/${total}`;
     }
@@ -75,7 +75,7 @@ export class R2StorageBackend implements StorageBackend {
     );
     const signed = await this.aws.sign(
       new Request(url, { method }),
-      { aws: { signQuery: true, expires: expiresIn } },
+      { aws: { signQuery: true, expires: expiresIn } as any },
     );
     return signed.url;
   }

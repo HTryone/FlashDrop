@@ -8,7 +8,6 @@
 import CryptoJS from 'crypto-js';
 
 const CHUNK = 8 * 1024 * 1024; // 8MiB 一片
-export const E2EE_CHUNK_SIZE = CHUNK;
 const PBKDF2_ITERS = 150_000;
 const IV_LEN = 16;
 const TAG_LEN = 32; // HMAC-SHA256 输出长度

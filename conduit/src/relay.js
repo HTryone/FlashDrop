@@ -239,7 +239,7 @@ export class Relay {
             // → 该房间之后每个 POST 都无限 pending → 表现为「速度归零、双方 UI 仍显示传输中」。
             // 现改为带超时的等待：单轮最多 20s，累计无 pull 超过 STALL_MS 则判定接收端已死，
             // 快速失败返回 503 让发送端重试（帧带 (fi,ci)，重发幂等），绝不拖垮整条链。
-            const STALL_MS = 70000; // < Cloudflare ~100s 请求上限，抢在被掐断前主动失败
+            const STALL_MS = 70000; // 接收端消失后的死亡判定安全网：Durable Object 请求无 wall-time 硬上限（CF 不会主动掐断），此处仅防止接收端永久消失时本 POST 无限挂起
             const t0 = Date.now();
             while (entry.controller && entry.controller.desiredSize !== null && entry.controller.desiredSize <= 0) {
               if (this.rooms.get(room) !== entry) throw new Error('room replaced');

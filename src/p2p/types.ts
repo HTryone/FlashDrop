@@ -14,8 +14,6 @@ export const FRAME_HDR = 12;
 // DataChannel 子帧头：u32 totalLen @0 | u32 offset @4（8 字节），其后为 piece
 export const SUB_HDR = 8;
 
-// 背压窗口：在途帧数上限（≈ WINDOW_FRAMES * P2P_CHUNK_SIZE ≈ 80MB）
-export const WINDOW_FRAMES = 10;
 // DC 缓冲阈值（bufferedAmount 超过则等待排空）；提到 4MiB 让更多数据在途，喂饱带宽-延迟积，消除 drainDc 频繁等待
 export const RTC_LOW = 4 * 1024 * 1024;
 

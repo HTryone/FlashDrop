@@ -70,7 +70,7 @@ export class PresignHandler {
     }
 
     const key = `${body.fileId}/part-${body.offset}`;
-    const url = await this.storage.createPresignedUrl(key, { method: 'PUT', expiresIn: 600 });
+    const url = await this.storage.createPresignedUrl(key, { method: 'PUT', expiresIn: 1200 });
     return this.json({ url, key }, 200, origin);
   }
 

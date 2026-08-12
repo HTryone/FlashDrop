@@ -65,7 +65,7 @@ export class DownloadHandler {
           .sort((a, b) => a.offset - b.offset)
           .map(async (part) => ({
             ...part,
-            url: await this.storage.createPresignedUrl(part.key, { method: 'GET', expiresIn: 3600 }),
+            url: await this.storage.createPresignedUrl(part.key, { method: 'GET', expiresIn: 1200 }),
           })),
       );
 

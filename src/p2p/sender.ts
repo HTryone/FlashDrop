@@ -104,8 +104,8 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
 
       while (!aborted && !finished && lastAcked < totalChunks - 1) {
         // 队列空了 → 预加密更多；全部已发则短轮询等最终 ack。
-        // 注意：不保留应用层在途窗口——DC 原生 bufferedAmount 背压(drainDc)已足够限速，
-        // 叠加 FlowWindow 属人为冗余节流，去掉后发送端只受接收端消费速度 + 原生背压约束。
+        // 注意：曾用应用层在途窗口，已移除——DC 原生 bufferedAmount 背压(drainDc)已足够限速，
+        // 叠加应用层窗口属人为冗余节流，去掉后发送端只受接收端消费速度 + 原生背压约束。
         if (encQueue.length === 0) {
           await preEncrypt();
           if (encQueue.length === 0) { await sleep(10); continue; }

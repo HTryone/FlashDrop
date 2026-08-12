@@ -2,7 +2,7 @@
 
 export async function apiGet<T>(url: string): Promise<T> {
   const r = await fetch(url, { headers: { Accept: 'application/json' } });
-  const data = await r.json().catch(() => ({}));
+  const data = (await r.json().catch(() => ({}))) as Record<string, any>;
   if (!r.ok) throw new Error(data.error || `请求失败 (${r.status})`);
   return data as T;
 }
@@ -13,7 +13,7 @@ export async function apiPost<T>(url: string, body?: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   });
-  const data = await r.json().catch(() => ({}));
+  const data = (await r.json().catch(() => ({}))) as Record<string, any>;
   if (!r.ok) throw new Error(data.error || `请求失败 (${r.status})`);
   return data as T;
 }
@@ -24,7 +24,7 @@ export async function apiPatch<T>(url: string, body?: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   });
-  const data = await r.json().catch(() => ({}));
+  const data = (await r.json().catch(() => ({}))) as Record<string, any>;
   if (!r.ok) throw new Error(data.error || `请求失败 (${r.status})`);
   return data as T;
 }
@@ -32,7 +32,7 @@ export async function apiPatch<T>(url: string, body?: unknown): Promise<T> {
 export async function apiDelete(url: string): Promise<void> {
   const r = await fetch(url, { method: 'DELETE' });
   if (!r.ok) {
-    const data = await r.json().catch(() => ({}));
+    const data = (await r.json().catch(() => ({}))) as Record<string, any>;
     throw new Error(data.error || `请求失败 (${r.status})`);
   }
 }
