@@ -182,6 +182,7 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
     const pf: { cur: Prefetched | null } = { cur: null };
     const commitJobs: Promise<void>[] = [];
     const commitRetries: Array<() => Promise<void>> = [];
+    let finished = false;           // 仅在所有块 PUT 200 且 commit 全部完成后置位 → 进度才允许到 100%
 
     const pickSeg = (): number => TIERS[Math.min(tier, TIERS.length - 1)];
     // 触发一次降档（看门狗或失败）：档位升一档（封顶 16MB），作废已预取的 presign（尺寸变了）
@@ -204,7 +205,10 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
 
     const report = () => {
       const up = committed + inflight;
-      const frac = opts.e2ee.enabled ? 0.5 + 0.5 * (up / size) : up / size;
+      let frac = opts.e2ee.enabled ? 0.5 + 0.5 * (up / size) : up / size;
+      // 关键：真正完成（finished）前进度封顶 99%，避免「浏览器发完最后一块」就显示 100%
+      // 误导用户提前关页/下载 → 末块未真正落盘 → 下载末尾 HMAC 失配。
+      if (!finished) frac = Math.min(frac, 0.99);
       opts.onProgress(Math.floor(qf.file.size * frac), qf.file.size);
     };
 
@@ -260,7 +264,7 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
 
       if (r === 'done') {
         const job = () => commit(tusBase, fileId, off + blob.size, blob.size);
-        commitJobs.push(job().catch(() => {}));
+        commitJobs.push(job());
         commitRetries.push(job);
         committed += blob.size;
         inflight = 0;
@@ -284,7 +288,7 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
           if (cr === 'aborted') { const e = new Error('aborted'); (e as any).name = 'AbortError'; throw e; }
           if (cr === 'done') {
             const job = () => commit(tusBase, fileId, off + cb.size, cb.size);
-            commitJobs.push(job().catch(() => {}));
+            commitJobs.push(job());
             commitRetries.push(job);
             committed += cb.size;
             inflight = 0;
@@ -303,6 +307,7 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
     }
 
     // 收尾：确保所有 commit 完成（失败的异步 commit 重试 3 次）
+    // 注意：commitJobs 不再 .catch 吞错，故 allSettled 能真实反映拒绝，下面重试才会触发。
     const settled = await Promise.allSettled(commitJobs);
     for (let i = 0; i < settled.length; i++) {
       if (settled[i].status === 'rejected') {
@@ -312,6 +317,10 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
       }
     }
 
+    // 真正完成：先置位 finished 让进度补到 100%，再通知上层「已完成」。
+    // 此刻所有块 PUT 已回 200 且 commit 已确认落盘，关页/下载都安全。
+    finished = true;
+    report();
     opts.onSuccess();
   } catch (e: any) {
     if ((e as any)?.name === 'AbortError') throw e;  // 取消/故障中止：不报错，交上层处理
