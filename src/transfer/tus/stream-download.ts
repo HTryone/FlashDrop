@@ -1,5 +1,5 @@
-// 中转下载（tus/R2）流式落盘实现（V1 简单方案）。
-// 从 ReceiveFileRow.vue 抽离：边下载边解密边落盘，不再把整文件密文/明文攒进内存。
+// 中转下载（tus/R2）流式落盘实现（V2-A 并发方案）。
+// 从 ReceiveFileRow.vue 抽离：N 路滑窗并行取数 + 有序重组 + 顺序解密 + 顺序落盘，不再把整文件密文/明文攒进内存。
 // 复用：@/composables/filesink（落盘抽象，FSA/StreamSaver/Blob 三级）、@/crypto/tus-crypto（加解密原语）。
 
 import { makeSinks, pickSaveDir } from '@/composables/filesink';
@@ -8,8 +8,9 @@ import { importRelayKeys, hmacEqual, decryptFrame, HEADER_LEN, IV_LEN, TAG_LEN }
 export interface PartInfo { key: string; offset: number; size: number; url: string }
 export interface DownloadManifest { parts: PartInfo[]; total: number; filename: string }
 
-const SUB_CHUNK = 16 * 1024 * 1024; // 单路取数粒度：16MiB/段（浏览器直传 R2 后大对象流损坏已消除）
+const SUB_CHUNK = 16 * 1024 * 1024; // 滑窗粒度：16MiB/窗口（与取数 Range 对齐，单窗口取完耗时 < 看门狗）
 const FETCH_TIMEOUT = 55_000;       // 单路取数看门狗：低于 CF 边缘 ~60s GET 硬超时，给慢连接留余量
+const CONCURRENCY = 4;              // V2-A 并行取数路数：始终维持 N 路滑窗在飞，吃满可用带宽（弱网按每连接限速才提速）
 
 // 拼接两段 Uint8Array（拷贝，避免底层 buffer 复用导致数据损坏）
 function concatBytes(a: Uint8Array<ArrayBuffer>, b: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
@@ -64,60 +65,65 @@ async function fetchRange(
   }
 }
 
-// 单个分片：按 ≤16MB 子范围多次取；看门狗 abort 后保留已收字节、从断点续传（零流量浪费）。
-// 块内流水线：取当前段的同时后台预取下一段，使相邻段传输重叠，吃掉段间延迟空挡。
-// onCipher：每段密文即时回调（喂 FrameDecoder，边下边解密，不再攒 ArrayBuffer[]）。
-// 注意：必须 await onCipher —— FrameDecoder.push 是异步的，并发 push 会竞态损坏共享 pending 缓冲。
-async function downloadPart(
-  url: string,
-  size: number,
-  onCipher: (chunk: Uint8Array<ArrayBuffer>) => void | Promise<void>,
+// V2-A 全局滑窗：把 [gStart, gEnd) 解析为若干 (url, start, end) 取数规格。
+// manifest.parts 按 offset 升序；一个窗口可能跨 part 边界，需拆成多段分别取（每段独立 Range）。
+function resolveRanges(manifest: DownloadManifest, gStart: number, gEnd: number): { url: string; start: number; end: number }[] {
+  const parts = [...manifest.parts].sort((a, b) => a.offset - b.offset);
+  const specs: { url: string; start: number; end: number }[] = [];
+  let p = parts.length - 1;
+  while (p > 0 && parts[p].offset > gStart) p--;
+  let pos = gStart;
+  while (pos < gEnd && p < parts.length) {
+    const part = parts[p];
+    const partEnd = part.offset + part.size; // 不含
+    const localStart = pos - part.offset;
+    const localEnd = Math.min(gEnd, partEnd) - part.offset - 1; // Range 含尾
+    specs.push({ url: part.url, start: localStart, end: localEnd });
+    pos = Math.min(gEnd, partEnd);
+    p++;
+  }
+  return specs;
+}
+
+// 取单个全局窗口 [gStart, gEnd) 的密文：解析为若干 part 子段，逐段取数 + 断点续传，最后拼接为连续密文。
+// 每段复用 fetchRange 的 55s 看门狗 + partial 续传（零流量浪费）；窗口级并发由调度器维持，本函数只保证单窗口正确性。
+// 注意：本函数返回的密文必须按窗口序交给 FrameDecoder.push（状态机不可并发 push）。
+async function fetchWindow(
+  manifest: DownloadManifest,
+  gStart: number,
+  gEnd: number,
   onChunk: (delta: number) => void,
   signal?: AbortSignal,
-): Promise<void> {
-  let pos = 0;
-  let ahead: Promise<{ buf: ArrayBuffer; received: number }> | null = null;
-  let aheadStart = -1;
-  while (pos < size) {
-    if (signal?.aborted) throw new Error('下载已取消');
-    const startPos = pos;
-    const end = Math.min(pos + SUB_CHUNK, size) - 1;
-    let next: Promise<{ buf: ArrayBuffer; received: number }> | null = null;
-    if (end + 1 < size) {
-      const aStart = end + 1;
-      next = fetchRange(url, aStart, Math.min(aStart + SUB_CHUNK, size) - 1, onChunk, signal);
-      next.catch(() => {}); // 预取可能被主路径越过而永不 await（如 aheadStart 不匹配）→ 其 55s 看门狗超时拒绝会成 unhandledrejection；挂空 handler 吞掉（预取数据为投机，主路径会重取，不影响落盘）
-    }
-    let result: { buf: ArrayBuffer; received: number } | null = null;
-    for (let attempt = 1; attempt <= 5; attempt++) {
+): Promise<ArrayBuffer> {
+  const specs = resolveRanges(manifest, gStart, gEnd);
+  const bufs: Uint8Array<ArrayBuffer>[] = [];
+  for (const spec of specs) {
+    let pos = spec.start;
+    const end = spec.end;
+    while (pos <= end) {
       if (signal?.aborted) throw new Error('下载已取消');
       try {
-        if (attempt === 1 && ahead && aheadStart === pos) {
-          result = await ahead; // 命中上轮预取：下一段已在后台传输，重叠请求延迟
-        } else {
-          result = await fetchRange(url, pos, end, onChunk, signal);
-        }
-        await onCipher(new Uint8Array(result.buf));
-        pos += result.received;
-        break;
+        const r = await fetchRange(spec.url, pos, end, onChunk, signal);
+        bufs.push(new Uint8Array(r.buf));
+        pos = end + 1; // 整段成功
       } catch (e: any) {
-        ahead = null;
         if (signal?.aborted) throw new Error('下载已取消');
-        // 落盘授权失败（SAVE_DIR_DENIED 来自 FSAccessSink）：非网络故障，不再重试，直接透传
-        if (e?.message === 'SAVE_DIR_DENIED') throw e;
+        if (e?.message === 'SAVE_DIR_DENIED') throw e; // 落盘授权失败：非网络故障，直接透传
         if (e?.partialBuf) {
-          await onCipher(new Uint8Array(e.partialBuf));
-          pos += e.partialBytes;
-          break;
+          bufs.push(new Uint8Array(e.partialBuf));
+          pos += e.partialBytes; // 从断点续传（已收字节计入进度，不重取）
+        } else {
+          await new Promise((r) => setTimeout(r, 400)); // 非部分失败（无字节的连接重置等）：退避后整段重取
         }
-        if (attempt < 5) await new Promise((r) => setTimeout(r, 400 * attempt));
       }
     }
-    if (pos <= startPos) throw new Error('网络不稳定，下载中断，请重试');
-    if (pos < end + 1) next = null; // 部分完成：预取范围已偏移，作废
-    ahead = next;
-    aheadStart = end + 1;
   }
+  let total = 0;
+  for (const b of bufs) total += b.byteLength;
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const b of bufs) { out.set(b, off); off += b.byteLength; }
+  return out.buffer;
 }
 
 // 增量帧解析器：密文边到边喂入，凑齐一整帧即 HMAC 校验 + 解密 + 回调明文。
@@ -175,18 +181,65 @@ export interface StreamDownloadOpts {
 }
 
 // 主流程：用户手势内调用。先选保存目录（FSA 直写需用户授权，非 Chromium 返回 null 走 StreamSaver/Blob 兜底），
-// 再按 part 顺序流式下载 + 解密 + 落盘。V1：part 顺序处理，段内预取保留（取数↔解密重叠，吞吐不降、顺序正确）。
+// 再 V2-A 并发下载：N 路滑窗并行取数（吃满可用带宽）+ 有序重组 + 顺序解密 + 顺序落盘。
+// 关键约束：FrameDecoder 是状态机、不可并发 push（共享 pending 会竞态损坏），故「取数并发、解密顺序」。
 export async function streamDownloadToSink(opts: StreamDownloadOpts): Promise<{ permissionFallback?: boolean }> {
   const { manifest, e2eeKey, onChunk, signal } = opts;
   const dirHandle = await pickSaveDir();
   const { writers, permissionFallback } = await makeSinks([{ name: manifest.filename, size: manifest.total }], dirHandle);
   const sink = writers[0];
   if (!sink) throw new Error('无可用落盘 Sink');
+
+  const total = manifest.total;
+  const winCount = Math.ceil(total / SUB_CHUNK);
+  // 有序缓冲：windowIndex -> 密文 Buffer（仅保留超前窗口，最多 CONCURRENCY-1 个，内存受控）
+  const windows: (ArrayBuffer | null)[] = new Array(winCount).fill(null);
+  let fetchError: Error | null = null;
+  let nextToFetch = 0;
+  let schedulerDone = false;
+
+  // 调度器：始终维持最多 CONCURRENCY 路取数在飞（完成一个补一个，非整批等齐）；
+  // 每路独立 55s 看门狗 + partial 续传，单路卡顿不影响其他路（比 V1 段内预取更稳）。
+  const scheduler = (async () => {
+    const active = new Set<Promise<void>>();
+    const pump = () => {
+      while (active.size < CONCURRENCY && nextToFetch < winCount) {
+        const wi = nextToFetch++;
+        const gStart = wi * SUB_CHUNK;
+        const gEnd = Math.min(gStart + SUB_CHUNK, total);
+        const task = fetchWindow(manifest, gStart, gEnd, onChunk, signal)
+          .then((buf) => { windows[wi] = buf; })
+          .catch((e: any) => { if (!fetchError) fetchError = e; })
+          .finally(() => { active.delete(task); });
+        active.add(task);
+      }
+    };
+    pump();
+    while (active.size > 0 || nextToFetch < winCount) {
+      if (signal?.aborted || fetchError) break;
+      await Promise.race([...active]);
+      pump();
+    }
+    schedulerDone = true;
+  })();
+
   try {
     if (!e2eeKey) {
-      // 无加密：密文即明文，直接落盘
-      for (const part of manifest.parts) {
-        await downloadPart(part.url, part.size, (c) => sink.write(c), onChunk, signal);
+      // 无加密：密文即明文，按窗口序顺序落盘
+      let wi = 0;
+      while (wi < winCount) {
+        if (signal?.aborted) throw new Error('下载已取消');
+        if (fetchError) throw fetchError;
+        const buf = windows[wi];
+        if (buf) {
+          await sink.write(new Uint8Array(buf));
+          windows[wi] = null;
+          wi++;
+        } else if (nextToFetch >= winCount && schedulerDone) {
+          throw new Error('下载未完成：窗口 ' + wi + ' 缺失');
+        } else {
+          await new Promise((r) => setTimeout(r, 10));
+        }
       }
     } else {
       const key = await importRelayKeys(e2eeKey);
@@ -195,9 +248,21 @@ export async function streamDownloadToSink(opts: StreamDownloadOpts): Promise<{ 
         (p) => sink.write(p),
         (msg) => console.warn('[tus-download]', msg),
       );
-      for (const part of manifest.parts) {
-        if (dec.failed) break;
-        await downloadPart(part.url, part.size, (c) => dec.push(c), onChunk, signal);
+      let wi = 0;
+      while (wi < winCount) {
+        if (signal?.aborted) throw new Error('下载已取消');
+        if (fetchError) throw fetchError;
+        const buf = windows[wi];
+        if (buf) {
+          await dec.push(new Uint8Array(buf));
+          windows[wi] = null;
+          wi++;
+          if (dec.failed) break;
+        } else if (nextToFetch >= winCount && schedulerDone) {
+          throw new Error('下载未完成：窗口 ' + wi + ' 缺失');
+        } else {
+          await new Promise((r) => setTimeout(r, 10));
+        }
       }
       await dec.flush();
       if (dec.failed) throw new Error('完整性校验失败：数据可能被篡改');
@@ -205,5 +270,6 @@ export async function streamDownloadToSink(opts: StreamDownloadOpts): Promise<{ 
   } finally {
     await sink.close();
   }
+  await scheduler; // 等调度器收尾（捕获潜在未决错误）
   return { permissionFallback };
 }
