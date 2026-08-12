@@ -32,8 +32,8 @@ function fmt(n: number) {
     <div class="info">
       <div class="name" :title="qf.relativePath">{{ qf.relativePath || qf.file.name }}</div>
       <div class="sub muted">
-        {{ fmt(qf.file.size) }} · <span :class="qf.status === 'error' ? 'err' : ''">{{ label }}</span>
-        <span v-if="qf.error" class="err"> · {{ qf.error }}</span>
+        <span class="sub-l">{{ fmt(qf.file.size) }} · <span :class="qf.status === 'error' ? 'err' : ''">{{ label }}</span><span v-if="qf.error" class="err"> · {{ qf.error }}</span></span>
+        <span v-if="qf.status !== 'pending'" :class="qf.status === 'error' ? 'err' : 'pct'">{{ pct }}%</span>
       </div>
       <div class="bar"><div class="fill" :style="{ width: pct + '%' }"></div></div>
     </div>
@@ -51,8 +51,10 @@ function fmt(n: number) {
 .row.error { border-color: rgba(255, 107, 129, 0.4); }
 .info { flex: 1; min-width: 0; }
 .name { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sub { font-size: 12px; margin: 3px 0 6px; }
+.sub { font-size: 12px; margin: 3px 0 6px; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.sub-l { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .err { color: var(--danger); }
+.pct { color: var(--accent-2); font-variant-numeric: tabular-nums; flex: none; }
 .bar { height: 6px; background: #0c1120; border-radius: 4px; overflow: hidden; }
 .fill { height: 100%; background: var(--accent-grad); transition: width 0.2s; }
 .row.done .fill { background: var(--ok); }
