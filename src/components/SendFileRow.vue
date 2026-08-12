@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { QueuedFile } from '@/types/transfer';
+import ProgressBar from './ProgressBar.vue';
+import { formatBytes } from '@/composables/format';
 
 const props = defineProps<{ qf: QueuedFile; disabled?: boolean }>();
 defineEmits<{ remove: [] }>();
@@ -19,12 +21,6 @@ const label = computed(() => {
   }
 });
 
-function fmt(n: number) {
-  if (n < 1024) return n + ' B';
-  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
-  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
-  return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
-}
 </script>
 
 <template>
@@ -32,10 +28,10 @@ function fmt(n: number) {
     <div class="info">
       <div class="name" :title="qf.relativePath">{{ qf.relativePath || qf.file.name }}</div>
       <div class="sub muted">
-        <span class="sub-l">{{ fmt(qf.file.size) }} · <span :class="qf.status === 'error' ? 'err' : ''">{{ label }}</span><span v-if="qf.error" class="err"> · {{ qf.error }}</span></span>
+        <span class="sub-l">{{ formatBytes(qf.file.size) }} · <span :class="qf.status === 'error' ? 'err' : ''">{{ label }}</span><span v-if="qf.error" class="err"> · {{ qf.error }}</span></span>
         <span v-if="qf.status !== 'pending'" :class="qf.status === 'error' ? 'err' : 'pct'">{{ pct }}%</span>
       </div>
-      <div class="bar"><div class="fill" :style="{ width: pct + '%' }"></div></div>
+      <ProgressBar :value="pct" :done="qf.status === 'done'" />
     </div>
     <button class="rm" title="移除" :disabled="disabled" @click="$emit('remove')">✕</button>
   </div>
@@ -55,9 +51,6 @@ function fmt(n: number) {
 .sub-l { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .err { color: var(--danger); }
 .pct { color: var(--accent-2); font-variant-numeric: tabular-nums; flex: none; }
-.bar { height: 6px; background: #0c1120; border-radius: 4px; overflow: hidden; }
-.fill { height: 100%; background: var(--accent-grad); transition: width 0.2s; }
-.row.done .fill { background: var(--ok); }
 .rm {
   background: none; border: none; color: var(--text-faint);
   font-size: 14px; padding: 4px; border-radius: 6px;

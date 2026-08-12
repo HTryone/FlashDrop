@@ -3,6 +3,8 @@ import { ref, watch, onUnmounted } from 'vue';
 import { LocalReceiver } from '@/https';
 import { resolveRelayBase } from '@/transfer/room';
 import { createP2PReceiver } from '@/p2p';
+import ProgressBar from './ProgressBar.vue';
+import { formatBytes } from '@/composables/format';
 
 // 由父组件（接收面板）指定渲染哪一侧；不传则两侧都渲染
 const props = defineProps<{ side?: 'send' | 'receive' }>();
@@ -143,11 +145,6 @@ function onCancelRecv() {
   recvProgress.value = 0;
 }
 
-function fmt(n: number) {
-  if (n < 1024 * 1024) return (n / 1024).toFixed(0) + ' KB';
-  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
-  return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
-}
 
 onUnmounted(() => {
   if (p2pReceiver) { try { p2pReceiver.abort(); } catch { /* ignore */ } }
@@ -187,12 +184,10 @@ onUnmounted(() => {
       </div>
       <div v-if="recvFiles.length" class="filelist">
         <div v-for="f in recvFiles" :key="f.name" class="frow">
-          <span>{{ f.name }}</span><span class="sz">{{ fmt(f.size) }}</span>
+          <span>{{ f.name }}</span><span class="sz">{{ formatBytes(f.size) }}</span>
         </div>
       </div>
-      <div v-if="receiving || recvReady" class="bar">
-        <div class="fill" :style="{ width: (recvProgress * 100) + '%' }"></div>
-      </div>
+      <ProgressBar v-if="receiving || recvReady" :value="recvProgress * 100" />
       <div class="status">{{ recvStatus }}</div>
       <p class="hint e2ee-hint">🔒 已端到端加密：密钥仅在本机从链接 <code>#k=</code> 派生，服务器只转发密文、无法解密。</p>
     </section>
@@ -231,8 +226,6 @@ hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
 .actions { display: flex; gap: 12px; }
 .recv-form { display: flex; gap: 8px; }
 .recv-form input { flex: 1; background: var(--bg-soft); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 9px; font-size: 13px; }
-.bar { height: 8px; background: var(--bg-soft); border-radius: 999px; overflow: hidden; }
-.fill { height: 100%; background: var(--accent-grad); transition: width 0.15s; }
 .status { font-size: 12.5px; color: var(--text-dim); min-height: 16px; word-break: break-all; }
 .btn { border: 1px solid var(--border); background: var(--panel-2); color: var(--text); border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
 .btn.primary { background: var(--accent-grad); color: #07101f; border: none; }

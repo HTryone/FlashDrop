@@ -1,5 +1,6 @@
 import { ref, computed } from 'vue';
 import type { QueuedFile } from '@/types/transfer';
+import { formatBytes } from './format';
 
 /**
  * 通用文件拖拽/选择 composable
@@ -76,11 +77,6 @@ export function useFileSelection() {
     files.value = [];
   }
 
-  function fmt(n: number) {
-    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
-    if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
-    return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
-  }
 
   /** 兼容非安全上下文（http://192.168.x.x 不暴露 crypto.randomUUID） */
   function generateUUID(): string {
@@ -103,7 +99,7 @@ export function useFileSelection() {
     onPick,
     removeFile,
     clearSelected,
-    fmt,
+    formatBytes,
     generateUUID,
   };
 }

@@ -2,6 +2,7 @@
 import { ref } from 'vue';
 import { getLoginTransfer, terminateTransfer } from '@/api/transfer';
 import type { LoginTransferDetail } from '@/types/transfer';
+import { formatBytes } from '@/composables/format';
 
 const loginInput = ref('');
 const loading = ref(false);
@@ -38,11 +39,6 @@ async function confirmTerminate() {
   }
 }
 
-function fmtSize(n: number) {
-  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
-  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
-  return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
-}
 
 function fmtTime(ts: number) {
   if (!ts) return '-';
@@ -117,7 +113,7 @@ function formatLoginCode(raw: string): string {
         </div>
         <div class="info-item">
           <span class="info-label">总大小</span>
-          <span class="info-val">{{ fmtSize(detail.totalSize) }}</span>
+          <span class="info-val">{{ formatBytes(detail.totalSize) }}</span>
         </div>
         <div class="info-item">
           <span class="info-label">文件数</span>
@@ -131,7 +127,7 @@ function formatLoginCode(raw: string): string {
         <div class="file-list">
           <div v-for="f in detail.files" :key="f.id" class="file-item">
             <span class="fname" :title="f.name">{{ f.name }}</span>
-            <span class="fsize faint">{{ fmtSize(f.size) }}</span>
+            <span class="fsize faint">{{ formatBytes(f.size) }}</span>
           </div>
         </div>
       </div>

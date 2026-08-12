@@ -17,7 +17,7 @@ const emit = defineEmits<{
 const sendMode = ref<'relay' | 'local'>('relay');
 
 // 通用文件选择（拖拽/增删/fmt/uuid）
-const { files, dragOver, totalSize, doneCount, allDone, addFiles, onDrop, onPick, removeFile, clearSelected, fmt } = useFileSelection();
+const { files, dragOver, totalSize, doneCount, allDone, addFiles, onDrop, onPick, removeFile, clearSelected, formatBytes } = useFileSelection();
 
 // 中转发送状态机已抽到 src/transfer/tus/useRelayTransfer.ts（与本地直传分离）
 const {
@@ -185,7 +185,7 @@ onUnmounted(() => { sender.close(); if (p2pEarlySig) { p2pEarlySig.close(); p2pE
     <!-- 已选文件（共用） -->
     <div v-if="files.length" class="selected">
       <div class="sel-head">
-        <span>已选 {{ files.length }} 个 · {{ fmt(totalSize) }}</span>
+        <span>已选 {{ files.length }} 个 · {{ formatBytes(totalSize) }}</span>
         <span class="sel-status" :class="selStatusClass">{{ selStatus }}</span>
         <button class="btn sm ghost" @click="clearSelected" :disabled="filesLocked || lSending">清空所选</button>
       </div>
@@ -342,9 +342,7 @@ onUnmounted(() => { sender.close(); if (p2pEarlySig) { p2pEarlySig.close(); p2pE
           <button v-else class="btn danger" @click="cancelLocalSend">取消发送</button>
         </div>
         <div v-if="(lSending || lDone)" class="seg-info">分段传输：第 {{ lSegIndex + 1 }} 段</div>
-        <div v-if="lSending || lDone" class="bar">
-          <div class="fill" :style="{ width: (lProgress * 100) + '%' }"></div>
-        </div>
+        <ProgressBar v-if="lSending || lDone" :value="lProgress * 100" />
       </div>
       <div class="status">{{ lStatus }}</div>
     </div>

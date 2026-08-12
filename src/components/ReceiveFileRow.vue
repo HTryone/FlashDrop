@@ -3,6 +3,8 @@ import { ref, computed } from 'vue';
 import type { ReceivedFile } from '@/types/transfer';
 import { resolveTusBase } from '@/transfer/room';
 import { streamDownloadToSink, type DownloadManifest } from '@/transfer/tus/stream-download';
+import ProgressBar from './ProgressBar.vue';
+import { formatBytes } from '@/composables/format';
 
 const props = defineProps<{
   file: ReceivedFile;
@@ -85,11 +87,6 @@ function cancelDownload() {
   activeAbort?.abort(); // 复用同一 abort 路径，立即中断所有后台 fetch（用户手动取消）
 }
 
-function fmt(n: number) {
-  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
-  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
-  return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
-}
 </script>
 
 <template>
@@ -98,12 +95,10 @@ function fmt(n: number) {
     <div class="info">
       <div class="name" :title="file.name">{{ file.name }}</div>
       <div class="sub muted">
-        {{ fmt(file.size) }}
+        {{ formatBytes(file.size) }}
         <span v-if="busy" class="prog-text"> · {{ phase }} {{ (progress * 100).toFixed(0) }}% · {{ speed.toFixed(1) }} MB/s</span>
       </div>
-      <div v-if="busy" class="bar">
-        <div class="fill" :style="{ width: (progress * 100) + '%' }"></div>
-      </div>
+      <ProgressBar v-if="busy" :value="progress * 100" />
       <div v-if="err" class="err-line">⚠ {{ err }}<span v-if="isNetworkError" class="err-hint">（多为网络不稳定或跨境链路拥塞，请重试或更换网络）</span></div>
     </div>
     <template v-if="encrypted && !e2eeKey">
@@ -141,8 +136,6 @@ function fmt(n: number) {
 .err-hint { opacity: 0.82; margin-left: 2px; }
 .lock-hint { font-size: 12px; white-space: nowrap; }
 .done-hint { font-size: 12px; white-space: nowrap; color: var(--accent-2); }
-.bar { height: 8px; background: var(--bg-soft); border-radius: 999px; overflow: hidden; margin-top: 8px; }
-.fill { height: 100%; background: var(--accent-grad); transition: width 0.2s; }
 .btn.cancel {
   color: var(--danger);
   border-color: var(--danger);
