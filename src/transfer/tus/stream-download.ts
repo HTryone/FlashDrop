@@ -86,6 +86,7 @@ async function downloadPart(
     if (end + 1 < size) {
       const aStart = end + 1;
       next = fetchRange(url, aStart, Math.min(aStart + SUB_CHUNK, size) - 1, onChunk, signal);
+      next.catch(() => {}); // 预取可能被主路径越过而永不 await（如 aheadStart 不匹配）→ 其 55s 看门狗超时拒绝会成 unhandledrejection；挂空 handler 吞掉（预取数据为投机，主路径会重取，不影响落盘）
     }
     let result: { buf: ArrayBuffer; received: number } | null = null;
     for (let attempt = 1; attempt <= 5; attempt++) {
