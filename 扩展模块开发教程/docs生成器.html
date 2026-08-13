@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>闪传 · 文档模块生成器（本地、零依赖）</title>
+<style>
+  :root { --bg:#0e1320; --panel:#161c2c; --panel2:#1d2536; --border:#2a3346; --text:#e6ebf5; --dim:#9aa6bd; --faint:#67718c; --accent:#4da3ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); font-size:14px; }
+  header { padding:14px 18px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:16px; margin:0; }
+  header .sub { color:var(--faint); font-size:12px; }
+  .wrap { display:grid; grid-template-columns:240px 1fr; gap:0; height:calc(100vh - 53px); }
+  .left { border-right:1px solid var(--border); padding:12px; overflow:auto; }
+  .left h3 { font-size:12px; color:var(--faint); margin:6px 4px 10px; text-transform:uppercase; letter-spacing:.5px; }
+  .mod { display:flex; align-items:center; gap:8px; padding:8px 10px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px; cursor:pointer; background:var(--panel); }
+  .mod.on { border-color:var(--accent); background:var(--panel2); }
+  .mod .ic { font-size:16px; }
+  .mod .nm { flex:1; min-width:0; }
+  .mod .nm b { display:block; font-size:13px; }
+  .mod .nm small { color:var(--faint); font-size:11px; }
+  .mod .del { color:var(--faint); border:none; background:none; cursor:pointer; font-size:14px; }
+  .mod .del:hover { color:#ff6b6b; }
+  .right { padding:16px 20px; overflow:auto; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+  input, textarea, select, button { font-family:inherit; font-size:13px; }
+  input, textarea, select { background:var(--panel); border:1px solid var(--border); color:var(--text); border-radius:8px; padding:8px 10px; }
+  textarea { width:100%; min-height:280px; resize:vertical; line-height:1.6; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  button { cursor:pointer; border-radius:8px; border:1px solid var(--border); background:var(--panel2); color:var(--text); padding:8px 14px; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#06101f; border-color:var(--accent); font-weight:600; }
+  .docs-list { display:flex; flex-direction:column; gap:6px; margin:8px 0 14px; }
+  .doc { display:flex; align-items:center; gap:8px; padding:7px 10px; border:1px solid var(--border); border-radius:8px; background:var(--panel); cursor:pointer; }
+  .doc.on { border-color:var(--accent); }
+  .doc .t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .doc .del { color:var(--faint); border:none; background:none; cursor:pointer; }
+  .field { display:flex; flex-direction:column; gap:4px; margin-bottom:10px; }
+  .field label { font-size:12px; color:var(--dim); }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .tabs { display:flex; gap:6px; margin-bottom:10px; }
+  .tabs button { background:var(--panel); }
+  .tabs button.on { border-color:var(--accent); color:var(--accent); }
+  .preview { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:14px 16px; line-height:1.8; }
+  .preview h1,.preview h2,.preview h3 { color:var(--text); margin:8px 0 6px; }
+  .preview a { color:var(--accent); }
+  .preview code { background:var(--panel2); padding:1px 5px; border-radius:5px; }
+  .preview blockquote { margin:8px 0; padding-left:12px; border-left:3px solid var(--border); color:var(--faint); }
+  .preview ul, .preview ol { padding-left:18px; }
+  .preview img { max-width:100%; border-radius:8px; margin:8px 0; display:block; }
+  .preview table { border-collapse:collapse; width:100%; margin:10px 0; font-size:13px; }
+  .preview th, .preview td { border:1px solid var(--border); padding:6px 10px; text-align:left; }
+  .preview th { background:var(--panel2); color:var(--text); }
+  .preview hr { border:none; border-top:1px solid var(--border); margin:16px 0; }
+  .preview del { color:var(--faint); }
+  .preview h4,.preview h5,.preview h6 { color:var(--text); margin:8px 0 4px; }
+  .bar { position:sticky; top:0; background:var(--bg); padding:10px 0; border-bottom:1px solid var(--border); margin-bottom:12px; z-index:5; }
+  details { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-top:16px; }
+  details summary { cursor:pointer; color:var(--dim); }
+  code.k { background:var(--panel2); padding:1px 5px; border-radius:4px; color:var(--accent); }
+  .empty { color:var(--faint); padding:30px; text-align:center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📦 文档模块生成器</h1>
+  <span class="sub">本地运行 · 零依赖 · 生成后把文件夹丢进 <code class="k">src/extensions/</code> 即可</span>
+</header>
+
+<div class="wrap">
+  <!-- 左：模块总单 -->
+  <div class="left">
+    <h3>模块总单</h3>
+    <div id="modList"></div>
+    <button id="addMod" style="width:100%">＋ 新建模块</button>
+  </div>
+
+  <!-- 右：模块编辑 -->
+  <div class="right" id="right">
+    <div class="empty" id="emptyTip">← 左侧选择一个模块，或点「＋ 新建模块」</div>
+    <div id="editor" style="display:none">
+      <div class="field">
+        <label>模块标识（英文，用于目录名 / 网址 / 数据读取，唯一）</label>
+        <input id="mId" placeholder="例如 posts" />
+      </div>
+      <div class="grid2">
+        <div class="field"><label>显示名（左侧/选择页显示）</label><input id="mTitle" placeholder="例如 项目动态" /></div>
+        <div class="field"><label>图标（一个 emoji）</label><input id="mIcon" placeholder="📰" /></div>
+      </div>
+      <div class="field"><label>描述</label><input id="mDesc" placeholder="例如 后端发布，前端只读展示" /></div>
+
+      <div class="bar">
+        <div class="row">
+          <button id="addDoc">＋ 添加文档</button>
+          <span style="color:var(--faint);font-size:12px">每篇 = 左侧一个目录项，标题下用 <code class="k"># 一级标题</code> 分小节</span>
+        </div>
+      </div>
+
+      <div class="docs-list" id="docList"></div>
+
+      <div id="docEdit" style="display:none">
+        <div class="grid2" style="margin-bottom:10px">
+          <div class="field"><label>文档总标题（目录里点的名字）</label><input id="dTitle" /></div>
+          <div class="field"><label>日期（排序用 YYYY-MM-DD）</label><input id="dDate" placeholder="2026-08-13" /></div>
+        </div>
+        <div class="tabs">
+          <button id="tabEdit" class="on">编辑</button>
+          <button id="tabPrev">预览</button>
+          <button id="insLink">🔗 插入跳转链接</button>
+        </div>
+        <textarea id="dMd" placeholder="在这里粘贴 / 写 Markdown…"></textarea>
+        <div id="prevBox" class="preview" style="display:none"></div>
+      </div>
+
+      <details>
+        <summary>⬇ 导出完整模块（生成 meta.ts + data.ts）</summary>
+        <p style="color:var(--dim);font-size:13px">生成的文件夹结构：</p>
+        <pre style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--dim)">src/extensions/<span id="expId">模块标识</span>/
+├─ meta.ts      ← 自动生成（模块注册信息）
+└─ data.ts      ← 自动生成（你写的全部文档）</pre>
+        <div class="row" style="margin-top:10px">
+          <button class="primary" id="expOne">⬇ 下载此模块文件</button>
+          <button id="expAll">⬇ 下载全部模块</button>
+          <button id="expDir" title="在 https://localhost 或部署域下可用">📁 直接写入项目目录</button>
+        </div>
+        <p style="color:var(--faint);font-size:12px">把下载的两个 .ts 文件放进 <code class="k">src/extensions/模块标识/</code> 文件夹，刷新网页即生效，<b>不需要写代码、不需要后端</b>。</p>
+      </details>
+
+      <details>
+        <summary>💾 工程存档（可下次继续编辑）</summary>
+        <div class="row" style="margin-top:10px">
+          <button id="saveProj">💾 保存工程</button>
+          <button id="openProj">📂 打开工程</button>
+          <input type="file" id="projFile" accept=".json" style="display:none" />
+        </div>
+      </details>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== 数据模型 =====
+let modules = [
+  { id:'posts', title:'项目动态', icon:'📰', desc:'后端发布，前端只读展示', docs:[
+    { id:'2026-0813-v2', title:'闪传 V2 来了', date:'2026-08-13', md:'# 新特性\n- 中转 / 本地直传 / P2P 三链路\n- 端到端加密\n\n# 已知问题\n- 暂无' },
+  ]},
+  { id:'usage', title:'使用说明', icon:'📘', desc:'完整使用教程', docs:[
+    { id:'guide', title:'快速上手', date:'2026-08-01', md:'# 发送\n1. 选文件\n2. 复制链接\n\n# 接收\n输入分享码即可' },
+  ]},
+];
+let curMod = null, curDoc = null;
+
+const $ = (id) => document.getElementById(id);
+function save() {} // 全部状态在内存，工程才落盘
+function uid() { return 'doc-' + Math.random().toString(36).slice(2,8); }
+function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function orderOf(m){ return modules.indexOf(m)*10 + 10; }
+
+// ===== 渲染：模块列表 =====
+function renderMods(){
+  const box = $('modList'); box.innerHTML='';
+  modules.forEach(m=>{
+    const el = document.createElement('div');
+    el.className = 'mod' + (m===curMod?' on':'');
+    el.innerHTML = `<span class="ic">${esc(m.icon||'📦')}</span>
+      <span class="nm"><b>${esc(m.title)}</b><small>${esc(m.id)} · ${m.docs.length}篇</small></span>
+      <button class="del" title="删除模块">✕</button>`;
+    el.onclick = (e)=>{ if(e.target.classList.contains('del')){ if(confirm('删除模块「'+m.title+'」？')){ modules=modules.filter(x=>x!==m); curMod=null; renderAll(); } } else { curMod=m; curDoc=null; renderAll(); } };
+    box.appendChild(el);
+  });
+}
+
+// ===== 渲染：文档列表 =====
+function renderDocs(){
+  const box = $('docList'); box.innerHTML='';
+  if(!curMod) return;
+  curMod.docs.forEach(d=>{
+    const el=document.createElement('div');
+    el.className='doc'+(d===curDoc?' on':'');
+    el.innerHTML=`<span class="t">${esc(d.title)}</span><button class="del" title="删除">✕</button>`;
+    el.onclick=(e)=>{ if(e.target.classList.contains('del')){ if(confirm('删除此文档？')){ curMod.docs=curMod.docs.filter(x=>x!==d); if(curDoc===d)curDoc=null; renderAll(); } } else { curDoc=d; renderAll(); } };
+    box.appendChild(el);
+  });
+}
+
+// ===== 渲染：编辑器 =====
+function renderEditor(){
+  if(!curMod){ $('editor').style.display='none'; $('emptyTip').style.display='block'; return; }
+  $('emptyTip').style.display='none'; $('editor').style.display='block';
+  $('mId').value=curMod.id; $('mTitle').value=curMod.title; $('mIcon').value=curMod.icon||''; $('mDesc').value=curMod.desc||'';
+  $('expId').textContent = curMod.id;
+  if(!curDoc){ $('docEdit').style.display='none'; return; }
+  $('docEdit').style.display='block';
+  $('dTitle').value=curDoc.title; $('dDate').value=curDoc.date||''; $('dMd').value=curDoc.md||'';
+  renderPreview();
+}
+function renderPreview(){
+  const box=$('prevBox');
+  box.innerHTML = renderMd(curDoc ? curDoc.md : '');
+}
+function renderAll(){ renderMods(); renderDocs(); renderEditor(); }
+
+// ===== Markdown 渲染（与前端 doc.ts 逻辑一致）=====
+function renderMd(src){
+  if(!src) return '<p style="color:var(--faint)">（空）</p>';
+  const lines = src.replace(/\r\n/g,'\n').split('\n');
+  const out=[]; let i=0;
+  const safeU=(u)=>/^(https?:\/\/|\/|#|\.\/|\.\.\/|data:image\/)/i.test(u)?u:'#';
+  const inline=(s)=>{ s=esc(s); return s
+    .replace(/`([^`]+)`/g,'<code>$1</code>')
+    .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g,(_m,a,u)=>`<img src="${safeU(u)}" alt="${a.replace(/"/g,'&quot;')}" />`)
+    .replace(/\*\*\*([^*]+)\*\*\*/g,'<strong><em>$1</em></strong>')
+    .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g,'<em>$1</em>')
+    .replace(/~~([^~]+)~~/g,'<del>$1</del>')
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g,(_m,t,u)=>{const url=safeU(u);return u.startsWith('http')?`<a href="${url}" target="_blank" rel="noopener">${t}</a>`:`<a href="${url}">${t}</a>`;});
+  };
+  const splitRow=(l)=>l.replace(/^\s*\|/,'').replace(/\|\s*$/,'').split('|').map(c=>c.trim());
+  const isRow=(l)=>/^\s*\|.*\|\s*$/.test(l);
+  const isSep=(l)=>/^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(l)&&l.includes('-');
+  const alignOf=(c)=>{const t=c.trim();const L=t.startsWith(':'),R=t.endsWith(':');if(L&&R)return 'center';if(R)return 'right';if(L)return 'left';return '';};
+  const isHr=(l)=>/^(\s*[-*_]){3,}\s*$/.test(l);
+  const isItem=(l)=>/^(\s*)([-*+]|\d+\.)\s+/.test(l);
+  function parseItem(raw){
+    const m=raw.match(/^(\s*)([-*+]|\d+\.)\s+(.*)$/); if(!m) return null;
+    const indent=m[1].replace(/\t/g,'  ').length; const ordered=/\d+\./.test(m[2]);
+    let text=m[3]; const tm=text.match(/^\[([ xX])\]\s+(.*)$/); let task=false,checked=false;
+    if(tm){task=true;checked=tm[1].toLowerCase()==='x';text=tm[2];}
+    return {indent,ordered,task,checked,text,children:[]};
+  }
+  function renderNodes(nodes){
+    if(!nodes.length) return '';
+    let html='',i=0;
+    while(i<nodes.length){
+      const type=nodes[i].ordered?'ol':'ul'; let j=i;
+      while(j<nodes.length&&(nodes[j].ordered?'ol':'ul')===type)j++;
+      const group=nodes.slice(i,j);
+      html+=`<${type}>`;
+      for(const n of group){
+        const content=n.task?`<input type="checkbox" disabled${n.checked?' checked':''} /> ${inline(n.text)}`:inline(n.text);
+        html+=`<li>${content}${n.children.length?renderNodes(n.children):''}</li>`;
+      }
+      html+=`</${type}>`;
+      i=j;
+    }
+    return html;
+  }
+  function renderList(buf){
+    const items=buf.map(parseItem).filter(Boolean);
+    if(!items.length) return '';
+    const root={indent:-1,ordered:false,task:false,checked:false,text:'',children:[]};
+    const stack=[{indent:-1,node:root}];
+    for(const it of items){
+      while(stack.length&&stack[stack.length-1].indent>=it.indent) stack.pop();
+      stack[stack.length-1].node.children.push(it);
+      stack.push({indent:it.indent,node:it});
+    }
+    return renderNodes(root.children);
+  }
+  while(i<lines.length){
+    const line=lines[i];
+    if(/^```/.test(line.trim())){
+      const buf=[]; i++;
+      while(i<lines.length&&!/^```/.test(lines[i].trim())){buf.push(lines[i]);i++;}
+      i++;
+      out.push(`<pre><code>${esc(buf.join('\n'))}</code></pre>`); continue;
+    }
+    if(isRow(line)&&i+1<lines.length&&isSep(lines[i+1])){
+      const aligns=splitRow(lines[i+1]).map(alignOf);
+      const head=splitRow(line).map((c,idx)=>`<th${aligns[idx]?` style="text-align:${aligns[idx]}"`:''}>${inline(c)}</th>`).join('');
+      let j=i+2; const body=[];
+      while(j<lines.length&&isRow(lines[j])&&lines[j].trim()!==''){ body.push('<tr>'+splitRow(lines[j]).map((c,idx)=>`<td${aligns[idx]?` style="text-align:${aligns[idx]}"`:''}>${inline(c)}</td>`).join('')+'</tr>'); j++; }
+      out.push(`<table><thead><tr>${head}</tr></thead><tbody>${body.join('')}</tbody></table>`);
+      i=j; continue;
+    }
+    const h=line.match(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/); if(h){ const n=h[1].length; out.push(`<h${n}>${inline(h[2])}</h${n}>`); i++; continue; }
+    if(isHr(line)&&!isItem(line)){ out.push('<hr />'); i++; continue; }
+    if(/^>\s?/.test(line)){
+      const buf=[]; while(i<lines.length&&/^>\s?/.test(lines[i])){buf.push(lines[i]);i++;}
+      const inner=buf.map(l=>l.replace(/^>\s?/,'')).join('\n');
+      out.push(`<blockquote>${renderMd(inner)}</blockquote>`); continue;
+    }
+    if(isItem(line)){
+      const buf=[];
+      while(i<lines.length){
+        if(isItem(lines[i])){buf.push(lines[i]);i++;}
+        else if(lines[i].trim()===''&&i+1<lines.length&&isItem(lines[i+1])){i++;}
+        else break;
+      }
+      out.push(renderList(buf)); continue;
+    }
+    if(line.trim()!==''){
+      const buf=[line]; i++;
+      while(i<lines.length&&lines[i].trim()!==''&&!/^```/.test(lines[i].trim())&&!/^\s{0,3}#{1,6}\s+/.test(lines[i])&&!/^>\s?/.test(lines[i])&&!isItem(lines[i])&&!isHr(lines[i])){buf.push(lines[i]);i++;}
+      out.push(`<p>${buf.map(l=>inline(l)).join('<br/>')}</p>`); continue;
+    }
+    i++;
+  }
+  return out.join('\n');
+}
+
+// ===== 生成文件文本 =====
+function genMeta(m){
+  return `import type { Extension } from '../types';
+
+const meta: Extension = {
+  id: '${m.id}',
+  title: '${m.title.replace(/'/g,"\\'")}',
+  desc: '${m.desc||''}',
+  icon: '${m.icon||'📦'}',
+  kind: 'doc',
+  order: ${orderOf(m)},
+  moduleId: '${m.id}',
+};
+
+export default meta;
+`;
+}
+function genData(m){
+  const docs = m.docs.map(d=>({ id:d.id, title:d.title, module:m.id, markdown:d.md, updatedAt:d.date||'' }));
+  return `import type { DocItem } from '../types';
+
+export const moduleId = '${m.id}';
+
+export const docs = ${JSON.stringify(docs, null, 2)} as DocItem[];
+`;
+}
+
+// ===== 下载 =====
+function download(name, text){
+  const blob=new Blob([text],{type:'text/plain;charset=utf-8'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+function expOne(m){ download('meta.ts', genMeta(m)); download('data.ts', genData(m)); }
+function expAll(){ modules.forEach(expOne); }
+
+// ===== 直接写入项目目录（https/localhost 下可用）=====
+async function writeDir(){
+  if(!window.showDirectoryPicker){ alert('当前环境不支持直接写入（需通过 http(s) 打开本工具）。请用「下载此模块文件」手动放置。'); return; }
+  try{
+    const dir = await window.showDirectoryPicker();
+    for(const m of modules){
+      const sub = await dir.getDirectoryHandle(m.id, { create:true });
+      const wf = async (name, text)=>{ const f=await sub.getFileHandle(name,{create:true}); const w=await f.createWritable(); await w.write(text); await w.close(); };
+      await wf('meta.ts', genMeta(m));
+      await wf('data.ts', genData(m));
+    }
+    alert('已写入 '+modules.length+' 个模块到所选目录（即 src/extensions/）。');
+  }catch(e){ if(e.name!=='AbortError') alert('写入失败：'+e.message); }
+}
+
+// ===== 跳转链接插入 =====
+function insLink(){
+  const links = modules.map(m=>`${m.title}  →  /ext/${m.id}`).join('\n');
+  const pick = prompt('插入跳转链接：\n输入模块名(下方已有)或完整 http(s) 链接。\n\n可选模块：\n'+links, curMod?curMod.title:'');
+  if(!pick) return;
+  const m = modules.find(x=>x.title===pick);
+  const snippet = m ? `[${pick}](/ext/${m.id})` : (pick.startsWith('http')? `[链接](${pick})` : null);
+  if(!snippet){ alert('未匹配到模块，也未识别为 http 链接。'); return; }
+  const ta=$('dMd'); ta.value += (ta.value && !ta.value.endsWith('\n')?'\n':'') + snippet; curDoc.md=ta.value;
+}
+
+// ===== 工程存读 =====
+function saveProj(){ download('闪传文档工程.json', JSON.stringify({modules},null,2)); }
+function openProj(){ $('projFile').click(); }
+$('projFile').onchange = (e)=>{ const f=e.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=()=>{ try{ const d=JSON.parse(r.result); modules=d.modules||[]; curMod=null;curDoc=null; renderAll(); }catch(_){ alert('文件解析失败'); } }; r.readAsText(f); };
+
+// ===== 事件绑定 =====
+$('addMod').onclick = ()=>{ const id=prompt('新模块标识（英文，唯一）：','new-module'); if(!id)return; const title=prompt('显示名：',id)||id; const m={id,title,icon:'📦',desc:'',docs:[]}; modules.push(m); curMod=m; curDoc=null; renderAll(); };
+$('addDoc').onclick = ()=>{ if(!curMod){alert('先选/建一个模块');return;} const d={id:uid(),title:'新文档',date:new Date().toISOString().slice(0,10),md:''}; curMod.docs.push(d); curDoc=d; renderAll(); };
+$('tabEdit').onclick=()=>{ $('dMd').style.display='block'; $('prevBox').style.display='none'; $('tabEdit').classList.add('on'); $('tabPrev').classList.remove('on'); };
+$('tabPrev').onclick=()=>{ $('dMd').style.display='none'; $('prevBox').style.display='block'; $('tabPrev').classList.add('on'); $('tabEdit').classList.remove('on'); renderPreview(); };
+$('insLink').onclick=insLink;
+$('expOne').onclick=()=>{ if(curMod) expOne(curMod); };
+$('expAll').onclick=expAll;
+$('expDir').onclick=writeDir;
+$('saveProj').onclick=saveProj;
+$('openProj').onclick=openProj;
+
+// 字段实时写回
+['mId','mTitle','mIcon','mDesc'].forEach(id=>{ $(id).oninput=()=>{ if(!curMod)return; const k={mId:'id',mTitle:'title',mIcon:'icon',mDesc:'desc'}[id]; curMod[k]=$(id).value; renderMods(); $('expId').textContent=curMod.id; }; });
+$('dTitle').oninput=()=>{ if(curDoc){ curDoc.title=$('dTitle').value; renderDocs(); } };
+$('dDate').oninput=()=>{ if(curDoc) curDoc.date=$('dDate').value; };
+$('dMd').oninput=()=>{ if(curDoc) curDoc.md=$('dMd').value; };
+
+renderAll();
+</script>
+</body>
+</html>
