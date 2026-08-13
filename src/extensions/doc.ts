@@ -56,6 +56,8 @@ const ALLOWED_ATTRS: Record<string, string[]> = {
   center: [],
   div: ['style'],
   span: ['style'],
+  mark: [],
+  kbd: [],
 };
 function filterAttrs(tag: string, attrs: string): string {
   const ok = ALLOWED_ATTRS[tag.toLowerCase()] || [];
@@ -90,6 +92,19 @@ function markdownInline(s: string): string {
       return u.startsWith('http')
         ? `<a href="${url}" target="_blank" rel="noopener">${t}</a>`
         : `<a href="${url}">${t}</a>`;
+    })
+    .replace(/==([^=]+)==/g, '<mark>$1</mark>')
+    .replace(/(?<!["(/])(https?:\/\/[^\s<]+)/g, (full: string) => {
+      const m = full.match(/^(https?:\/\/[^\s<]+?)([.,;:!?)\]]*)$/);
+      const url = m ? m[1] : full;
+      const tail = m ? m[2] : '';
+      return `<a href="${safeUrl(url)}" target="_blank" rel="noopener">${url}</a>${tail}`;
+    })
+    .replace(/(?<!["(/])(www\.[^\s<]+)/g, (full: string) => {
+      const m = full.match(/^(www\.[^\s<]+?)([.,;:!?)\]]*)$/);
+      const host = m ? m[1] : full;
+      const tail = m ? m[2] : '';
+      return `<a href="${safeUrl('https://' + host)}" target="_blank" rel="noopener">${host}</a>${tail}`;
     });
 }
 // 行内解析：先保护白名单裸 HTML（防被转义成文本），再对剩余文本转义+跑 markdown 语法。
@@ -104,7 +119,7 @@ function inline(s: string): string {
     stash(`<${tag}${filterAttrs(tag, attrs)} />`),
   );
   s2 = s2.replace(
-    /<\s*(a|center|div|span)\b([^>]*)>([\s\S]*?)<\/\s*\1\s*>/gi,
+    /<\s*(a|center|div|span|mark|kbd)\b([^>]*)>([\s\S]*?)<\/\s*\1\s*>/gi,
     (_m, tag: string, attrs: string, inner: string) =>
       stash(`<${tag}${filterAttrs(tag, attrs)}>${inner.replace(/\uE000(\d+)\uE001/g, (_x, k) => store[+k] || '')}</${tag}>`),
   );
@@ -219,12 +234,14 @@ export function renderMarkdown(src: string): string {
   const lines = src.replace(/\r\n/g, '\n').split('\n');
   const out: string[] = [];
   let i = 0;
+  const usedIds = new Set<string>(); // 标题锚点 id 去重
 
   while (i < lines.length) {
     const line = lines[i];
 
-    // 代码块（围栏 ```，支持语言标识但仅原样保留）
+    // 代码块（围栏 ```，支持语言标识 → 语言标签 + 复制按钮）
     if (/^```/.test(line.trim())) {
+      const lang = (line.trim().match(/^```(\w*)/) || [])[1] || '';
       const buf: string[] = [];
       i++;
       while (i < lines.length && !/^```/.test(lines[i].trim())) {
@@ -232,7 +249,10 @@ export function renderMarkdown(src: string): string {
         i++;
       }
       i++; // 跳过结束的 ```
-      out.push(`<pre><code>${escapeHtml(buf.join('\n'))}</code></pre>`);
+      const badge = lang ? `<span class="code-lang">${escapeHtml(lang)}</span>` : '';
+      out.push(
+        `<div class="code-block"><div class="code-head">${badge}<button class="code-copy" type="button">复制</button></div><pre><code>${escapeHtml(buf.join('\n'))}</code></pre></div>`,
+      );
       continue;
     }
 
@@ -267,11 +287,22 @@ export function renderMarkdown(src: string): string {
       continue;
     }
 
-    // 标题 1-6 级（允许前导空格与尾部 #）
+    // 标题 1-6 级（允许前导空格与尾部 #，生成锚点 id 支持 #标题 跳转）
     const h = line.match(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/);
     if (h) {
       const n = h[1].length;
-      out.push(`<h${n}>${inline(h[2])}</h${n}>`);
+      let id = h[2]
+        .replace(/[*`_~\[\]()!#]/g, '')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, '-')
+        .replace(/[^\w一-龥-]/g, '');
+      if (!id) id = 'section';
+      let uniq = id;
+      let c = 1;
+      while (usedIds.has(uniq)) uniq = `${id}-${c++}`;
+      usedIds.add(uniq);
+      out.push(`<h${n} id="${uniq}">${inline(h[2])}</h${n}>`);
       i++;
       continue;
     }

@@ -34,6 +34,19 @@ function go(id: string) {
   const el = document.getElementById('doc-top');
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
+// 代码块复制按钮（事件委托：点击 .code-copy 复制同块 <pre> 文本）
+function onDocClick(e: MouseEvent) {
+  const t = e.target as HTMLElement;
+  const btn = t.closest('.code-copy') as HTMLElement | null;
+  if (!btn) return;
+  const pre = btn.closest('.code-block')?.querySelector('pre');
+  if (!pre) return;
+  navigator.clipboard?.writeText(pre.textContent || '').then(() => {
+    const old = btn.textContent;
+    btn.textContent = '已复制 ✓';
+    setTimeout(() => (btn.textContent = old), 1200);
+  });
+}
 function toggleNav() {
   navOpen.value = !navOpen.value;
 }
@@ -70,7 +83,7 @@ function closeNav() {
       <p v-else-if="!docs.length" class="faint">暂无内容。</p>
       <template v-else>
         <h2 v-if="active" class="doc-title">{{ active.title }}</h2>
-        <div class="doc-body" v-html="active ? renderMarkdown(active.markdown) : ''"></div>
+        <div class="doc-body" @click="onDocClick" v-html="active ? renderMarkdown(active.markdown) : ''"></div>
         <div class="pager">
           <button class="pg" :disabled="!prev" @click="prev && go(prev.id)">‹ 上一页</button>
           <span class="pg-info">{{ idx + 1 }} / {{ docs.length }}</span>
@@ -144,7 +157,28 @@ function closeNav() {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
-/* 代码块：独立深背景 + 边框 + 圆角 + 横向滚动 + 轻阴影 */
+/* 代码块：外层容器承载边框/圆角/语言标签/复制按钮；内部 pre 去边框 */
+.doc-body :deep(.code-block) {
+  position: relative; background: var(--md-subtle); border: 1px solid var(--md-border);
+  border-radius: 8px; margin: 16px 0; box-shadow: 0 1px 6px rgba(0,0,0,.35); overflow: hidden;
+}
+.doc-body :deep(.code-head) {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 10px 6px 14px; border-bottom: 1px solid var(--md-border);
+  background: rgba(255,255,255,.02);
+}
+.doc-body :deep(.code-lang) {
+  font-size: 11px; color: var(--md-muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-transform: uppercase; letter-spacing: .05em;
+}
+.doc-body :deep(.code-copy) {
+  background: var(--panel-2); border: 1px solid var(--md-border); color: var(--md-muted);
+  font-size: 11px; padding: 3px 10px; border-radius: 5px; cursor: pointer; transition: .15s;
+}
+.doc-body :deep(.code-copy):hover { color: var(--md-fg); border-color: var(--accent); }
+.doc-body :deep(.code-block pre) {
+  margin: 0; border: none; border-radius: 0; box-shadow: none; background: none;
+}
 .doc-body :deep(pre) {
   background: var(--md-subtle); border: 1px solid var(--md-border); border-radius: 8px;
   padding: 16px; margin: 16px 0; overflow-x: auto; line-height: 1.6; font-size: 13px;
@@ -198,6 +232,13 @@ function closeNav() {
 }
 
 .doc-body :deep(del) { color: var(--md-muted); }
+/* 高亮 ==文字== 与键盘键 <kbd> */
+.doc-body :deep(mark) { background: rgba(187,128,9,.35); color: var(--md-fg); padding: 0 3px; border-radius: 3px; }
+.doc-body :deep(kbd) {
+  background: var(--panel-2); border: 1px solid var(--md-border); border-bottom-width: 2px;
+  border-radius: 5px; padding: 1px 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .85em; color: var(--md-fg);
+}
 .pager { display: flex; align-items: center; gap: 12px; margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--border); }
 .pg { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); padding: 7px 14px; border-radius: 8px; font-size: 13px; }
 .pg:disabled { opacity: 0.4; cursor: not-allowed; }
