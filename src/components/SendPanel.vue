@@ -39,8 +39,6 @@ const lTransferring = ref(false); // 真正开始发送数据时为 true（区�
 const lStatus = ref('');
 const lPeerOnline = ref(false);
 const lSegIndex = ref(0);   // 当前段（0 基），用于 UI 展示
-// 本地直传发送结果态：false=从未发送或已完成，true=已取消/失败（左按钮据此显示「重试」）
-const lCancelled = ref(false);
 // 发送端自身状态灯：房间一生成即亮，独立于对方是否在线（解决"只能靠接收端才亮"）
 const lSelfActive = computed(() => !!lRoom.value);
 
@@ -77,7 +75,6 @@ const sender = new LocalSender({
 function genRoom() {
   // 先清理旧的提前信令（重新生成房间时）
   if (p2pEarlySig) { p2pEarlySig.close(); p2pEarlySig = null; }
-  lCancelled.value = false;
   sender.genRoom();
 }
 
@@ -139,9 +136,9 @@ async function runP2PLocalSend() {
       else if (s === 'connecting') { lPeerOnline.value = true; lStatus.value = 'ICE 协商中…'; }
       else if (s === 'connected') { lPeerOnline.value = true; lStatus.value = '直连已建立'; }
       else if (s === 'transferring') { lPeerOnline.value = true; lTransferring.value = true; lStatus.value = '传输中…'; }
-      else if (s === 'done') { lSending.value = false; lDone.value = true; lTransferring.value = false; lCancelled.value = false; lStatus.value = '发送完成'; files.value.forEach((f) => { f.status = 'done'; f.uploaded = f.file.size; }); }
-      else if (s === 'error') { lSending.value = false; lPeerOnline.value = false; lTransferring.value = false; lCancelled.value = true; lStatus.value = `出错：${d || ''}`; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); }
-      else if (s === 'aborted') { lSending.value = false; lPeerOnline.value = false; lTransferring.value = false; lCancelled.value = true; lStatus.value = '已取消'; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); }
+      else if (s === 'done') { lSending.value = false; lDone.value = true; lTransferring.value = false; lStatus.value = '发送完成'; files.value.forEach((f) => { f.status = 'done'; f.uploaded = f.file.size; }); }
+      else if (s === 'error') { lSending.value = false; lPeerOnline.value = false; lTransferring.value = false; lStatus.value = `出错：${d || ''}`; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); }
+      else if (s === 'aborted') { lSending.value = false; lPeerOnline.value = false; lTransferring.value = false; lStatus.value = '已取消'; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); }
     },
     // 对端信令到达（offer/answer）：更新状态反映协商进展。
     // 不再守卫 lPeerOnline——提前信令已在对方加入时亮灯，这里负责"点了发送后"的状态推进。
@@ -162,7 +159,7 @@ async function runP2PLocalSend() {
         acc += f.file.size;
       }
     },
-    onFail: (e) => { lSending.value = false; lCancelled.value = true; lStatus.value = `P2P 传输失败：${e.message}`; lDone.value = false; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); },
+    onFail: (e) => { lSending.value = false; lStatus.value = `P2P 传输失败：${e.message}`; lDone.value = false; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); },
   });
   p2pSender = sender;
   try {
@@ -175,7 +172,6 @@ async function runP2PLocalSend() {
 }
 
 function startLocalSend() {
-  lCancelled.value = false;
   if (localTransport.value === 'p2p') { void runP2PLocalSend(); return; }
   sender.startSend(files.value.map((f) => ({ file: f.file })));
 }
@@ -183,7 +179,6 @@ function cancelLocalSend() {
   if (p2pSender) { p2pSender.abort(); p2pSender = null; }
   if (p2pEarlySig) { p2pEarlySig.close(); p2pEarlySig = null; }
   if (lSending.value) sender.cancel();
-  lCancelled.value = true;
 }
 function copyLocalLink() { navigator.clipboard?.writeText(sender.link); lStatus.value = '链接已复制'; }
 
@@ -202,7 +197,6 @@ function resetLocalRoom() {
   lStatus.value = '';
   lPeerOnline.value = false;
   lSegIndex.value = 0;
-  lCancelled.value = false;
 }
 
 // 中转发送状态机已抽到 src/transfer/tus/useRelayTransfer.ts（relay 实例在文件顶部创建）
@@ -388,10 +382,9 @@ onUnmounted(() => { sender.close(); if (p2pEarlySig) { p2pEarlySig.close(); p2pE
           对方（接收端）：{{ lPeerOnline ? '已在线 ✓' : '等待加入…' }}
         </div>
         <div class="actions">
-          <!-- 左：状态+逻辑（开始 / 取消 / 重试 / 完成） -->
+          <!-- 左：状态+逻辑（开始 / 取消 / 完成） -->
           <button v-if="lSending" class="btn danger" @click="cancelLocalSend">取消发送</button>
           <button v-else-if="lDone" class="btn primary" disabled>发送完成</button>
-          <button v-else-if="lCancelled" class="btn primary" :disabled="!files.length" @click="startLocalSend">重试</button>
           <button v-else class="btn primary" :disabled="!files.length" @click="startLocalSend">开始传输</button>
           <!-- 右：全新开始（始终可用，清文件+毁房间） -->
           <button class="btn ghost" @click="resetLocalRoom">全新开始</button>
