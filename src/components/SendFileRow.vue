@@ -2,15 +2,9 @@
 import { computed } from 'vue';
 import type { QueuedFile } from '@/types/transfer';
 import ProgressBar from './ProgressBar.vue';
-import { formatBytes } from '@/composables/format';
 
 const props = defineProps<{ qf: QueuedFile; disabled?: boolean }>();
 defineEmits<{ remove: [] }>();
-
-const pct = computed(() => {
-  if (!props.qf.file.size) return 0;
-  return Math.min(100, Math.round((props.qf.uploaded / props.qf.file.size) * 100));
-});
 
 const label = computed(() => {
   switch (props.qf.status) {
@@ -21,42 +15,34 @@ const label = computed(() => {
   }
 });
 
+const pct = computed(() => {
+  if (!props.qf.file.size) return 0;
+  return Math.min(100, Math.round((props.qf.uploaded / props.qf.file.size) * 100));
+});
 </script>
 
 <template>
-  <div class="row" :class="qf.status">
-    <div class="info">
-      <div class="name" :title="qf.relativePath">{{ qf.relativePath || qf.file.name }}</div>
-      <div class="sub muted">
-        <span class="sub-l">{{ formatBytes(qf.file.size) }} · <span :class="qf.status === 'error' ? 'err' : ''">{{ label }}</span><span v-if="qf.error" class="err"> · {{ qf.error }}</span></span>
-        <span v-if="qf.status !== 'pending'" :class="qf.status === 'error' ? 'err' : 'pct'">{{ pct }}%</span>
-      </div>
-      <ProgressBar :value="pct" :done="qf.status === 'done'" />
-    </div>
-    <button class="rm" title="移除" :disabled="disabled" @click="$emit('remove')">✕</button>
-  </div>
+  <ProgressBar
+    :name="qf.relativePath || qf.file.name"
+    :size="qf.file.size"
+    :statusText="label"
+    :value="pct"
+    :done="qf.status === 'done'"
+    :error="qf.error"
+    :show-percent="qf.status !== 'pending'"
+  >
+    <template #actions>
+      <button class="rm" title="移除" :disabled="disabled" @click="$emit('remove')">✕</button>
+    </template>
+  </ProgressBar>
 </template>
 
 <style scoped>
-.row {
-  display: flex; align-items: center; gap: 12px;
-  background: var(--panel); border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: var(--radius-sm); padding: 10px 12px;
-}
-.row.done { border-color: rgba(75, 227, 160, 0.35); }
-.row.error { border-color: rgba(255, 107, 129, 0.4); }
-.info { flex: 1; min-width: 0; }
-.name { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sub { font-size: 12px; margin: 3px 0 6px; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.sub-l { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.err { color: var(--danger); }
-.pct { color: var(--accent-2); font-variant-numeric: tabular-nums; flex: none; }
 .rm {
   background: none; border: none; color: var(--text-faint);
-  font-size: 14px; padding: 4px; border-radius: 6px;
+  font-size: 14px; padding: 4px; border-radius: 6px; flex: none;
 }
 .rm:hover { color: var(--danger); background: rgba(255, 107, 129, 0.1); }
 .rm:disabled { color: var(--text-faint); opacity: 0.4; cursor: not-allowed; }
 .rm:disabled:hover { background: none; color: var(--text-faint); }
-
 </style>
