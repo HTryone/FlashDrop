@@ -101,6 +101,7 @@ async function runP2PRecv() {
     room,
     pass,
     dirHandle: (picked as any) || null,
+    onFiles: (files) => { recvFiles.value = files; },
     onState: (s, d) => {
       if (s === 'connected') { senderOnline.value = true; recvStatus.value = 'P2P 直连已建立，等待文件清单…'; }
       else if (s === 'transferring') { senderOnline.value = true; recvStatus.value = 'P2P 接收中…'; }
@@ -188,6 +189,7 @@ onUnmounted(() => {
         </div>
       </div>
       <ProgressBar v-if="receiving || recvReady" :value="recvProgress * 100" />
+      <div v-if="receiving" class="recv-pct">{{ (recvProgress * 100).toFixed(0) }}%</div>
       <div class="status">{{ recvStatus }}</div>
       <p class="hint e2ee-hint">🔒 已端到端加密：密钥仅在本机从链接 <code>#k=</code> 派生，服务器只转发密文、无法解密。</p>
     </section>
@@ -227,6 +229,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
 .recv-form { display: flex; gap: 8px; }
 .recv-form input { flex: 1; background: var(--bg-soft); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 9px; font-size: 13px; }
 .status { font-size: 12.5px; color: var(--text-dim); min-height: 16px; word-break: break-all; }
+.recv-pct { font-size: 13px; color: var(--accent-2); font-variant-numeric: tabular-nums; margin: 2px 0 0; }
 .btn { border: 1px solid var(--border); background: var(--panel-2); color: var(--text); border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
 .btn.primary { background: var(--accent-grad); color: #07101f; border: none; }
 .btn.sm { padding: 8px 12px; font-size: 12px; }

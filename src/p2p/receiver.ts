@@ -177,6 +177,7 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
       if (msg.type === 'manifest') {
         files = msg.files as P2PFileMeta[];
         totalBytes = msg.totalBytes || files.reduce((a, f) => a + f.size, 0);
+        opts.onFiles?.(files); // 回传文件清单（文件名/尺寸），供 UI 展示；重连幂等再次触发
         perFileChunks = files.map((f) => Math.max(1, Math.ceil(f.size / P2P_CHUNK_SIZE)));
         totalChunks = perFileChunks.reduce((a, c) => a + c, 0);
         // createSink 是同步工厂，真正的句柄创建在 sink.ready；必须等它完成再宣告开始传输，

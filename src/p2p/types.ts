@@ -78,5 +78,6 @@ export interface ReceiverOpts {
   onFail?: (err: Error) => void;
   onPeerJoined?: () => void; // 对方（发送端）已加入房间并开始协商
   onPeerPresent?: (role: P2PRole) => void; // 对方经信令房上线（WS 连上即触发，不等 SDP），用于提前点亮在线灯
+  onFiles?: (files: P2PFileMeta[]) => void; // 收到 manifest 后回传文件清单（供 UI 展示文件名/尺寸）
   signal?: AbortSignal;
 }

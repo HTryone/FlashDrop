@@ -102,6 +102,8 @@ async function runP2PLocalSend() {
   if (!lRoom.value || !lPassphrase.value) { lStatus.value = '请先生成房间'; return; }
   if (!files.value.length) { lStatus.value = '没有待发送文件'; return; }
   lSending.value = true; lProgress.value = 0; lDone.value = false;
+  // P2P 连续流：发送期间把每文件行标记为传输中、进度清零（完成后才标记已完成）
+  files.value.forEach((f) => { f.status = 'uploading'; f.uploaded = 0; });
   lStatus.value = 'P2P 信令协商中…';
   const sender = createP2PSender({
     relayBase: resolveRelayBase(),
@@ -113,9 +115,9 @@ async function runP2PLocalSend() {
       else if (s === 'connecting') { lPeerOnline.value = true; lStatus.value = 'ICE 协商中，正在建立直连…'; }
       else if (s === 'connected') { lPeerOnline.value = true; lStatus.value = 'P2P 直连已建立，开始传输…'; }
       else if (s === 'transferring') { lPeerOnline.value = true; lStatus.value = 'P2P 传输中…'; }
-      else if (s === 'done') { lDone.value = true; lStatus.value = 'P2P 发送完成'; }
-      else if (s === 'error') { lPeerOnline.value = false; lStatus.value = `P2P 出错：${d || ''}`; }
-      else if (s === 'aborted') { lPeerOnline.value = false; lStatus.value = '已取消'; }
+      else if (s === 'done') { lDone.value = true; lStatus.value = 'P2P 发送完成'; files.value.forEach((f) => { f.status = 'done'; f.uploaded = f.file.size; }); }
+      else if (s === 'error') { lPeerOnline.value = false; lStatus.value = `P2P 出错：${d || ''}`; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); }
+      else if (s === 'aborted') { lPeerOnline.value = false; lStatus.value = '已取消'; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); }
     },
     // 对端信令到达（offer/answer）：更新状态反映协商进展。
     // 不再守卫 lPeerOnline——提前信令已在对方加入时亮灯，这里负责"点了发送后"的状态推进。
@@ -127,8 +129,16 @@ async function runP2PLocalSend() {
     onPeerPresent: (role) => {
       if (role === 'receiver') { lPeerOnline.value = true; lStatus.value = '对方已就位，可点「开始传输」'; }
     },
-    onProgress: (p) => { lProgress.value = p.total ? p.sent / p.total : 0; },
-    onFail: (e) => { lStatus.value = `P2P 传输失败：${e.message}`; lDone.value = false; },
+    onProgress: (p) => {
+      lProgress.value = p.total ? p.sent / p.total : 0;
+      // 按各文件大小比例把整体进度摊到每文件行（P2P 连续流，进度为近似值）
+      let acc = 0;
+      for (const f of files.value) {
+        f.uploaded = p.sent <= acc ? 0 : Math.min(f.file.size, p.sent - acc);
+        acc += f.file.size;
+      }
+    },
+    onFail: (e) => { lStatus.value = `P2P 传输失败：${e.message}`; lDone.value = false; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); },
   });
   p2pSender = sender;
   try {
