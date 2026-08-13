@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onUnmounted } from 'vue';
+import { ref, computed, watch, onUnmounted } from 'vue';
 import { LocalReceiver } from '@/https';
 import { resolveRelayBase } from '@/transfer/room';
 import { createP2PReceiver } from '@/p2p';
@@ -17,8 +17,36 @@ const recvReady = ref(false);
 const senderOnline = ref(false);
 const recvFiles = ref<{ name: string; size: number }[]>([]);
 const recvProgress = ref(0);
+const recvSpeed = ref<number | null>(null); // MB/s，接收中按字节增量推算
 const recvStatus = ref('输入房间码（或粘贴整条链接）后点连接');
 const recvSegCount = ref(1);
+
+// 接收总字节数（由清单累加），用于把 0..1 进度还原成字节、进而算速度
+const recvTotalBytes = computed(() => recvFiles.value.reduce((a, f) => a + f.size, 0));
+// 速度采样：记录上次字节数与时间戳，每 ≥0.2s 取一次瞬时速度做平滑
+let _lastBytes = 0;
+let _lastT = 0;
+function sampleRecv(bytes: number, total: number) {
+  recvProgress.value = total ? bytes / total : (total === 0 ? 1 : 0);
+  const now = performance.now();
+  if (_lastT) {
+    const dt = (now - _lastT) / 1000;
+    if (dt >= 0.2) {
+      const inst = (bytes - _lastBytes) / dt / 1048576; // → MB/s
+      recvSpeed.value = recvSpeed.value != null ? recvSpeed.value * 0.5 + inst * 0.5 : inst;
+      _lastBytes = bytes;
+      _lastT = now;
+    }
+  } else {
+    _lastBytes = bytes;
+    _lastT = now;
+  }
+}
+function resetRecvSpeed() {
+  recvSpeed.value = null;
+  _lastBytes = 0;
+  _lastT = 0;
+}
 
 // 本地直传核心逻辑全部在 src/transfer/local/receiver.ts，这里只更新 UI
 const receiver = new LocalReceiver({
@@ -26,7 +54,7 @@ const receiver = new LocalReceiver({
   onRecvReady: (v) => { recvReady.value = v; },
   onSenderOnline: (v) => { senderOnline.value = v; },
   onFiles: (files) => { recvFiles.value = files; },
-  onProgress: (p) => { recvProgress.value = p; },
+  onProgress: (p) => { sampleRecv(p * recvTotalBytes.value, recvTotalBytes.value); },
   onSegCount: (n) => { recvSegCount.value = n; },
   onReceiving: (v) => { receiving.value = v; },
 });
@@ -122,7 +150,7 @@ async function runP2PRecv() {
         recvStatus.value = '发送端已就位，等待开始传输…';
       }
     },
-    onProgress: (p) => { recvProgress.value = p.total ? p.received / p.total : 0; },
+    onProgress: (p) => { sampleRecv(p.received, p.total); },
     onFail: (e) => { recvStatus.value = `P2P 接收失败：${e.message}`; receiving.value = false; },
   });
   p2pReceiver = inst;
@@ -135,6 +163,7 @@ async function runP2PRecv() {
 }
 
 function startRecv() {
+  resetRecvSpeed();
   if (localTransport.value === 'p2p') { void runP2PRecv(); return; }
   receiver.start();
 }
@@ -189,6 +218,7 @@ onUnmounted(() => {
           :name="f.name"
           :size="f.size"
           :value="recvProgress * 100"
+          :speed="recvSpeed ?? undefined"
           :done="!receiving && recvProgress >= 1"
         />
       </div>

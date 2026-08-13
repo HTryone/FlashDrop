@@ -49,19 +49,20 @@ export function useRelayTransfer(
   // history 模式下 query 写在 # 之前即为正常 URL，vue-router 直接读到
   const shareLink = computed(() => (code.value ? `${location.origin}/?code=${code.value}` : ''));
 
-  // 选中区状态：待传输 / 传输中 / 已取消 / 网络故障 / 已完成
+  // 选中区状态（发送方总状态三态）：待发送 / 已发送 / 发送完成（外加 取消/故障 分支）
   const selStatus = computed(() => {
     if (!files.value.length) return '';
-    if (relayPhase.value === 'uploading') return '传输中…';
+    if (relayPhase.value === 'uploading') return '已发送';
     if (relayPhase.value === 'cancelled') return '已取消，可继续上传';
     if (relayPhase.value === 'failed') return '网络故障，可重新传输';
-    if (relayPhase.value === 'done') return '已完成';
-    if (files.value.every((f) => f.status === 'done')) return '已完成';
-    return '待传输';
+    if (relayPhase.value === 'done') return '发送完成';
+    if (files.value.every((f) => f.status === 'done')) return '发送完成';
+    return '待发送';
   });
   const selStatusClass = computed(() => {
     if (relayPhase.value === 'done') return 'done';
-    if (relayPhase.value === 'uploading' || relayPhase.value === 'failed') return 'busy';
+    if (relayPhase.value === 'uploading') return 'busy';
+    if (relayPhase.value === 'failed') return 'busy';
     return 'idle';
   });
 

@@ -41,6 +41,25 @@ const lSegIndex = ref(0);   // 当前段（0 基），用于 UI 展示
 // 发送端自身状态灯：房间一生成即亮，独立于对方是否在线（解决"只能靠接收端才亮"）
 const lSelfActive = computed(() => !!lRoom.value);
 
+// 发送方总状态（选中文件框下方的状态条）：覆盖中转与本地直传两种模式，统一三态
+// 待发送（未开始）/ 已发送（传输中）/ 发送完成（全部完成）
+const senderStatus = computed(() => {
+  if (sendMode.value === 'local') {
+    if (lDone.value) return '发送完成';
+    if (lSending.value) return '已发送';
+    return '待发送';
+  }
+  return selStatus.value; // 中转（TUS）三态：待发送 / 已发送 / 发送完成
+});
+const senderStatusClass = computed(() => {
+  if (sendMode.value === 'local') {
+    if (lDone.value) return 'done';
+    if (lSending.value) return 'busy';
+    return 'idle';
+  }
+  return selStatusClass.value;
+});
+
 const sender = new LocalSender({
   onStatus: (s) => { lStatus.value = s; },
   onPeerOnline: (v) => { lPeerOnline.value = v; },
@@ -196,7 +215,7 @@ onUnmounted(() => { sender.close(); if (p2pEarlySig) { p2pEarlySig.close(); p2pE
     <div v-if="files.length" class="selected">
       <div class="sel-head">
         <span>已选 {{ files.length }} 个 · {{ formatBytes(totalSize) }}</span>
-        <span class="sel-status" :class="selStatusClass">{{ selStatus }}</span>
+        <span class="sel-status" :class="senderStatusClass">{{ senderStatus }}</span>
         <button class="btn sm ghost" @click="clearSelected" :disabled="filesLocked || lSending">清空所选</button>
       </div>
       <div class="file-list">
