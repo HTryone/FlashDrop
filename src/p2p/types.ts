@@ -79,5 +79,6 @@ export interface ReceiverOpts {
   onPeerJoined?: () => void; // 对方（发送端）已加入房间并开始协商
   onPeerPresent?: (role: P2PRole) => void; // 对方经信令房上线（WS 连上即触发，不等 SDP），用于提前点亮在线灯
   onFiles?: (files: P2PFileMeta[]) => void; // 收到 manifest 后回传文件清单（供 UI 展示文件名/尺寸）
+  onFileProgress?: (progs: number[]) => void; // 逐文件进度（0..1，与 files 同序）；底层单流顺序写盘，按全局序号推导
   signal?: AbortSignal;
 }

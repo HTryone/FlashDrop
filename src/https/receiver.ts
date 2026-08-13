@@ -17,6 +17,7 @@ export interface ReceiverCallbacks {
   onSenderOnline: (v: boolean) => void;
   onFiles: (files: FileMeta[]) => void;
   onProgress: (p: number) => void; // 0..1
+  onFileProgress?: (progs: number[]) => void; // 逐文件进度（0..1，与 files 同序）；底层单流顺序写盘，按全局序号推导
   onSegCount: (n: number) => void;
   onReceiving: (v: boolean) => void;
 }
@@ -356,6 +357,21 @@ export class LocalReceiver {
       });
   }
 
+  /** 按全局写盘游标 + 每文件块数，推导每个文件的进度（0..1），回传给 UI 做逐文件进度 */
+  private emitFileProgress() {
+    if (!this.cb.onFileProgress) return;
+    const cursor = this.nextWriteSeq; // 已写入的全局 chunk 数
+    const progs: number[] = [];
+    let start = 0;
+    for (let i = 0; i < this.perFileChunks.length; i++) {
+      const n = this.perFileChunks[i] || 0;
+      const written = Math.max(0, Math.min(cursor - start, n));
+      progs.push(n === 0 ? 1 : written / n);
+      start += n;
+    }
+    this.cb.onFileProgress(progs);
+  }
+
   /** 串行写盘协程：按全局序号顺序写入 */
   private async drainWrites() {
     if (this.drainRunning) return;
@@ -368,6 +384,7 @@ export class LocalReceiver {
         if (w) { try { await w.write(item.plain); } catch { /* ignore */ } }
         this.recvBytes += item.plain.length;
         this.cb.onProgress(this.recvTotal ? this.recvBytes / this.recvTotal : 1);
+        this.emitFileProgress();
         const _now = Date.now();
         if (this.ctrl?.isOpen && _now - this.lastProgressAt >= 50) {
           this.lastProgressAt = _now;

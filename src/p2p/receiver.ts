@@ -93,6 +93,19 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
           checkComplete(); // 收齐即完成（配合 senderDone 兜底，不依赖单点 seq 触发）
           if (job.seq > lastAcked) lastAcked = job.seq;
           opts.onProgress?.({ sent: 0, received: recvBytes, total: totalBytes });
+          // 逐文件进度：底层单流顺序写盘，按 lastAcked 全局游标 + 每文件块数推导
+          if (opts.onFileProgress) {
+            const cursor = lastAcked + 1; // 已写入的全局 chunk 数
+            const progs: number[] = [];
+            let s = 0;
+            for (let i = 0; i < perFileChunks.length; i++) {
+              const n = perFileChunks[i] || 0;
+              const written = Math.max(0, Math.min(cursor - s, n));
+              progs.push(n === 0 ? 1 : written / n);
+              s += n;
+            }
+            opts.onFileProgress(progs);
+          }
           sinceAck++;
           if (sinceAck >= ACK_EVERY || job.seq >= totalChunks - 1) {
             sinceAck = 0;

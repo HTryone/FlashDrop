@@ -17,7 +17,8 @@ const recvReady = ref(false);
 const senderOnline = ref(false);
 const recvFiles = ref<{ name: string; size: number }[]>([]);
 const recvProgress = ref(0);
-const recvSpeed = ref<number | null>(null); // MB/s，接收中按字节增量推算
+const recvFileProgress = ref<number[]>([]); // 逐文件进度 0..1，与 recvFiles 同序
+const recvSpeed = ref<number | null>(null); // MB/s，接收中按字节增量推算（单流总速度，只显示一条）
 const recvStatus = ref('输入房间码（或粘贴整条链接）后点连接');
 const recvSegCount = ref(1);
 
@@ -53,7 +54,8 @@ const receiver = new LocalReceiver({
   onStatus: (s) => { recvStatus.value = s; },
   onRecvReady: (v) => { recvReady.value = v; },
   onSenderOnline: (v) => { senderOnline.value = v; },
-  onFiles: (files) => { recvFiles.value = files; },
+  onFiles: (files) => { recvFiles.value = files; recvFileProgress.value = []; },
+  onFileProgress: (progs) => { recvFileProgress.value = progs; },
   onProgress: (p) => { sampleRecv(p * recvTotalBytes.value, recvTotalBytes.value); },
   onSegCount: (n) => { recvSegCount.value = n; },
   onReceiving: (v) => { receiving.value = v; },
@@ -128,7 +130,8 @@ async function runP2PRecv() {
     room,
     pass,
     dirHandle: (picked as any) || null,
-    onFiles: (files) => { recvFiles.value = files; },
+    onFiles: (files) => { recvFiles.value = files; recvFileProgress.value = []; },
+    onFileProgress: (progs) => { recvFileProgress.value = progs; },
     onState: (s, d) => {
       if (s === 'connected') { senderOnline.value = true; recvStatus.value = 'P2P 直连已建立，等待文件清单…'; }
       else if (s === 'transferring') { senderOnline.value = true; recvStatus.value = 'P2P 接收中…'; }
@@ -164,6 +167,7 @@ async function runP2PRecv() {
 
 function startRecv() {
   resetRecvSpeed();
+  recvFileProgress.value = [];
   if (localTransport.value === 'p2p') { void runP2PRecv(); return; }
   receiver.start();
 }
@@ -212,14 +216,17 @@ onUnmounted(() => {
         <button v-else class="btn danger" @click="onCancelRecv">取消接收</button>
       </div>
       <div v-if="recvFiles.length" class="filelist">
+        <div class="recv-summary" v-if="receiving || recvReady">
+          <span class="sum-pct">总进度 {{ (recvProgress * 100).toFixed(0) }}%</span>
+          <span class="sum-speed" v-if="recvSpeed != null">{{ recvSpeed.toFixed(1) }} MB/s</span>
+        </div>
         <ProgressBar
-          v-for="f in recvFiles"
+          v-for="(f, i) in recvFiles"
           :key="f.name"
           :name="f.name"
           :size="f.size"
-          :value="recvProgress * 100"
-          :speed="recvSpeed ?? undefined"
-          :done="!receiving && recvProgress >= 1"
+          :value="(recvFileProgress[i] ?? 0) * 100"
+          :done="(recvFileProgress[i] ?? 0) >= 1"
         />
       </div>
       <div class="status">{{ recvStatus }}</div>
@@ -249,6 +256,9 @@ onUnmounted(() => {
 h3 { margin: 0; font-size: 15px; }
 hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
 .filelist { display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow: auto; }
+.recv-summary { display: flex; align-items: center; gap: 12px; font-size: 12.5px; padding: 2px 2px 4px; }
+.sum-pct { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.sum-speed { color: var(--accent-2); font-variant-numeric: tabular-nums; font-weight: 600; }
 .total { font-size: 12.5px; color: var(--text-faint); }
 .roominfo { display: flex; flex-direction: column; gap: 10px; }
 .code { font-size: 14px; }
