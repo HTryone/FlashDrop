@@ -102,21 +102,68 @@ function closeNav() {
 .nav-trigger { display: none; }
 .doc-title { margin: 0 0 12px; font-size: 18px; scroll-margin-top: 80px; }
 .doc-body { font-size: 13.5px; line-height: 1.8; color: var(--text-dim); }
-.doc-body :deep(h1), .doc-body :deep(h2), .doc-body :deep(h3) { color: var(--text); margin: 10px 0 6px; }
-.doc-body :deep(a) { color: var(--accent); }
-.doc-body :deep(code) { background: var(--panel-2); padding: 1px 5px; border-radius: 5px; }
-.doc-body :deep(ul), .doc-body :deep(ol) { padding-left: 18px; }
-.doc-body :deep(li) { margin: 3px 0; }
-.doc-body :deep(input[type="checkbox"]) { margin-right: 6px; vertical-align: middle; }
-.doc-body :deep(blockquote) { margin: 8px 0; padding-left: 12px; border-left: 3px solid var(--border); color: var(--text-faint); }
-.doc-body :deep(p) { margin: 6px 0; }
-.doc-body :deep(img) { max-width: 100%; border-radius: 8px; margin: 8px 0; display: block; }
-.doc-body :deep(table) { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13px; }
-.doc-body :deep(th), .doc-body :deep(td) { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
-.doc-body :deep(th) { background: var(--panel-2); color: var(--text); }
-.doc-body :deep(hr) { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+
+/* 标题分级（GitHub/Typora 深色风：显式字号 + 字重） */
+.doc-body :deep(h1), .doc-body :deep(h2), .doc-body :deep(h3), .doc-body :deep(h4), .doc-body :deep(h5), .doc-body :deep(h6) {
+  color: var(--text); margin: 18px 0 8px; font-weight: 600; line-height: 1.35;
+}
+.doc-body :deep(h1) { font-size: 1.55em; }
+.doc-body :deep(h2) { font-size: 1.3em; }
+.doc-body :deep(h3) { font-size: 1.12em; }
+.doc-body :deep(h4) { font-size: 1em; }
+.doc-body :deep(h5) { font-size: .92em; }
+.doc-body :deep(h6) { font-size: .88em; color: var(--text-dim); }
+.doc-body :deep(h1), .doc-body :deep(h2) { border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+
+/* 链接 */
+.doc-body :deep(a) { color: var(--accent); text-decoration: none; }
+.doc-body :deep(a):hover { color: var(--text); text-decoration: underline; }
+
+/* 行内代码 */
+.doc-body :deep(code) {
+  background: #161b22; color: #a5d6ff; padding: 1.5px 6px; border-radius: 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .92em;
+}
+
+/* 代码块（Typora 深色：独立深背景 + 圆角 + 横向滚动） */
+.doc-body :deep(pre) {
+  background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
+  padding: 14px 16px; margin: 12px 0; overflow-x: auto; line-height: 1.6; font-size: 12.5px;
+}
+.doc-body :deep(pre code) {
+  background: none; color: #c9d1d9; padding: 0; border-radius: 0; font-size: 1em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* 列表 */
+.doc-body :deep(ul), .doc-body :deep(ol) { padding-left: 20px; }
+.doc-body :deep(li) { margin: 4px 0; }
+.doc-body :deep(li)::marker { color: var(--text-faint); }
+
+/* 任务列表 */
+.doc-body :deep(input[type="checkbox"]) { margin-right: 6px; vertical-align: middle; accent-color: var(--accent); }
+
+/* 引用（Typora 深色：强调色左边框 + 浅背景） */
+.doc-body :deep(blockquote) {
+  margin: 12px 0; padding: 10px 14px; border-left: 3px solid var(--accent);
+  background: rgba(255,255,255,.03); border-radius: 0 6px 6px 0; color: var(--text-dim);
+}
+
+.doc-body :deep(p) { margin: 8px 0; }
+
+/* 图片（轻阴影） */
+.doc-body :deep(img) { max-width: 100%; border-radius: 8px; margin: 10px 0; display: block; box-shadow: 0 1px 8px rgba(0,0,0,.4); }
+
+/* 表格 */
+.doc-body :deep(table) { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13px; }
+.doc-body :deep(th), .doc-body :deep(td) { border: 1px solid var(--border); padding: 7px 11px; text-align: left; }
+.doc-body :deep(th) { background: var(--panel-2); color: var(--text); font-weight: 600; }
+.doc-body :deep(tbody tr):hover { background: rgba(255,255,255,.03); }
+
+/* 分隔线 */
+.doc-body :deep(hr) { border: none; border-top: 2px solid var(--border); margin: 18px 0; }
+
 .doc-body :deep(del) { color: var(--text-faint); }
-.doc-body :deep(h4), .doc-body :deep(h5), .doc-body :deep(h6) { color: var(--text); margin: 8px 0 4px; }
 .pager { display: flex; align-items: center; gap: 12px; margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--border); }
 .pg { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); padding: 7px 14px; border-radius: 8px; font-size: 13px; }
 .pg:disabled { opacity: 0.4; cursor: not-allowed; }
