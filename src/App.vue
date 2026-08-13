@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { ref, provide, watch } from 'vue';
+import { ref, provide, watch, defineAsyncComponent } from 'vue';
 import { useRoute } from 'vue-router';
-import ExtensionPanel from './views/ExtensionPanel.vue';
+
+// 懒加载：仅当用户点开「更多」时才拉取该面板及其子模块（ModuleView / 扩展模块 / markdown 渲染）
+const ExtensionPanel = defineAsyncComponent(() => import('./views/ExtensionPanel.vue'));
 
 type TabType = 'send' | 'receive' | 'manage';
 const activeTab = ref<TabType>('send');

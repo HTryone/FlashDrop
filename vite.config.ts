@@ -25,5 +25,16 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     chunkSizeWarningLimit: 1500,
+    rollupOptions: {
+      output: {
+        // 把第三方库拆成独立 vendor 块，便于浏览器长期缓存、并行加载
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return;
+          if (/[\\/]node_modules[\\/](vue|vue-router|@vue)[\\/]/.test(id)) return 'vue-vendor';
+          if (/[\\/]node_modules[\\/]crypto-js[\\/]/.test(id)) return 'crypto';
+          if (/[\\/]node_modules[\\/]streamsaver[\\/]/.test(id)) return 'streamsaver';
+        },
+      },
+    },
   },
 });
