@@ -35,6 +35,7 @@ const lSendLink = ref('');
 const lSending = ref(false);
 const lDone = ref(false);
 const lProgress = ref(0);
+const lTransferring = ref(false); // 真正开始发送数据时为 true（区别于 lSending：lSending 点发送即 true，含信令/连接阶段）
 const lStatus = ref('');
 const lPeerOnline = ref(false);
 const lSegIndex = ref(0);   // 当前段（0 基），用于 UI 展示
@@ -42,19 +43,19 @@ const lSegIndex = ref(0);   // 当前段（0 基），用于 UI 展示
 const lSelfActive = computed(() => !!lRoom.value);
 
 // 发送方总状态（选中文件框下方的状态条）：覆盖中转与本地直传两种模式，统一三态
-// 待发送（未开始）/ 已发送（传输中）/ 发送完成（全部完成）
+// 待发送（未开始）/ 传输中（真正发送数据时）/ 发送完成（全部完成）
 const senderStatus = computed(() => {
   if (sendMode.value === 'local') {
     if (lDone.value) return '发送完成';
-    if (lSending.value) return '已发送';
+    if (lTransferring.value) return '传输中';
     return '待发送';
   }
-  return selStatus.value; // 中转（TUS）三态：待发送 / 已发送 / 发送完成
+  return selStatus.value; // 中转（TUS）三态：待发送 / 传输中 / 发送完成
 });
 const senderStatusClass = computed(() => {
   if (sendMode.value === 'local') {
     if (lDone.value) return 'done';
-    if (lSending.value) return 'busy';
+    if (lTransferring.value) return 'busy';
     return 'idle';
   }
   return selStatusClass.value;
@@ -65,7 +66,7 @@ const sender = new LocalSender({
   onPeerOnline: (v) => { lPeerOnline.value = v; },
   onProgress: (p) => { lProgress.value = p; },
   onSegIndex: (i) => { lSegIndex.value = i; },
-  onSending: (v) => { lSending.value = v; },
+  onSending: (v) => { lSending.value = v; lTransferring.value = v; },
   onDone: () => { lDone.value = true; },
   onRoom: (room, link, pass) => { lRoom.value = room; lSendLink.value = link; lPassphrase.value = pass; },
 });
@@ -120,7 +121,7 @@ watch(localTransport, (mode) => {
 async function runP2PLocalSend() {
   if (!lRoom.value || !lPassphrase.value) { lStatus.value = '请先生成房间'; return; }
   if (!files.value.length) { lStatus.value = '没有待发送文件'; return; }
-  lSending.value = true; lProgress.value = 0; lDone.value = false;
+  lSending.value = true; lProgress.value = 0; lDone.value = false; lTransferring.value = false;
   // P2P 连续流：发送期间把每文件行标记为传输中、进度清零（完成后才标记已完成）
   files.value.forEach((f) => { f.status = 'uploading'; f.uploaded = 0; });
   lStatus.value = 'P2P 信令协商中…';
@@ -133,10 +134,10 @@ async function runP2PLocalSend() {
       if (s === 'signaling') { lStatus.value = 'P2P 信令已接通，等待 ICE 协商…'; }
       else if (s === 'connecting') { lPeerOnline.value = true; lStatus.value = 'ICE 协商中，正在建立直连…'; }
       else if (s === 'connected') { lPeerOnline.value = true; lStatus.value = 'P2P 直连已建立，开始传输…'; }
-      else if (s === 'transferring') { lPeerOnline.value = true; lStatus.value = 'P2P 传输中…'; }
-      else if (s === 'done') { lDone.value = true; lStatus.value = 'P2P 发送完成'; files.value.forEach((f) => { f.status = 'done'; f.uploaded = f.file.size; }); }
-      else if (s === 'error') { lPeerOnline.value = false; lStatus.value = `P2P 出错：${d || ''}`; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); }
-      else if (s === 'aborted') { lPeerOnline.value = false; lStatus.value = '已取消'; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); }
+      else if (s === 'transferring') { lPeerOnline.value = true; lTransferring.value = true; lStatus.value = 'P2P 传输中…'; }
+      else if (s === 'done') { lDone.value = true; lTransferring.value = false; lStatus.value = 'P2P 发送完成'; files.value.forEach((f) => { f.status = 'done'; f.uploaded = f.file.size; }); }
+      else if (s === 'error') { lPeerOnline.value = false; lTransferring.value = false; lStatus.value = `P2P 出错：${d || ''}`; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); }
+      else if (s === 'aborted') { lPeerOnline.value = false; lTransferring.value = false; lStatus.value = '已取消'; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); }
     },
     // 对端信令到达（offer/answer）：更新状态反映协商进展。
     // 不再守卫 lPeerOnline——提前信令已在对方加入时亮灯，这里负责"点了发送后"的状态推进。
