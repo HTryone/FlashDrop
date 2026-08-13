@@ -1,0 +1,133 @@
+/* 文档正文统一样式：线上 ModuleView.vue 与生成器 docs生成器.html 共用同一份。
+   仅作用于 .doc-body 容器；颜色全部自包含（不依赖外部全局变量），保证两端渲染完全一致。
+   改这里 = 线上和生成器预览同步生效。 */
+.doc-body {
+  --md-fg: #e6edf3;
+  --md-muted: #7d8590;
+  --md-border: #30363d;
+  --md-subtle: #161b22;
+  --md-code: #a5d6ff;
+  --md-pre: #c9d1d9;
+  --md-link: #58a6ff;
+  --md-head: #f0f6fc;
+  --md-accent: #6d8bff;
+  --md-panel2: #1d2536;
+  max-width: 946px;
+  font-size: 15px;
+  line-height: 1.75;
+  color: var(--md-fg);
+}
+.doc-body > *:first-child { margin-top: 0; }
+.doc-body > *:last-child { margin-bottom: 0; }
+
+/* 标题：显式字号分级 + 字重 + 紧凑字距 + h1/h2 下边框分隔 */
+.doc-body h1, .doc-body h2, .doc-body h3, .doc-body h4, .doc-body h5, .doc-body h6 {
+  color: var(--md-head); margin: 26px 0 12px; font-weight: 600; line-height: 1.3; scroll-margin-top: 84px;
+}
+.doc-body h1 { font-size: 1.9em; letter-spacing: -.02em; }
+.doc-body h1.doc-title-hidden { display: none; }
+.doc-body h2 { font-size: 1.5em; letter-spacing: -.01em; }
+.doc-body h3 { font-size: 1.25em; }
+.doc-body h4 { font-size: 1.05em; }
+.doc-body h5 { font-size: .95em; color: var(--md-muted); }
+.doc-body h6 { font-size: .9em; color: var(--md-muted); }
+.doc-body h1, .doc-body h2 { padding-bottom: 8px; border-bottom: 1px solid var(--md-border); }
+
+/* 链接 */
+.doc-body a { color: var(--md-link); text-decoration: none; }
+.doc-body a:hover { text-decoration: underline; }
+
+/* 行内代码 */
+.doc-body code {
+  background: rgba(110,118,129,.28); color: var(--md-code);
+  padding: 2px 2px; border-radius: 3px; font-size: .88em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  vertical-align: middle;
+}
+
+/* 代码块：外层容器承载边框/圆角/语言标签/复制按钮；内部 pre 去边框 */
+.doc-body .code-block {
+  position: relative; background: var(--md-subtle); border: 1px solid var(--md-border);
+  border-radius: 8px; margin: 16px 0; box-shadow: 0 1px 6px rgba(0,0,0,.35); overflow: hidden;
+}
+.doc-body .code-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 10px 6px 14px; border-bottom: 1px solid var(--md-border);
+  background: rgba(255,255,255,.02);
+}
+.doc-body .code-lang {
+  font-size: 11px; color: var(--md-muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-transform: uppercase; letter-spacing: .05em;
+}
+.doc-body .code-copy {
+  background: var(--md-panel2); border: 1px solid var(--md-border); color: var(--md-muted);
+  font-size: 11px; padding: 3px 10px; border-radius: 5px; cursor: pointer; transition: .15s;
+}
+.doc-body .code-copy:hover { color: var(--md-fg); border-color: var(--md-accent); }
+.doc-body .code-block pre {
+  margin: 0; border: none; border-radius: 0; box-shadow: none; background: none;
+}
+.doc-body pre {
+  background: var(--md-subtle); border: 1px solid var(--md-border); border-radius: 8px;
+  padding: 16px; margin: 16px 0; overflow-x: auto; line-height: 1.6; font-size: 13px;
+  box-shadow: 0 1px 6px rgba(0,0,0,.35);
+}
+.doc-body pre code {
+  background: none; color: var(--md-pre); padding: 0; border-radius: 0; font-size: 1em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* 列表 */
+.doc-body ul, .doc-body ol { padding-left: 24px; }
+.doc-body li { margin: 6px 0; }
+.doc-body li::marker { color: var(--md-muted); }
+.doc-body li > ul, .doc-body li > ol { margin: 4px 0; }
+
+/* 任务列表：自定义复选框，边框更白、对勾加粗放大、方框接近正方形 */
+.doc-body input[type="checkbox"] {
+  -webkit-appearance: none; appearance: none;
+  width: 18px; height: 18px; margin-right: 8px; vertical-align: -4px;
+  border: 1px solid #6e7681; border-radius: 2px; background: var(--md-subtle); cursor: default;
+}
+.doc-body input[type="checkbox"]:checked {
+  background: var(--md-accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%23fff' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round' d='M3 8.5l3.5 3.5L13 4.5'/%3E%3C/svg%3E") center/14px no-repeat;
+  border-color: var(--md-accent);
+}
+
+/* 引用：强调色左边框 + 浅底色 + 右侧圆角 */
+.doc-body blockquote {
+  margin: 16px 0; padding: 10px 16px; border-left: 4px solid var(--md-accent);
+  background: rgba(47,129,247,.07); border-radius: 0 8px 8px 0; color: var(--md-muted);
+}
+.doc-body blockquote p { margin: 0; }
+
+.doc-body p { margin: 0 0 16px; }
+
+/* 图片 */
+.doc-body img {
+  max-width: 100%; border-radius: 8px; margin: 16px 0; display: block;
+  box-shadow: 0 1px 10px rgba(0,0,0,.4);
+}
+
+/* 表格：GitHub 风，表头深底 + 斑马纹 + 悬停高亮 */
+.doc-body table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 13.5px; }
+.doc-body th, .doc-body td { border: 1px solid var(--md-border); padding: 8px 13px; text-align: left; }
+.doc-body th { background: var(--md-subtle); color: var(--md-head); font-weight: 600; }
+.doc-body tbody tr:nth-child(2n) { background: rgba(255,255,255,.03); }
+.doc-body tbody tr:hover { background: rgba(47,129,247,.06); }
+
+/* 分隔线：居中渐隐 */
+.doc-body hr {
+  border: 0; height: 1px; margin: 24px 0;
+  background: linear-gradient(90deg, transparent, var(--md-border), transparent);
+}
+
+.doc-body del { color: var(--md-muted); }
+/* 加粗文字：用之前高亮的青色（漆绿）作强调色，保留加粗 */
+.doc-body strong { color: #22d3ee; font-weight: 700; }
+/* 键盘键 <kbd> */
+.doc-body kbd {
+  background: var(--md-panel2); border: 1px solid var(--md-border); border-bottom-width: 2px;
+  border-radius: 5px; padding: 1px 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .85em; color: var(--md-fg);
+}

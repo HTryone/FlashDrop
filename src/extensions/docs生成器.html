@@ -3,164 +3,132 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>闪传 · 文档模块生成器（本地、零依赖）</title>
+  <title>闪传 · 文档模块生成器（本地、零依赖）</title>
+  <link rel="stylesheet" href="./doc-style.css" />
 <style>
   :root { --bg:#0e1320; --panel:#161c2c; --panel2:#1d2536; --border:#2a3346; --text:#e6ebf5; --dim:#9aa6bd; --faint:#67718c; --accent:#4da3ff; }
   * { box-sizing:border-box; }
   body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); font-size:14px; }
-  header { padding:14px 18px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:12px; }
-  header h1 { font-size:16px; margin:0; }
-  header .sub { color:var(--faint); font-size:12px; }
-  .wrap { display:grid; grid-template-columns:240px 1fr; gap:0; height:calc(100vh - 53px); }
-  .left { border-right:1px solid var(--border); padding:12px; overflow:auto; }
-  .left h3 { font-size:12px; color:var(--faint); margin:6px 4px 10px; text-transform:uppercase; letter-spacing:.5px; }
-  .mod { display:flex; align-items:center; gap:8px; padding:8px 10px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px; cursor:pointer; background:var(--panel); }
-  .mod.on { border-color:var(--accent); background:var(--panel2); }
-  .mod .ic { font-size:16px; }
+  header { padding:10px 18px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:10px; }
+  header h1 { font-size:15px; margin:0; }
+  header .sub { color:var(--faint); font-size:11px; }
+  .wrap { display:grid; grid-template-columns:230px 1fr; height:calc(100vh - 45px); }
+
+  /* 左栏：上下两栏 */
+  .left { display:flex; flex-direction:column; border-right:1px solid var(--border); background:var(--panel); overflow:hidden; }
+  .panel-mods { padding:12px; border-bottom:1px solid var(--border); }
+  .panel-mods .bar { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+  .panel-mods .bar span { font-size:13px; font-weight:500; }
+  .panel-btns { display:flex; gap:6px; margin-bottom:10px; }
+  .panel-btns button { flex:1; font-size:12px; padding:6px 8px; }
+  .mod { display:flex; align-items:center; gap:8px; padding:7px 9px; border:1px solid var(--border); border-radius:7px; margin-bottom:6px; cursor:pointer; background:var(--panel2); }
+  .mod.on { border-color:var(--accent); }
+  .mod .ic { font-size:15px; }
   .mod .nm { flex:1; min-width:0; }
   .mod .nm b { display:block; font-size:13px; }
   .mod .nm small { color:var(--faint); font-size:11px; }
   .mod .del { color:var(--faint); border:none; background:none; cursor:pointer; font-size:14px; }
   .mod .del:hover { color:#ff6b6b; }
-  .right { padding:16px 20px; overflow:auto; }
-  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+
+  .panel-docs { padding:12px; flex:1; overflow:auto; }
+  .panel-docs .cap { font-size:12px; color:var(--faint); margin-bottom:10px; }
+  .doc-item { display:flex; align-items:center; gap:8px; padding:7px 9px; border:1px solid var(--border); border-radius:7px; background:var(--panel2); cursor:pointer; font-size:13px; margin-bottom:6px; }
+  .doc-item:hover { border-color:var(--accent); }
+  .doc-item.on { border-color:var(--accent); }
+  .doc-item .t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .doc-item .del { color:var(--faint); border:none; background:none; cursor:pointer; font-size:13px; padding:0 2px; }
+  .doc-item .del:hover { color:#ff6b6b; }
+  .new-doc { width:100%; margin-top:4px; font-size:12px; padding:6px; color:var(--dim); }
+
+  /* 右栏 */
+  .right { display:flex; flex-direction:column; overflow:hidden; }
+  .topbar { display:flex; align-items:center; justify-content:space-between; padding:10px 16px; border-bottom:1px solid var(--border); }
+  .topbar .id { font-size:13px; color:var(--dim); }
+  .topbar .acts { display:flex; gap:8px; }
+  .editor-scroll { padding:16px 20px; overflow:auto; flex:1; }
+
   input, textarea, select, button { font-family:inherit; font-size:13px; }
   input, textarea, select { background:var(--panel); border:1px solid var(--border); color:var(--text); border-radius:8px; padding:8px 10px; }
-  textarea { width:100%; min-height:280px; resize:vertical; line-height:1.6; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  textarea { width:100%; min-height:300px; resize:vertical; line-height:1.6; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
   button { cursor:pointer; border-radius:8px; border:1px solid var(--border); background:var(--panel2); color:var(--text); padding:8px 14px; }
   button:hover { border-color:var(--accent); }
   button.primary { background:var(--accent); color:#06101f; border-color:var(--accent); font-weight:600; }
-  .docs-list { display:flex; flex-direction:column; gap:6px; margin:8px 0 14px; }
-  .doc { display:flex; align-items:center; gap:8px; padding:7px 10px; border:1px solid var(--border); border-radius:8px; background:var(--panel); cursor:pointer; }
-  .doc.on { border-color:var(--accent); }
-  .doc .t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .doc .del { color:var(--faint); border:none; background:none; cursor:pointer; }
   .field { display:flex; flex-direction:column; gap:4px; margin-bottom:10px; }
   .field label { font-size:12px; color:var(--dim); }
+  .grid3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .mod-info { margin-bottom:18px; padding-bottom:16px; border-bottom:1px solid var(--border); }
   .tabs { display:flex; gap:6px; margin-bottom:10px; }
   .tabs button { background:var(--panel); }
   .tabs button.on { border-color:var(--accent); color:var(--accent); }
-  .preview { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:18px 20px; max-width:860px; line-height:1.75; color:#e6edf3; font-size:15px; }
-  .preview > :first-child { margin-top:0; }
-  .preview > :last-child { margin-bottom:0; }
-  .preview h1,.preview h2,.preview h3,.preview h4,.preview h5,.preview h6 { color:#f0f6fc; margin:26px 0 12px; font-weight:600; line-height:1.3; }
-  .preview h1 { font-size:1.9em; letter-spacing:-.02em; }
-  .preview h2 { font-size:1.5em; letter-spacing:-.01em; }
-  .preview h3 { font-size:1.25em; }
-  .preview h4 { font-size:1.05em; }
-  .preview h5 { font-size:.95em; color:#7d8590; }
-  .preview h6 { font-size:.9em; color:#7d8590; }
-  .preview h1,.preview h2 { border-bottom:1px solid #30363d; padding-bottom:8px; }
-  .preview a { color:#58a6ff; text-decoration:none; }
-  .preview a:hover { text-decoration:underline; }
-  .preview code { background:rgba(110,118,129,.28); color:#a5d6ff; padding:2px 6px; border-radius:5px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.88em; }
-  .preview pre { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:16px; margin:16px 0; overflow-x:auto; line-height:1.6; font-size:13px; box-shadow:0 1px 6px rgba(0,0,0,.35); }
-  .preview pre code { background:none; color:#c9d1d9; padding:0; border-radius:0; font-size:1em; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
-  .preview .code-block { position:relative; background:#161b22; border:1px solid #30363d; border-radius:8px; margin:16px 0; box-shadow:0 1px 6px rgba(0,0,0,.35); overflow:hidden; }
-  .preview .code-head { display:flex; align-items:center; justify-content:space-between; padding:6px 10px 6px 14px; border-bottom:1px solid #30363d; background:rgba(255,255,255,.02); }
-  .preview .code-lang { font-size:11px; color:#7d8590; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; text-transform:uppercase; letter-spacing:.05em; }
-  .preview .code-copy { background:var(--panel2); border:1px solid #30363d; color:#7d8590; font-size:11px; padding:3px 10px; border-radius:5px; cursor:pointer; }
-  .preview .code-copy:hover { color:#e6edf3; border-color:var(--accent); }
-  .preview .code-block pre { margin:0; border:none; border-radius:0; box-shadow:none; background:none; }
-  .preview ul,.preview ol { padding-left:24px; }
-  .preview li { margin:6px 0; }
-  .preview li::marker { color:#7d8590; }
-  .preview li > ul,.preview li > ol { margin:4px 0; }
-  .preview input[type="checkbox"] { margin-right:7px; vertical-align:middle; accent-color:var(--accent); width:15px; height:15px; }
-  .preview blockquote { margin:16px 0; padding:10px 16px; border-left:4px solid var(--accent); background:rgba(77,163,255,.07); border-radius:0 8px 8px 0; color:#7d8590; }
-  .preview blockquote p { margin:0; }
-  .preview p { margin:0 0 16px; }
-  .preview img { max-width:100%; border-radius:8px; margin:16px 0; display:block; box-shadow:0 1px 10px rgba(0,0,0,.4); }
-  .preview table { border-collapse:collapse; width:100%; margin:16px 0; font-size:13.5px; }
-  .preview th,.preview td { border:1px solid #30363d; padding:8px 13px; text-align:left; }
-  .preview th { background:#161b22; color:#f0f6fc; font-weight:600; }
-  .preview tbody tr:nth-child(2n) { background:rgba(255,255,255,.03); }
-  .preview tbody tr:hover { background:rgba(77,163,255,.06); }
-  .preview hr { border:0; height:1px; margin:24px 0; background:linear-gradient(90deg,transparent,#30363d,transparent); }
-  .preview del { color:#7d8590; }
-  .preview mark { background:rgba(187,128,9,.35); color:#e6edf3; padding:0 3px; border-radius:3px; }
-  .preview kbd { background:var(--panel2); border:1px solid #30363d; border-bottom-width:2px; border-radius:5px; padding:1px 6px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.85em; color:#e6edf3; }
-  .bar { position:sticky; top:0; background:var(--bg); padding:10px 0; border-bottom:1px solid var(--border); margin-bottom:12px; z-index:5; }
-  details { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-top:16px; }
-  details summary { cursor:pointer; color:var(--dim); }
-  code.k { background:var(--panel2); padding:1px 5px; border-radius:4px; color:var(--accent); }
   .empty { color:var(--faint); padding:30px; text-align:center; }
+
+  .preview { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:18px 20px; max-width:860px; line-height:1.75; color:#e6edf3; font-size:15px; }
+  /* 文档正文样式已抽到同目录 doc-style.css（与线上 ModuleView 共用），此处仅保留 .preview 外框。 */
+  code.k { background:var(--panel2); padding:1px 5px; border-radius:4px; color:var(--accent); }
 </style>
 </head>
 <body>
 <header>
-  <h1>📦 文档模块生成器</h1>
+  <h1>文档模块生成器</h1>
   <span class="sub">本地运行 · 零依赖 · 生成后把文件夹丢进 <code class="k">src/extensions/</code> 即可</span>
 </header>
 
 <div class="wrap">
-  <!-- 左：模块总单 -->
+  <!-- 左栏：上=模块，下=当前模块文档 -->
   <div class="left">
-    <h3>模块总单</h3>
-    <div id="modList"></div>
-    <button id="addMod" style="width:100%">＋ 新建模块</button>
+    <div class="panel-mods">
+      <div class="bar"><span>模块</span></div>
+      <div class="panel-btns">
+        <button id="openDir">📂 导入模块</button>
+        <button id="addMod">＋ 新建模块</button>
+      </div>
+      <div id="modList"></div>
+    </div>
+    <div class="panel-docs">
+      <div class="cap">文档 · <span id="docModName">—</span></div>
+      <div id="docList"></div>
+      <button id="addDoc" class="new-doc">＋ 新建文档</button>
+    </div>
   </div>
 
-  <!-- 右：模块编辑 -->
-  <div class="right" id="right">
-    <div class="empty" id="emptyTip">← 左侧选择一个模块，或点「＋ 新建模块」</div>
-    <div id="editor" style="display:none">
-      <div class="field">
-        <label>模块标识（英文，用于目录名 / 网址 / 数据读取，唯一）</label>
-        <input id="mId" placeholder="例如 posts" />
+  <!-- 右栏：顶栏操作 + 模块信息 + 文档编辑 -->
+  <div class="right">
+    <div class="topbar">
+      <span class="id" id="topId">未选择模块</span>
+      <div class="acts">
+        <button id="saveBtn">💾 保存</button>
+        <button id="expOne" class="primary">📁 导出</button>
       </div>
-      <div class="grid2">
-        <div class="field"><label>显示名（左侧/选择页显示）</label><input id="mTitle" placeholder="例如 项目动态" /></div>
-        <div class="field"><label>图标（一个 emoji）</label><input id="mIcon" placeholder="📰" /></div>
-      </div>
-      <div class="field"><label>描述</label><input id="mDesc" placeholder="例如 后端发布，前端只读展示" /></div>
+    </div>
+    <div class="editor-scroll">
+      <div class="empty" id="emptyTip">← 左侧选择一个模块，或点「＋ 新建模块」</div>
+      <div id="editor" style="display:none">
+        <!-- 模块基本信息（始终在最上面）：标识 / 显示名 / 图标 三列 + 描述 -->
+        <div class="mod-info">
+          <div class="grid3">
+            <div class="field"><label>模块标识（英文，用于目录名 / 网址 / 数据读取，唯一）</label><input id="mId" placeholder="posts" /></div>
+            <div class="field"><label>显示名（左侧 / 选择页显示）</label><input id="mTitle" placeholder="项目动态" /></div>
+            <div class="field"><label>图标（一个 emoji）</label><input id="mIcon" placeholder="📰" /></div>
+          </div>
+          <div class="field"><label>描述</label><input id="mDesc" placeholder="后端发布，前端只读展示" /></div>
+        </div>
 
-      <div class="bar">
-        <div class="row">
-          <button id="addDoc">＋ 添加文档</button>
-          <span style="color:var(--faint);font-size:12px">每篇 = 左侧一个目录项，标题下用 <code class="k"># 一级标题</code> 分小节</span>
+        <!-- 文档编辑区 -->
+        <div id="docEdit" style="display:none">
+          <div class="grid2" style="margin-bottom:10px">
+            <div class="field"><label>文档总标题（目录里点的名字）</label><input id="dTitle" /></div>
+            <div class="field"><label>日期（排序用 YYYY-MM-DD）</label><input id="dDate" placeholder="2026-08-13" /></div>
+          </div>
+          <div class="tabs">
+            <button id="tabEdit" class="on">编辑</button>
+            <button id="tabPrev">预览</button>
+            <button id="insLink">🔗 插入跳转链接</button>
+          </div>
+          <textarea id="dMd" placeholder="在这里粘贴 / 写 Markdown…"></textarea>
+          <div id="prevBox" class="preview doc-body" style="display:none"></div>
         </div>
       </div>
-
-      <div class="docs-list" id="docList"></div>
-
-      <div id="docEdit" style="display:none">
-        <div class="grid2" style="margin-bottom:10px">
-          <div class="field"><label>文档总标题（目录里点的名字）</label><input id="dTitle" /></div>
-          <div class="field"><label>日期（排序用 YYYY-MM-DD）</label><input id="dDate" placeholder="2026-08-13" /></div>
-        </div>
-        <div class="tabs">
-          <button id="tabEdit" class="on">编辑</button>
-          <button id="tabPrev">预览</button>
-          <button id="insLink">🔗 插入跳转链接</button>
-        </div>
-        <textarea id="dMd" placeholder="在这里粘贴 / 写 Markdown…"></textarea>
-        <div id="prevBox" class="preview" style="display:none"></div>
-      </div>
-
-      <details>
-        <summary>⬇ 导出完整模块（生成 meta.ts + data.ts）</summary>
-        <p style="color:var(--dim);font-size:13px">生成的文件夹结构：</p>
-        <pre style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--dim)">src/extensions/<span id="expId">模块标识</span>/
-├─ meta.ts      ← 自动生成（模块注册信息）
-└─ data.ts      ← 自动生成（你写的全部文档）</pre>
-        <div class="row" style="margin-top:10px">
-          <button class="primary" id="expOne">⬇ 下载此模块文件</button>
-          <button id="expAll">⬇ 下载全部模块</button>
-          <button id="expDir" title="在 https://localhost 或部署域下可用">📁 直接写入项目目录</button>
-        </div>
-        <p style="color:var(--faint);font-size:12px">把下载的两个 .ts 文件放进 <code class="k">src/extensions/模块标识/</code> 文件夹，刷新网页即生效，<b>不需要写代码、不需要后端</b>。</p>
-      </details>
-
-      <details>
-        <summary>💾 工程存档（可下次继续编辑）</summary>
-        <div class="row" style="margin-top:10px">
-          <button id="saveProj">💾 保存工程</button>
-          <button id="openProj">📂 打开工程</button>
-          <input type="file" id="projFile" accept=".json" style="display:none" />
-        </div>
-      </details>
     </div>
   </div>
 </div>
@@ -176,6 +144,7 @@ let modules = [
   ]},
 ];
 let curMod = null, curDoc = null;
+let openedDirHandle = null; // 「导入模块」获得的目录句柄，用于直接保存
 
 const $ = (id) => document.getElementById(id);
 function save() {} // 全部状态在内存，工程才落盘
@@ -190,32 +159,37 @@ function renderMods(){
     const el = document.createElement('div');
     el.className = 'mod' + (m===curMod?' on':'');
     el.innerHTML = `<span class="ic">${esc(m.icon||'📦')}</span>
-      <span class="nm"><b>${esc(m.title)}</b><small>${esc(m.id)} · ${m.docs.length}篇</small></span>
+      <span class="nm"><b>${esc(m.title||'(未命名)')}</b><small>${esc(m.id||'(无标识)')} · ${m.docs.length}篇</small></span>
       <button class="del" title="删除模块">✕</button>`;
-    el.onclick = (e)=>{ if(e.target.classList.contains('del')){ if(confirm('删除模块「'+m.title+'」？')){ modules=modules.filter(x=>x!==m); curMod=null; renderAll(); } } else { curMod=m; curDoc=null; renderAll(); } };
+    el.onclick = (e)=>{ if(e.target.classList.contains('del')){ if(confirm('删除模块「'+m.title+'」？')){ modules=modules.filter(x=>x!==m); if(curMod===m) curMod=null; renderAll(); } } else { curMod=m; curDoc=null; renderAll(); } };
     box.appendChild(el);
   });
 }
 
-// ===== 渲染：文档列表 =====
+// ===== 渲染：文档列表（当前模块的文档，左栏下方） =====
 function renderDocs(){
   const box = $('docList'); box.innerHTML='';
+  $('docModName').textContent = curMod ? (curMod.title||'(未命名)') : '—';
   if(!curMod) return;
-  curMod.docs.forEach(d=>{
-    const el=document.createElement('div');
-    el.className='doc'+(d===curDoc?' on':'');
-    el.innerHTML=`<span class="t">${esc(d.title)}</span><button class="del" title="删除">✕</button>`;
-    el.onclick=(e)=>{ if(e.target.classList.contains('del')){ if(confirm('删除此文档？')){ curMod.docs=curMod.docs.filter(x=>x!==d); if(curDoc===d)curDoc=null; renderAll(); } } else { curDoc=d; renderAll(); } };
+  curMod.docs.forEach((d)=>{
+    const el = document.createElement('div');
+    el.className = 'doc-item' + (d===curDoc?' on':'');
+    el.innerHTML = `<span class="t">${esc(d.title||'(无标题)')}</span><button class="del" title="删除">✕</button>`;
+    el.onclick = (e)=>{
+      if(e.target.classList.contains('del')){
+        if(confirm('删除「'+(d.title||'(无标题)')+'」？')){ curMod.docs=curMod.docs.filter(x=>x!==d); if(curDoc===d) curDoc=curMod.docs[0]||null; renderAll(); }
+      } else { curDoc=d; renderAll(); }
+    };
     box.appendChild(el);
   });
 }
 
 // ===== 渲染：编辑器 =====
 function renderEditor(){
+  $('topId').textContent = curMod ? (curMod.id||'(无标识)') : '未选择模块';
   if(!curMod){ $('editor').style.display='none'; $('emptyTip').style.display='block'; return; }
   $('emptyTip').style.display='none'; $('editor').style.display='block';
   $('mId').value=curMod.id; $('mTitle').value=curMod.title; $('mIcon').value=curMod.icon||''; $('mDesc').value=curMod.desc||'';
-  $('expId').textContent = curMod.id;
   if(!curDoc){ $('docEdit').style.display='none'; return; }
   $('docEdit').style.display='block';
   $('dTitle').value=curDoc.title; $('dDate').value=curDoc.date||''; $('dMd').value=curDoc.md||'';
@@ -235,7 +209,7 @@ function renderMd(src){
   const out=[]; let i=0; const usedIds=new Set();
   const safeU=(u)=>/^(https?:\/\/|\/|#|\.\/|\.\.\/|data:image\/)/i.test(u)?u:'#';
   const filterAttrs=(tag,attrs)=>{
-    const ok={img:['src','alt','width','height','title'],a:['href','title','target','rel'],br:[],center:[],div:['style'],span:['style'],mark:[],kbd:[]}[tag.toLowerCase()]||[];
+    const ok={img:['src','alt','width','height','title','style'],a:['href','title','target','rel'],br:[],center:[],div:['style'],span:['style'],mark:[],kbd:[]}[tag.toLowerCase()]||[];
     const out=[]; const re=/([a-zA-Z-]+)\s*=\s*"([^"]*)"|([a-zA-Z-]+)\s*=\s*'([^']*)'|([a-zA-Z-]+)\s*=\s*([^\s>]+)/g; let m;
     while((m=re.exec(attrs))){
       const name=(m[1]||m[3]||m[5]||'').toLowerCase();
@@ -256,13 +230,15 @@ function renderMd(src){
     .replace(/\*([^*]+)\*/g,'<em>$1</em>')
     .replace(/~~([^~]+)~~/g,'<del>$1</del>')
     .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g,(_m,t,u)=>{const url=safeU(u);return u.startsWith('http')?`<a href="${url}" target="_blank" rel="noopener">${t}</a>`:`<a href="${url}">${t}</a>`;})
-    .replace(/==([^=]+)==/g,'<mark>$1</mark>')
     .replace(/(?<!["(/])(https?:\/\/[^\s<]+)/g,(full)=>{const m=full.match(/^(https?:\/\/[^\s<]+?)([.,;:!?)\]]*)$/);const url=m?m[1]:full;const tail=m?m[2]:'';return `<a href="${safeU(url)}" target="_blank" rel="noopener">${url}</a>${tail}`;})
     .replace(/(?<!["(/])(www\.[^\s<]+)/g,(full)=>{const m=full.match(/^(www\.[^\s<]+?)([.,;:!?)\]]*)$/);const host=m?m[1]:full;const tail=m?m[2]:'';return `<a href="${safeU('https://'+host)}" target="_blank" rel="noopener">${host}</a>${tail}`;});
   const inline=(s)=>{
     const store=[];
     const stash=(html)=>{store.push(html);return '\uE000'+(store.length-1)+'\uE001';};
-    let s2=s.replace(/<\s*(img|br)\b([^>]*?)\/?>/gi,(_m,tag,attrs)=>stash('<'+tag+filterAttrs(tag,attrs)+' />'));
+    // 先保护行内代码，避免 HTML 解析器把 `<img>` 等也当标签解析
+    let s2=s.replace(/`([^`]+)`/g,(_m,code)=>stash('<code>'+esc(code)+'</code>'));
+    // 再保护白名单裸 HTML
+    s2=s2.replace(/<\s*(img|br)\b([^>]*?)\/?>/gi,(_m,tag,attrs)=>stash('<'+tag+filterAttrs(tag,attrs)+' />'));
     s2=s2.replace(/<\s*(a|center|div|span|mark|kbd)\b([^>]*)>([\s\S]*?)<\/\s*\1\s*>/gi,(_m,tag,attrs,inner)=>stash('<'+tag+filterAttrs(tag,attrs)+'>'+inner.replace(/\uE000(\d+)\uE001/g,(_x,k)=>store[+k]||'')+'</'+tag+'>'));
     const parts=s2.split(/(\uE000\d+\uE001)/);
     let out='';
@@ -357,6 +333,7 @@ function renderMd(src){
 
 // ===== 生成文件文本 =====
 function genMeta(m){
+  const mid = m.moduleId || m.id;
   return `import type { Extension } from '../types';
 
 const meta: Extension = {
@@ -366,44 +343,90 @@ const meta: Extension = {
   icon: '${m.icon||'📦'}',
   kind: 'doc',
   order: ${orderOf(m)},
-  moduleId: '${m.id}',
+  moduleId: '${mid}',
 };
 
 export default meta;
 `;
 }
 function genData(m){
-  const docs = m.docs.map(d=>({ id:d.id, title:d.title, module:m.id, markdown:d.md, updatedAt:d.date||'' }));
+  const mid = m.moduleId || m.id;
+  const docs = m.docs.map(d=>({ id:d.id, title:d.title, module:mid, markdown:d.md, updatedAt:d.date||'' }));
   return `import type { DocItem } from '../types';
 
-export const moduleId = '${m.id}';
+export const moduleId = '${mid}';
 
 export const docs = ${JSON.stringify(docs, null, 2)} as DocItem[];
 `;
 }
 
-// ===== 下载 =====
-function download(name, text){
-  const blob=new Blob([text],{type:'text/plain;charset=utf-8'});
-  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; a.click();
-  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+// ===== 保存到已打开的模块文件夹（导入模块时获得的句柄）=====
+async function saveOpenedDir(){
+  if(!curMod){ alert('请先选/建一个模块。'); return; }
+  if(!curMod.id){ alert('请先在顶部填写模块标识。'); return; }
+  if(!openedDirHandle){ alert('请先点「📂 导入模块」选择要保存的模块文件夹。'); return; }
+  try{
+    const wf = async (name, text)=>{ const f=await openedDirHandle.getFileHandle(name,{create:true}); const w=await f.createWritable(); await w.write(text); await w.close(); };
+    await wf('meta.ts', genMeta(curMod));
+    await wf('data.ts', genData(curMod));
+    alert('已保存到当前打开的文件夹');
+  }catch(e){ if(e.name!=='AbortError') alert('保存失败：'+e.message); }
 }
-function expOne(m){ download('meta.ts', genMeta(m)); download('data.ts', genData(m)); }
-function expAll(){ modules.forEach(expOne); }
 
-// ===== 直接写入项目目录（https/localhost 下可用）=====
-async function writeDir(){
-  if(!window.showDirectoryPicker){ alert('当前环境不支持直接写入（需通过 http(s) 打开本工具）。请用「下载此模块文件」手动放置。'); return; }
+// ===== 导出到扩展目录（选 src/extensions，自动建模块子文件夹）=====
+async function exportToExtensionsDir(){
+  if(!curMod){ alert('请先选/建一个模块。'); return; }
+  if(!curMod.id){ alert('请先在顶部填写模块标识。'); return; }
+  if(!window.showDirectoryPicker){ alert('当前环境不支持文件夹选择（需通过 http(s) 打开本工具）。'); return; }
   try{
     const dir = await window.showDirectoryPicker();
-    for(const m of modules){
-      const sub = await dir.getDirectoryHandle(m.id, { create:true });
-      const wf = async (name, text)=>{ const f=await sub.getFileHandle(name,{create:true}); const w=await f.createWritable(); await w.write(text); await w.close(); };
-      await wf('meta.ts', genMeta(m));
-      await wf('data.ts', genData(m));
+    const sub = await dir.getDirectoryHandle(curMod.id, { create:true });
+    const wf = async (name, text)=>{ const f=await sub.getFileHandle(name,{create:true}); const w=await f.createWritable(); await w.write(text); await w.close(); };
+    await wf('meta.ts', genMeta(curMod));
+    await wf('data.ts', genData(curMod));
+    alert('已导出模块「'+curMod.title+'」到 '+curMod.id+'/ 文件夹');
+  }catch(e){ if(e.name!=='AbortError') alert('导出失败：'+e.message); }
+}
+
+// ===== 新建模块（空模块，四字段在右栏顶部填写）=====
+function newModule(){
+  const m = { id:'', title:'', icon:'📦', desc:'', moduleId:'', docs:[] };
+  modules.push(m); curMod=m; curDoc=null; renderAll();
+  $('mId').focus();
+}
+
+// ===== 导入模块（打开已有文件夹，读 meta.ts + data.ts 进工具编辑）=====
+async function openFolder(){
+  if(!window.showDirectoryPicker){ alert('当前浏览器不支持文件夹访问（需通过 http(s) 打开本工具）。'); return; }
+  try{
+    const dir = await window.showDirectoryPicker();
+    let metaText='', dataText='';
+    try{ const f=await dir.getFileHandle('meta.ts'); metaText=await (await f.getFile()).text(); }catch(_){}
+    try{ const f=await dir.getFileHandle('data.ts'); dataText=await (await f.getFile()).text(); }catch(_){}
+    if(!metaText && !dataText){ alert('该文件夹没有 meta.ts / data.ts，无法识别为扩展模块。'); return; }
+    const g=(re)=>{ const m=metaText.match(re); return m?(m[1]||''):''; };
+    const kind = g(/\bkind:\s*'([^']*)'/);
+    if(kind && kind!=='doc'){ alert('该模块是「'+kind+'」类型（自定义 UI 面板），本工具只管理文档(doc)模块，无法编辑。'); return; }
+    const id = g(/\bid:\s*'([^']*)'/) || g(/\bid:\s*"([^"]*)"/);
+    const moduleId = g(/\bmoduleId:\s*'([^']*)'/) || g(/\bmoduleId:\s*"([^"]*)"/) || id || '';
+    const title = g(/\btitle:\s*'([^']*)'/) || g(/\btitle:\s*"([^"]*)"/) || id || '未命名';
+    const icon = g(/\bicon:\s*'([^']*)'/) || '📦';
+    const desc = g(/\bdesc:\s*'([^']*)'/) || g(/\bdesc:\s*"([^"]*)"/) || '';
+    let docs=[];
+    if(dataText){
+      const m = dataText.match(/export const docs\s*=\s*([\s\S]+?)\s*as DocItem\[\];/);
+      if(m){ try{ const arr=JSON.parse(m[1]); docs=arr.map(d=>({ id:d.id||uid(), title:d.title||'未命名', date:d.updatedAt||'', md:d.markdown||'' })); }catch(_){} }
     }
-    alert('已写入 '+modules.length+' 个模块到所选目录（即 src/extensions/）。');
-  }catch(e){ if(e.name!=='AbortError') alert('写入失败：'+e.message); }
+    if(!docs.length && moduleId){
+      try{ if(location.protocol.startsWith('http')){ const res=await fetch('/api/'+moduleId+'/docs.json',{cache:'no-store'}); if(res.ok){ const data=await res.json(); const list=Array.isArray(data)?data:(data.docs||[]); docs=list.map(d=>({ id:d.id||uid(), title:d.title||'未命名', date:d.updatedAt||'', md:d.markdown||'' })); } } }catch(_){}
+    }
+    const mod={ id, title, icon, desc, moduleId, docs };
+    const idx=modules.findIndex(x=>x.id===id);
+    if(idx>=0) modules[idx]=mod; else modules.push(mod);
+    curMod=mod; curDoc=null; openedDirHandle=dir;
+    renderAll();
+    alert('已导入模块「'+title+'」（'+docs.length+' 篇文档）\n编辑后点「💾 保存」直接写回此位置。');
+  }catch(e){ if(e.name!=='AbortError') alert('打开失败：'+e.message); }
 }
 
 // ===== 跳转链接插入 =====
@@ -417,25 +440,18 @@ function insLink(){
   const ta=$('dMd'); ta.value += (ta.value && !ta.value.endsWith('\n')?'\n':'') + snippet; curDoc.md=ta.value;
 }
 
-// ===== 工程存读 =====
-function saveProj(){ download('闪传文档工程.json', JSON.stringify({modules},null,2)); }
-function openProj(){ $('projFile').click(); }
-$('projFile').onchange = (e)=>{ const f=e.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=()=>{ try{ const d=JSON.parse(r.result); modules=d.modules||[]; curMod=null;curDoc=null; renderAll(); }catch(_){ alert('文件解析失败'); } }; r.readAsText(f); };
-
 // ===== 事件绑定 =====
-$('addMod').onclick = ()=>{ const id=prompt('新模块标识（英文，唯一）：','new-module'); if(!id)return; const title=prompt('显示名：',id)||id; const m={id,title,icon:'📦',desc:'',docs:[]}; modules.push(m); curMod=m; curDoc=null; renderAll(); };
+$('addMod').onclick = newModule;
 $('addDoc').onclick = ()=>{ if(!curMod){alert('先选/建一个模块');return;} const d={id:uid(),title:'新文档',date:new Date().toISOString().slice(0,10),md:''}; curMod.docs.push(d); curDoc=d; renderAll(); };
 $('tabEdit').onclick=()=>{ $('dMd').style.display='block'; $('prevBox').style.display='none'; $('tabEdit').classList.add('on'); $('tabPrev').classList.remove('on'); };
 $('tabPrev').onclick=()=>{ $('dMd').style.display='none'; $('prevBox').style.display='block'; $('tabPrev').classList.add('on'); $('tabEdit').classList.remove('on'); renderPreview(); };
 $('insLink').onclick=insLink;
-$('expOne').onclick=()=>{ if(curMod) expOne(curMod); };
-$('expAll').onclick=expAll;
-$('expDir').onclick=writeDir;
-$('saveProj').onclick=saveProj;
-$('openProj').onclick=openProj;
+$('expOne').onclick=exportToExtensionsDir;
+$('saveBtn').onclick=saveOpenedDir;
+$('openDir').onclick=openFolder;
 
 // 字段实时写回
-['mId','mTitle','mIcon','mDesc'].forEach(id=>{ $(id).oninput=()=>{ if(!curMod)return; const k={mId:'id',mTitle:'title',mIcon:'icon',mDesc:'desc'}[id]; curMod[k]=$(id).value; renderMods(); $('expId').textContent=curMod.id; }; });
+['mId','mTitle','mIcon','mDesc'].forEach(id=>{ $(id).oninput=()=>{ if(!curMod)return; const k={mId:'id',mTitle:'title',mIcon:'icon',mDesc:'desc'}[id]; curMod[k]=$(id).value; if(id==='mId'){$('topId').textContent=curMod.id||'未选择模块';} renderMods(); }; });
 $('dTitle').oninput=()=>{ if(curDoc){ curDoc.title=$('dTitle').value; renderDocs(); } };
 $('dDate').oninput=()=>{ if(curDoc) curDoc.date=$('dDate').value; };
 $('dMd').oninput=()=>{ if(curDoc) curDoc.md=$('dMd').value; };

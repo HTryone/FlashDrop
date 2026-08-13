@@ -45,8 +45,8 @@ function back() {
 
     <!-- 模块整页 -->
     <div v-else class="module-page">
-      <button class="back" @click="back">‹ 返回</button>
-      <ModuleView v-if="current.kind === 'doc'" :module-id="docModuleId" />
+      <button v-if="current.kind !== 'doc'" class="back" @click="back">‹ 返回</button>
+      <ModuleView v-if="current.kind === 'doc'" :module-id="docModuleId" show-back @back="back" />
       <component v-else :is="current.component" />
     </div>
   </div>
