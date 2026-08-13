@@ -38,6 +38,7 @@ export async function fetchDocs(moduleId: string): Promise<DocItem[]> {
 }
 
 // markdown → HTML 的轻量渲染（纯函数，先转义再格式化，防 XSS；覆盖常用子集：标题/图片/链接/列表/表格/引用/代码/分隔线/行内格式）。
+// 额外支持在文档中直接写白名单 HTML（img/a/br/center/div/span），用于图片设大小、居中、链接图片等（属性经白名单+安全过滤）。
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -47,8 +48,33 @@ function safeUrl(u: string): string {
   return /^(https?:\/\/|\/|#|\.\/|\.\.\/|data:image\/)/i.test(u) ? u : '#';
 }
 
-function inline(s: string): string {
-  s = escapeHtml(s);
+// 裸 HTML 属性白名单 + 安全过滤：仅保留白名单标签的指定属性，禁 on* 事件、对 src/href 走 safeUrl、清洗 style 危险指令。
+const ALLOWED_ATTRS: Record<string, string[]> = {
+  img: ['src', 'alt', 'width', 'height', 'title'],
+  a: ['href', 'title', 'target', 'rel'],
+  br: [],
+  center: [],
+  div: ['style'],
+  span: ['style'],
+};
+function filterAttrs(tag: string, attrs: string): string {
+  const ok = ALLOWED_ATTRS[tag.toLowerCase()] || [];
+  const out: string[] = [];
+  const re = /([a-zA-Z-]+)\s*=\s*"([^"]*)"|([a-zA-Z-]+)\s*=\s*'([^']*)'|([a-zA-Z-]+)\s*=\s*([^\s>]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(attrs))) {
+    const name = (m[1] || m[3] || m[5] || '').toLowerCase();
+    const val = m[2] !== undefined ? m[2] : m[4] !== undefined ? m[4] : m[6];
+    if (!ok.includes(name) || name.startsWith('on')) continue; // 非白名单属性 / 事件属性一律丢弃
+    let v = val;
+    if (name === 'src' || name === 'href') v = safeUrl(v);
+    if (name === 'style') v = v.replace(/javascript:/gi, '').replace(/expression\s*\(/gi, '');
+    out.push(`${name}="${v.replace(/"/g, '&quot;')}"`);
+  }
+  return out.length ? ' ' + out.join(' ') : '';
+}
+// 行内 markdown 语法（输入已转义）
+function markdownInline(s: string): string {
   return s
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt, u) => {
@@ -65,6 +91,30 @@ function inline(s: string): string {
         ? `<a href="${url}" target="_blank" rel="noopener">${t}</a>`
         : `<a href="${url}">${t}</a>`;
     });
+}
+// 行内解析：先保护白名单裸 HTML（防被转义成文本），再对剩余文本转义+跑 markdown 语法。
+// 占位符用私有区字符包裹，避免与正文冲突。
+function inline(s: string): string {
+  const store: string[] = [];
+  const stash = (html: string) => {
+    store.push(html);
+    return `${store.length - 1}`;
+  };
+  let s2 = s.replace(/<\s*(img|br)\b([^>]*?)\/?>/gi, (_m, tag: string, attrs: string) =>
+    stash(`<${tag}${filterAttrs(tag, attrs)} />`),
+  );
+  s2 = s2.replace(
+    /<\s*(a|center|div|span)\b([^>]*)>([\s\S]*?)<\/\s*\1\s*>/gi,
+    (_m, tag: string, attrs: string, inner: string) =>
+      stash(`<${tag}${filterAttrs(tag, attrs)}>${inner.replace(/\uE000(\d+)\uE001/g, (_x, k) => store[+k] || '')}</${tag}>`),
+  );
+  const parts = s2.split(/(\d+)/);
+  let out = '';
+  for (const p of parts) {
+    const m = p.match(/^(\d+)$/);
+    out += m ? store[+m[1]] : markdownInline(escapeHtml(p));
+  }
+  return out;
 }
 
 function splitRow(l: string): string[] {
