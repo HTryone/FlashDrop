@@ -58,6 +58,9 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
     setState('connected');
     // 每次 DC 建立都重发 manifest（含重连后新 DC），接收端幂等覆盖
     d.send(JSON.stringify({ type: 'manifest', files: metas, totalBytes }));
+    // 进入发送态：DC 已开、manifest 已发，紧接着 pump() 开始逐块发数据。
+    // 让 UI 顶部总状态从「待发送」切到「传输中」（区别于 signaling/connecting/connected 阶段）。
+    setState('transferring');
     void pump();
   }
 
