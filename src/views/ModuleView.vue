@@ -64,16 +64,16 @@ function go(id: string) {
 
 <style scoped>
 .module { width: 100%; }
-.layout { display: grid; grid-template-columns: 200px 1fr; gap: 22px; }
-.toc { display: flex; flex-direction: column; gap: 6px; }
+.layout { display: grid; grid-template-columns: 220px 1fr; gap: 32px; align-items: start; }
+.toc { display: flex; flex-direction: column; gap: 2px; position: sticky; top: 74px; align-self: start; }
 .toc-item {
-  text-align: left; background: var(--panel); border: 1px solid var(--border);
-  color: var(--text-dim); padding: 9px 12px; border-radius: 8px; font-size: 13px;
+  text-align: left; background: none; border: none; border-left: 2px solid transparent;
+  color: var(--text-dim); padding: 6px 10px; border-radius: 0; font-size: 13px; line-height: 1.4;
 }
-.toc-item:hover { border-color: var(--accent); }
-.toc-item.on { border-color: var(--accent); color: var(--text); background: var(--panel-2); }
+.toc-item:hover { color: var(--text); }
+.toc-item.on { color: var(--accent); border-left-color: var(--accent); font-weight: 600; }
 .doc { min-width: 0; }
-.doc-title { margin: 0 0 12px; font-size: 18px; }
+.doc-title { margin: 0 0 12px; font-size: 18px; scroll-margin-top: 80px; }
 .doc-body { font-size: 13.5px; line-height: 1.7; color: var(--text-dim); }
 .doc-body :deep(h1), .doc-body :deep(h2), .doc-body :deep(h3) { color: var(--text); margin: 10px 0 6px; }
 .doc-body :deep(a) { color: var(--accent); }
@@ -87,9 +87,10 @@ function go(id: string) {
 .pg-info { font-size: 12px; color: var(--text-faint); }
 .faint { color: var(--text-faint); font-size: 13px; }
 
-@media (max-width: 900px) {
-  .layout { grid-template-columns: 1fr; }
-  .toc { flex-direction: row; flex-wrap: wrap; }
-  .toc-item { flex: 1 1 auto; }
+@media (max-width: 760px) {
+  .layout { grid-template-columns: 1fr; gap: 14px; }
+  .toc { position: static; flex-direction: row; flex-wrap: wrap; gap: 6px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+  .toc-item { border-left: none; border: 1px solid var(--border); border-radius: 999px; font-size: 12px; }
+  .toc-item.on { border-color: var(--accent); }
 }
 </style>
