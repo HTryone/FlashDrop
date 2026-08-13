@@ -1,59 +1,38 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
-import { renderMarkdown, wrapPost } from './markdown-post';
+import { ref, onMounted } from 'vue';
+import { fetchPosts, renderMarkdown, type Post } from './markdown-post';
 
-const src = ref('');
-const previewHtml = computed(() => renderMarkdown(src.value));
-const postText = computed(() => wrapPost(src.value));
+const posts = ref<Post[]>([]);
+const loading = ref(true);
 
-function copyPost() {
-  navigator.clipboard?.writeText(postText.value).catch(() => {});
-}
+onMounted(async () => {
+  posts.value = await fetchPosts();
+  loading.value = false;
+});
 </script>
 
 <template>
-  <div class="md-post">
-    <div class="cols">
-      <div class="col">
-        <label class="col-label">Markdown 源</label>
-        <textarea v-model="src" placeholder="在此粘贴 Markdown…" spellcheck="false"></textarea>
-      </div>
-      <div class="col">
-        <label class="col-label">预览</label>
-        <div class="preview" v-html="previewHtml"></div>
-      </div>
-    </div>
-    <div class="actions">
-      <button class="btn" @click="copyPost" :disabled="!src.trim()">复制成帖（带品牌尾）</button>
-    </div>
+  <div class="posts">
+    <p v-if="loading" class="faint">加载中…</p>
+    <p v-else-if="!posts.length" class="faint">暂无内容。</p>
+    <article v-for="p in posts" :key="p.id" class="post">
+      <h3 v-if="p.title" class="post-title">{{ p.title }}</h3>
+      <div class="post-body" v-html="renderMarkdown(p.markdown)"></div>
+    </article>
   </div>
 </template>
 
 <style scoped>
-.md-post { display: flex; flex-direction: column; gap: 14px; }
-.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-.col { display: flex; flex-direction: column; gap: 6px; }
-.col-label { font-size: 12px; color: var(--text-faint); }
-textarea {
-  width: 100%; height: 280px; resize: vertical;
-  background: var(--panel); border: 1px solid var(--border);
-  border-radius: var(--radius-sm); color: var(--text); padding: 12px;
-  font-size: 13px; line-height: 1.6;
-}
-.preview {
-  height: 280px; overflow: auto; padding: 12px 14px;
-  background: var(--panel); border: 1px solid var(--border);
-  border-radius: var(--radius-sm); font-size: 13.5px; line-height: 1.7; color: var(--text-dim);
-}
-.preview :deep(h1), .preview :deep(h2), .preview :deep(h3) { color: var(--text); margin: 10px 0 6px; }
-.preview :deep(a) { color: var(--accent); }
-.preview :deep(code) { background: var(--panel-2); padding: 1px 5px; border-radius: 5px; }
-.preview :deep(ul) { padding-left: 18px; }
-.preview :deep(blockquote) { margin: 8px 0; padding-left: 12px; border-left: 3px solid var(--border); color: var(--text-faint); }
-.preview :deep(p) { margin: 6px 0; }
-.actions { display: flex; gap: 10px; }
-
-@media (max-width: 640px) {
-  .cols { grid-template-columns: 1fr; }
-}
+.posts { display: flex; flex-direction: column; gap: 18px; }
+.post { padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.post:last-child { border-bottom: none; }
+.post-title { margin: 0 0 8px; font-size: 16px; color: var(--text); }
+.post-body { font-size: 13.5px; line-height: 1.7; color: var(--text-dim); }
+.post-body :deep(h1), .post-body :deep(h2), .post-body :deep(h3) { color: var(--text); margin: 10px 0 6px; }
+.post-body :deep(a) { color: var(--accent); }
+.post-body :deep(code) { background: var(--panel-2); padding: 1px 5px; border-radius: 5px; }
+.post-body :deep(ul) { padding-left: 18px; }
+.post-body :deep(blockquote) { margin: 8px 0; padding-left: 12px; border-left: 3px solid var(--border); color: var(--text-faint); }
+.post-body :deep(p) { margin: 6px 0; }
+.faint { color: var(--text-faint); font-size: 13px; }
 </style>

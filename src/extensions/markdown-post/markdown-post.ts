@@ -1,7 +1,32 @@
-// 帖子合成核心逻辑：Markdown → HTML 的轻量渲染（纯函数，无外部依赖）。
-// 先转义 HTML 再做格式化，避免 XSS；仅支持常用子集，足够拼帖子用。
-// UI 见同目录 MarkdownPostPanel.vue。
+// 帖子展示核心（前端只读）：内容由后端写好并构建，前端只负责拉取 + 渲染。
+// 编辑/合成不在前端 —— 那是后端的活（本地工具导入 markdown → 自动构建页面；后期可接 Workers + DB）。
+// 扩展端口：数据源统一走 fetchPosts()，后期换 Workers+DB 只改这一个实现，UI 不变。
 
+export interface Post {
+  id: string;
+  title: string;
+  markdown: string; // 帖子正文（markdown 源）
+  updatedAt?: string;
+}
+
+// 数据源地址（扩展端口）：后期接 Workers + 数据库时，只改这个常量 / fetchPosts 实现。
+// 当前指向一个待后端构建的静态清单；后端未就绪时返回空数组，UI 显示「暂无内容」。
+const POSTS_SOURCE = '/api/posts.json';
+
+async function fetchPosts(): Promise<Post[]> {
+  try {
+    const res = await fetch(POSTS_SOURCE, { cache: 'no-store' });
+    if (!res.ok) return [];
+    const data = (await res.json()) as Post[] | { posts: Post[] };
+    return Array.isArray(data) ? data : (data.posts ?? []);
+  } catch {
+    return [];
+  }
+}
+
+export { fetchPosts };
+
+// markdown → HTML 的轻量渲染（纯函数，先转义再格式化，防 XSS；常用子集足够展示）。
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')
@@ -94,9 +119,4 @@ export function renderMarkdown(src: string): string {
   closeList();
 
   return out.join('\n');
-}
-
-// 品牌头尾模板：拼帖时套在正文前后（与渲染无关，纯字符串拼接）。
-export function wrapPost(body: string, brand = '⚡ 闪传 FlashDrop'): string {
-  return `${body}\n\n—— 用 ${brand} 发送大文件`;
 }

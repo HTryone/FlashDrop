@@ -38,9 +38,9 @@ export const extensions: Extension[] = [
   },
   {
     id: 'markdown-post',
-    title: '帖子合成',
-    desc: '粘贴 Markdown，套品牌头尾，一键复制成帖',
-    icon: '✍️',
+    title: '项目动态',
+    desc: '公告与更新（后端发布，前端只读展示）',
+    icon: '📰',
     kind: 'panel',
     component: MarkdownPostPanel,
   },
