@@ -1,10 +1,28 @@
 <script setup lang="ts">
-import { ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { ref, provide, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import ExtensionsDrawer from './components/ExtensionsDrawer.vue';
 
-const drawerOpen = ref(false);
+type TabType = 'send' | 'receive' | 'manage';
+const activeTab = ref<TabType>('send');
+provide('homeTab', activeTab);
+
+const route = useRoute();
 const router = useRouter();
+
+watch(
+  () => route.fullPath,
+  () => {
+    if (route.path !== '/') return;
+    const code = route.query.code as string;
+    const t = route.query.tab as string;
+    if (code) activeTab.value = 'receive';
+    else if (t === 'local') activeTab.value = 'receive';
+  },
+  { immediate: true }
+);
+
+const drawerOpen = ref(false);
 
 function selectExt(id: string) {
   drawerOpen.value = false;
@@ -19,6 +37,11 @@ function selectExt(id: string) {
         <span class="logo gradient-text">⚡ 闪传</span>
         <span class="tag">FlashDrop</span>
       </div>
+      <nav v-if="route.path === '/'" class="tabs">
+        <button :class="{ on: activeTab === 'send' }" @click="activeTab = 'send'">发送</button>
+        <button :class="{ on: activeTab === 'receive' }" @click="activeTab = 'receive'">接收</button>
+        <button :class="{ on: activeTab === 'manage' }" @click="activeTab = 'manage'">我的传输</button>
+      </nav>
       <button class="ext-btn" @click="drawerOpen = true" title="扩展模块">⚙ 更多</button>
     </header>
 
@@ -41,6 +64,9 @@ function selectExt(id: string) {
 .brand { display: flex; align-items: baseline; gap: 8px; }
 .logo { font-size: 20px; font-weight: 800; }
 .tag { font-size: 12px; color: var(--text-faint); letter-spacing: 1px; }
+.tabs { display: flex; gap: 4px; margin-left: 8px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 999px; padding: 3px; }
+.tabs button { background: none; border: none; color: var(--text-dim); padding: 7px 16px; border-radius: 999px; font-size: 13px; font-weight: 600; white-space: nowrap; }
+.tabs button.on { background: var(--accent-grad); color: #07101f; }
 .ext-btn { margin-left: auto; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); padding: 8px 14px; border-radius: 999px; font-size: 13px; }
 .ext-btn:hover { border-color: var(--accent); }
 .main { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 28px 18px 40px; }
