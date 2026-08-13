@@ -1,5 +1,6 @@
 import { createApp } from 'vue';
 import App from './App.vue';
+import router from './router';
 import './style.css';
 
 // 尽早注册 Service Worker：让 StreamSaver 下载走「SW 直连通道」而非脆弱的 mitm iframe 兜底。
@@ -14,4 +15,4 @@ if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
   }
 }
 
-createApp(App).mount('#app');
+createApp(App).use(router).mount('#app');
