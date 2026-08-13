@@ -80,54 +80,133 @@ function isTableRow(l: string): boolean {
 function isTableSep(l: string): boolean {
   return /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(l) && l.includes('-');
 }
+// 表格分隔行 → 列对齐方式（left / center / right）
+function alignOf(cell: string): string {
+  const t = cell.trim();
+  const left = t.startsWith(':');
+  const right = t.endsWith(':');
+  if (left && right) return 'center';
+  if (right) return 'right';
+  if (left) return 'left';
+  return '';
+}
+// 分隔线（单独成行、至少 3 个 - / * / _，如 --- *** ___）
+function isHr(l: string): boolean {
+  return /^(\s*[-*_]){3,}\s*$/.test(l);
+}
+// 列表项（无序 - * + 或有序 1.）
+function isListItem(l: string): boolean {
+  return /^(\s*)([-*+]|\d+\.)\s+/.test(l);
+}
+
+interface ListItem {
+  indent: number;
+  ordered: boolean;
+  task: boolean;
+  checked: boolean;
+  text: string;
+  children: ListItem[];
+}
+function parseListItem(raw: string): ListItem | null {
+  const m = raw.match(/^(\s*)([-*+]|\d+\.)\s+(.*)$/);
+  if (!m) return null;
+  const indent = m[1].replace(/\t/g, '  ').length;
+  const ordered = /\d+\./.test(m[2]);
+  let text = m[3];
+  const tm = text.match(/^\[([ xX])\]\s+(.*)$/);
+  let task = false;
+  let checked = false;
+  if (tm) {
+    task = true;
+    checked = tm[1].toLowerCase() === 'x';
+    text = tm[2];
+  }
+  return { indent, ordered, task, checked, text, children: [] };
+}
+// 列表项集合 → 嵌套树 → HTML（支持任务列表、任意层级嵌套）
+function renderListBlock(buf: string[]): string {
+  const items = buf.map(parseListItem).filter((x): x is ListItem => x !== null);
+  if (!items.length) return '';
+  const root: ListItem = {
+    indent: -1,
+    ordered: false,
+    task: false,
+    checked: false,
+    text: '',
+    children: [],
+  };
+  const stack: { indent: number; node: ListItem }[] = [{ indent: -1, node: root }];
+  for (const it of items) {
+    while (stack.length && stack[stack.length - 1].indent >= it.indent) stack.pop();
+    stack[stack.length - 1].node.children.push(it);
+    stack.push({ indent: it.indent, node: it });
+  }
+  return renderNodes(root.children);
+}
+function renderNodes(nodes: ListItem[]): string {
+  if (!nodes.length) return '';
+  let html = '';
+  let i = 0;
+  while (i < nodes.length) {
+    const type = nodes[i].ordered ? 'ol' : 'ul';
+    let j = i;
+    while (j < nodes.length && (nodes[j].ordered ? 'ol' : 'ul') === type) j++;
+    const group = nodes.slice(i, j);
+    html += `<${type}>`;
+    for (const n of group) {
+      const content = n.task
+        ? `<input type="checkbox" disabled${n.checked ? ' checked' : ''} /> ${inline(n.text)}`
+        : inline(n.text);
+      html += `<li>${content}${n.children.length ? renderNodes(n.children) : ''}</li>`;
+    }
+    html += `</${type}>`;
+    i = j;
+  }
+  return html;
+}
 
 export function renderMarkdown(src: string): string {
-  const lines = src.split('\n');
+  const lines = src.replace(/\r\n/g, '\n').split('\n');
   const out: string[] = [];
-  let listType: 'ul' | 'ol' | null = null;
-  let inCode = false;
   let i = 0;
 
-  const closeList = () => {
-    if (listType) {
-      out.push(`</${listType}>`);
-      listType = null;
-    }
-  };
-
   while (i < lines.length) {
-    const raw = lines[i];
+    const line = lines[i];
 
-    // 代码块
-    if (/^```/.test(raw.trim())) {
-      if (inCode) {
-        out.push('</code></pre>');
-        inCode = false;
-      } else {
-        closeList();
-        out.push('<pre><code>');
-        inCode = true;
+    // 代码块（围栏 ```，支持语言标识但仅原样保留）
+    if (/^```/.test(line.trim())) {
+      const buf: string[] = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i].trim())) {
+        buf.push(lines[i]);
+        i++;
       }
-      i++;
-      continue;
-    }
-    if (inCode) {
-      out.push(escapeHtml(raw));
-      i++;
+      i++; // 跳过结束的 ```
+      out.push(`<pre><code>${escapeHtml(buf.join('\n'))}</code></pre>`);
       continue;
     }
 
-    // 表格（当前行为表头行且下一行是分隔行）
-    if (isTableRow(raw) && i + 1 < lines.length && isTableSep(lines[i + 1])) {
-      closeList();
-      const head = splitRow(raw)
-        .map((c) => `<th>${inline(c)}</th>`)
+    // 表格（表头行 + 分隔行），分隔行支持列对齐 :--- :---: ---:
+    if (isTableRow(line) && i + 1 < lines.length && isTableSep(lines[i + 1])) {
+      const aligns = splitRow(lines[i + 1]).map(alignOf);
+      const head = splitRow(line)
+        .map(
+          (c, idx) =>
+            `<th${aligns[idx] ? ` style="text-align:${aligns[idx]}"` : ''}>${inline(c)}</th>`,
+        )
         .join('');
       let j = i + 2;
       const body: string[] = [];
       while (j < lines.length && isTableRow(lines[j]) && lines[j].trim() !== '') {
         body.push(
-          '<tr>' + splitRow(lines[j]).map((c) => `<td>${inline(c)}</td>`).join('') + '</tr>',
+          '<tr>' +
+            splitRow(lines[j])
+              .map(
+                (c, idx) =>
+                  `<td${aligns[idx] ? ` style="text-align:${aligns[idx]}"` : ''}>${inline(c)}</td>`,
+              )
+              .join('') +
+            '</tr>',
         );
         j++;
       }
@@ -138,67 +217,74 @@ export function renderMarkdown(src: string): string {
       continue;
     }
 
-    // 标题 1-6 级
-    const h = raw.match(/^(#{1,6})\s+(.*)$/);
+    // 标题 1-6 级（允许前导空格与尾部 #）
+    const h = line.match(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/);
     if (h) {
-      closeList();
       const n = h[1].length;
       out.push(`<h${n}>${inline(h[2])}</h${n}>`);
       i++;
       continue;
     }
 
-    // 引用
-    const q = raw.match(/^>\s?(.*)$/);
-    if (q) {
-      closeList();
-      out.push(`<blockquote>${inline(q[1])}</blockquote>`);
-      i++;
-      continue;
-    }
-
-    // 列表（无序 - / * ；有序 1.）
-    const uli = raw.match(/^[-*]\s+(.*)$/);
-    const oli = raw.match(/^\d+\.\s+(.*)$/);
-    if (uli || oli) {
-      if (uli) {
-        if (listType !== 'ul') {
-          closeList();
-          out.push('<ul>');
-          listType = 'ul';
-        }
-        out.push(`<li>${inline(uli[1])}</li>`);
-      } else if (oli) {
-        if (listType !== 'ol') {
-          closeList();
-          out.push('<ol>');
-          listType = 'ol';
-        }
-        out.push(`<li>${inline(oli[1])}</li>`);
-      }
-      i++;
-      continue;
-    }
-
     // 分隔线（--- / *** / ___ 单独成行）
-    if (/^(\s*[-*_]){3,}\s*$/.test(raw)) {
-      closeList();
+    if (isHr(line) && !isListItem(line)) {
       out.push('<hr />');
       i++;
       continue;
     }
 
-    closeList();
-    if (raw.trim() === '') {
-      out.push('');
-      i++;
+    // 引用块（连续 > 行，支持嵌套：递归渲染去掉外层 > 后的内容）
+    if (/^>\s?/.test(line)) {
+      const buf: string[] = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) {
+        buf.push(lines[i]);
+        i++;
+      }
+      const inner = buf.map((l) => l.replace(/^>\s?/, '')).join('\n');
+      out.push(`<blockquote>${renderMarkdown(inner)}</blockquote>`);
       continue;
     }
-    out.push(`<p>${inline(raw)}</p>`);
+
+    // 列表块（连续列表项，允许项间空行；支持任务列表与嵌套）
+    if (isListItem(line)) {
+      const buf: string[] = [];
+      while (i < lines.length) {
+        if (isListItem(lines[i])) {
+          buf.push(lines[i]);
+          i++;
+        } else if (lines[i].trim() === '' && i + 1 < lines.length && isListItem(lines[i + 1])) {
+          i++; // 跳过列表内的空行
+        } else {
+          break;
+        }
+      }
+      out.push(renderListBlock(buf));
+      continue;
+    }
+
+    // 段落：连续非空、非特殊行（软换行转 <br/>，贴近 Typora 所见即所得）
+    if (line.trim() !== '') {
+      const buf: string[] = [line];
+      i++;
+      while (
+        i < lines.length &&
+        lines[i].trim() !== '' &&
+        !/^```/.test(lines[i].trim()) &&
+        !/^\s{0,3}#{1,6}\s+/.test(lines[i]) &&
+        !/^>\s?/.test(lines[i]) &&
+        !isListItem(lines[i]) &&
+        !isHr(lines[i])
+      ) {
+        buf.push(lines[i]);
+        i++;
+      }
+      out.push(`<p>${buf.map((l) => inline(l)).join('<br/>')}</p>`);
+      continue;
+    }
+
+    // 空行
     i++;
   }
 
-  if (inCode) out.push('</code></pre>');
-  closeList();
   return out.join('\n');
 }

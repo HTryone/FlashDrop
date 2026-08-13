@@ -106,6 +106,8 @@ function closeNav() {
 .doc-body :deep(a) { color: var(--accent); }
 .doc-body :deep(code) { background: var(--panel-2); padding: 1px 5px; border-radius: 5px; }
 .doc-body :deep(ul), .doc-body :deep(ol) { padding-left: 18px; }
+.doc-body :deep(li) { margin: 3px 0; }
+.doc-body :deep(input[type="checkbox"]) { margin-right: 6px; vertical-align: middle; }
 .doc-body :deep(blockquote) { margin: 8px 0; padding-left: 12px; border-left: 3px solid var(--border); color: var(--text-faint); }
 .doc-body :deep(p) { margin: 6px 0; }
 .doc-body :deep(img) { max-width: 100%; border-radius: 8px; margin: 8px 0; display: block; }
