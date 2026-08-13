@@ -38,7 +38,13 @@ function inline(s: string): string {
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    .replace(
+      /\[([^\]]+)\]\(([^)\s]+)\)/g,
+      (_m, t, u) =>
+        u.startsWith('http')
+          ? `<a href="${u}" target="_blank" rel="noopener">${t}</a>`
+          : `<a href="${u}">${t}</a>`,
+    );
 }
 
 export function renderMarkdown(src: string): string {
