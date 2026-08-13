@@ -1,4 +1,4 @@
-// 后端文档模块取数 + markdown 渲染（前端只读展示）。
+// 后端文档模块公共逻辑（前端只读展示）：取数 + markdown 渲染。
 // 内容由后端（本地工具 / Workers + DB）按 moduleId 提供；前端只拉取并渲染。
 // 扩展端口：fetchDocs(moduleId) 统一走可配置源，后期接 Workers + DB 只改此实现与数据源约定。
 
@@ -14,7 +14,7 @@ export interface DocItem {
 // 后期接 Workers + DB 时只改这里（含排序/过滤规则），UI 不变。
 const docSource = (moduleId: string) => `/api/${moduleId}/docs.json`;
 
-async function fetchDocs(moduleId: string): Promise<DocItem[]> {
+export async function fetchDocs(moduleId: string): Promise<DocItem[]> {
   try {
     const res = await fetch(docSource(moduleId), { cache: 'no-store' });
     if (!res.ok) return [];
@@ -27,8 +27,6 @@ async function fetchDocs(moduleId: string): Promise<DocItem[]> {
     return [];
   }
 }
-
-export { fetchDocs };
 
 // markdown → HTML 的轻量渲染（纯函数，先转义再格式化，防 XSS；常用子集足够展示）。
 function escapeHtml(s: string): string {

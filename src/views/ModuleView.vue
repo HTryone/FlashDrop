@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
-import { fetchDocs, renderMarkdown, type DocItem } from '@/extensions/markdown-post/markdown-post';
+import { fetchDocs, renderMarkdown, type DocItem } from '@/extensions/doc';
 
 const props = defineProps<{ moduleId: string }>();
 
