@@ -46,6 +46,7 @@ export function useRelayTransfer(
   let e2eeSaltRef = '';          // 跨重传复用 salt，避免重传后接收端解密失败
   let fatalTriggered = false;    // 网络兜底失败标志（区分 cancelled 与 failed）
 
+  // history 模式下 query 写在 # 之前即为正常 URL，vue-router 直接读到
   const shareLink = computed(() => (code.value ? `${location.origin}/?code=${code.value}` : ''));
 
   // 选中区状态：待传输 / 传输中 / 已取消 / 网络故障 / 已完成

@@ -1,8 +1,8 @@
-import { createRouter, createWebHashHistory } from 'vue-router';
+import { createRouter, createWebHistory } from 'vue-router';
 import HomeView from '@/views/HomeView.vue';
 
 const router = createRouter({
-  history: createWebHashHistory(),
+  history: createWebHistory(),
   routes: [
     { path: '/', name: 'home', component: HomeView },
     // 更多：/ext = 模块选择页；/ext/:id = 对应模块整页（刷新可保活，无需回首页）
