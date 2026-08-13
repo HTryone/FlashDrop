@@ -3,27 +3,24 @@ import { ref, computed } from 'vue';
 import type { Component } from 'vue';
 import { extensions } from '@/extensions';
 import ModuleView from './ModuleView.vue';
-import HomeView from './HomeView.vue';
 
 defineProps<{ open: boolean }>();
-const emit = defineEmits<{ close: [] }>();
 
-type NavId = 'home' | string;
+type NavId = string;
 
 interface NavEntry {
   id: string;
   title: string;
   icon: string;
-  kind: 'home' | 'panel' | 'action' | 'doc';
+  kind: 'panel' | 'action' | 'doc';
   component?: Component;
   moduleId?: string;
 }
 
-const active = ref<NavId>('home');
+const active = ref<NavId>(extensions[0]?.id ?? '');
 const mobileNavOpen = ref(false);
 
 const nav = computed<NavEntry[]>(() => [
-  { id: 'home', title: '首页', icon: '🏠', kind: 'home' },
   ...extensions.map((e) => ({
     id: e.id,
     title: e.title,
@@ -43,11 +40,6 @@ function select(id: NavId) {
   active.value = id;
   mobileNavOpen.value = false;
 }
-function goHome() {
-  active.value = 'home';
-  mobileNavOpen.value = false;
-  emit('close');
-}
 </script>
 
 <template>
@@ -61,9 +53,6 @@ function goHome() {
     <div class="cols">
       <!-- 左导航 -->
       <aside class="nav" :class="{ show: mobileNavOpen }">
-        <button class="nav-item" :class="{ on: active === 'home' }" @click="select('home')">
-          <span class="ni-icon">🏠</span><span class="ni-text">首页</span>
-        </button>
         <button
           v-for="e in extensions"
           :key="e.id"
@@ -77,8 +66,7 @@ function goHome() {
 
       <!-- 右内容 -->
       <section class="content">
-        <HomeView v-if="active === 'home'" />
-        <ModuleView v-else-if="current?.kind === 'doc'" :module-id="docModuleId" />
+        <ModuleView v-if="current?.kind === 'doc'" :module-id="docModuleId" />
         <component v-else :is="current?.component" />
       </section>
     </div>
