@@ -2,7 +2,7 @@
 import { ref } from 'vue';
 import { getLoginTransfer, terminateTransfer } from '@/api/transfer';
 import type { LoginTransferDetail } from '@/types/transfer';
-import { formatBytes } from '@/composables/format';
+import { formatBytes, fmtTime, remainMs, formatLoginCode } from '@/composables/format';
 
 const loginInput = ref('');
 const loading = ref(false);
@@ -39,24 +39,6 @@ async function confirmTerminate() {
   }
 }
 
-
-function fmtTime(ts: number) {
-  if (!ts) return '-';
-  return new Date(ts).toLocaleString('zh-CN', {
-    month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-  });
-}
-
-function remainMs(expiresAt: number): number {
-  if (!expiresAt) return 0;
-  return Math.max(0, expiresAt - Date.now());
-}
-
-function formatLoginCode(raw: string): string {
-  if (!raw || raw.length !== 16) return raw;
-  return raw.slice(0, 4) + ' ' + raw.slice(4, 8) + ' ' + raw.slice(8, 12) + ' ' + raw.slice(12, 16);
-}
 </script>
 
 <template>
@@ -109,7 +91,7 @@ function formatLoginCode(raw: string): string {
         </div>
         <div class="info-item">
           <span class="info-label">创建时间</span>
-          <span class="info-val">{{ fmtTime(detail.createdAt) }}</span>
+          <span class="info-val">{{ fmtTime(detail.createdAt, true) }}</span>
         </div>
         <div class="info-item">
           <span class="info-label">总大小</span>

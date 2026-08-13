@@ -5,6 +5,7 @@ import { getTransfer, zipUrl } from '@/api/transfer';
 import { deriveKey } from '@/crypto/tus-crypto';
 import ReceiveFileRow from './ReceiveFileRow.vue';
 import LocalTransfer from './LocalTransfer.vue';
+import { fmtTime, remainText } from '@/composables/format';
 
 const props = defineProps<{ initialCode?: string }>();
 
@@ -50,23 +51,6 @@ async function unlock() {
   }
 }
 
-
-function fmtTime(ts: number): string {
-  if (!ts) return '-';
-  return new Date(ts).toLocaleString('zh-CN', {
-    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-  });
-}
-
-function remainText(expiresAt: number): string {
-  if (!expiresAt) return '';
-  const ms = expiresAt - Date.now();
-  if (ms <= 0) return '已过期';
-  const h = Math.floor(ms / 3600000);
-  if (h >= 1) return `剩余约 ${h} 小时`;
-  const m = Math.ceil(ms / 60000);
-  return `剩余约 ${m} 分钟`;
-}
 
 onMounted(() => {
   if (props.initialCode) load(props.initialCode);
