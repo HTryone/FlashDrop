@@ -66,7 +66,8 @@ const sender = new LocalSender({
   onPeerOnline: (v) => { lPeerOnline.value = v; },
   onProgress: (p) => { lProgress.value = p; },
   onSegIndex: (i) => { lSegIndex.value = i; },
-  onSending: (v) => { lSending.value = v; lTransferring.value = v; },
+  onSending: (v) => { lSending.value = v; },
+  onTransferring: (v) => { lTransferring.value = v; },
   onDone: () => { lDone.value = true; },
   onRoom: (room, link, pass) => { lRoom.value = room; lSendLink.value = link; lPassphrase.value = pass; },
 });

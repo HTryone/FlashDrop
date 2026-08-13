@@ -15,6 +15,7 @@ export interface SenderCallbacks {
   onProgress: (p: number) => void; // 0..1
   onSegIndex: (i: number) => void;
   onSending: (v: boolean) => void;
+  onTransferring?: (v: boolean) => void;
   onDone: () => void;
   onRoom: (room: string, link: string, passphrase: string) => void;
 }
@@ -43,6 +44,7 @@ export class LocalSender {
   private done = false;
   private peerOnline = false;
   private segIndex = 0;
+  private dataStarted = false; // 是否已真正开始推数据，用于精确驱动「传输中」状态（区别于 setSending 的流程级标记）
   private abort: AbortController | null = null;
   private ctrl: RelayControl | null = null;
   private remoteAborted = false; // 对方（接收端）取消，区别于本地取消
@@ -119,6 +121,7 @@ export class LocalSender {
   private setSending(v: boolean) {
     this.sending = v;
     this.cb.onSending(v);
+    if (!v) { this.dataStarted = false; this.cb.onTransferring?.(false); }
   }
   private setDone(v: boolean) {
     this.done = v;
@@ -328,6 +331,8 @@ export class LocalSender {
     }
     await offerP;
     this.cb.onStatus(`第 ${seg + 1} 段：开始传输数据…`);
+    // 首次真正开始推数据：驱动「传输中」状态（区别于 setSending 的点发送即 true）
+    if (!this.dataStarted) { this.dataStarted = true; this.cb.onTransferring?.(true); }
 
     // ---- 生产者：本段 chunk 加密入队 ----
     let pending: Uint8Array[] = [];
