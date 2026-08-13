@@ -135,9 +135,9 @@ async function runP2PLocalSend() {
       else if (s === 'connecting') { lPeerOnline.value = true; lStatus.value = 'ICE 协商中，正在建立直连…'; }
       else if (s === 'connected') { lPeerOnline.value = true; lStatus.value = 'P2P 直连已建立，开始传输…'; }
       else if (s === 'transferring') { lPeerOnline.value = true; lTransferring.value = true; lStatus.value = 'P2P 传输中…'; }
-      else if (s === 'done') { lDone.value = true; lTransferring.value = false; lStatus.value = 'P2P 发送完成'; files.value.forEach((f) => { f.status = 'done'; f.uploaded = f.file.size; }); }
-      else if (s === 'error') { lPeerOnline.value = false; lTransferring.value = false; lStatus.value = `P2P 出错：${d || ''}`; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); }
-      else if (s === 'aborted') { lPeerOnline.value = false; lTransferring.value = false; lStatus.value = '已取消'; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); }
+      else if (s === 'done') { lSending.value = false; lDone.value = true; lTransferring.value = false; lStatus.value = 'P2P 发送完成'; files.value.forEach((f) => { f.status = 'done'; f.uploaded = f.file.size; }); }
+      else if (s === 'error') { lSending.value = false; lPeerOnline.value = false; lTransferring.value = false; lStatus.value = `P2P 出错：${d || ''}`; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); }
+      else if (s === 'aborted') { lSending.value = false; lPeerOnline.value = false; lTransferring.value = false; lStatus.value = '已取消'; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); }
     },
     // 对端信令到达（offer/answer）：更新状态反映协商进展。
     // 不再守卫 lPeerOnline——提前信令已在对方加入时亮灯，这里负责"点了发送后"的状态推进。
@@ -158,7 +158,7 @@ async function runP2PLocalSend() {
         acc += f.file.size;
       }
     },
-    onFail: (e) => { lStatus.value = `P2P 传输失败：${e.message}`; lDone.value = false; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); },
+    onFail: (e) => { lSending.value = false; lStatus.value = `P2P 传输失败：${e.message}`; lDone.value = false; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); },
   });
   p2pSender = sender;
   try {
