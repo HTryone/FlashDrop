@@ -125,19 +125,19 @@ async function runP2PLocalSend() {
   lSending.value = true; lProgress.value = 0; lDone.value = false; lTransferring.value = false;
   // P2P 连续流：发送期间把每文件行标记为传输中、进度清零（完成后才标记已完成）
   files.value.forEach((f) => { f.status = 'uploading'; f.uploaded = 0; });
-  lStatus.value = 'P2P 信令协商中…';
+  lStatus.value = '信令协商中…';
   const sender = createP2PSender({
     relayBase: resolveRelayBase(),
     room: lRoom.value,
     pass: lPassphrase.value,
     files: files.value.map((f) => f.file),
     onState: (s, d) => {
-      if (s === 'signaling') { lStatus.value = 'P2P 信令已接通，等待 ICE 协商…'; }
-      else if (s === 'connecting') { lPeerOnline.value = true; lStatus.value = 'ICE 协商中，正在建立直连…'; }
-      else if (s === 'connected') { lPeerOnline.value = true; lStatus.value = 'P2P 直连已建立，开始传输…'; }
-      else if (s === 'transferring') { lPeerOnline.value = true; lTransferring.value = true; lStatus.value = 'P2P 传输中…'; }
-      else if (s === 'done') { lSending.value = false; lDone.value = true; lTransferring.value = false; lStatus.value = 'P2P 发送完成'; files.value.forEach((f) => { f.status = 'done'; f.uploaded = f.file.size; }); }
-      else if (s === 'error') { lSending.value = false; lPeerOnline.value = false; lTransferring.value = false; lStatus.value = `P2P 出错：${d || ''}`; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); }
+      if (s === 'signaling') { lStatus.value = '信令已接通，等待 ICE 协商…'; }
+      else if (s === 'connecting') { lPeerOnline.value = true; lStatus.value = 'ICE 协商中…'; }
+      else if (s === 'connected') { lPeerOnline.value = true; lStatus.value = '直连已建立'; }
+      else if (s === 'transferring') { lPeerOnline.value = true; lTransferring.value = true; lStatus.value = '传输中…'; }
+      else if (s === 'done') { lSending.value = false; lDone.value = true; lTransferring.value = false; lStatus.value = '发送完成'; files.value.forEach((f) => { f.status = 'done'; f.uploaded = f.file.size; }); }
+      else if (s === 'error') { lSending.value = false; lPeerOnline.value = false; lTransferring.value = false; lStatus.value = `出错：${d || ''}`; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); }
       else if (s === 'aborted') { lSending.value = false; lPeerOnline.value = false; lTransferring.value = false; lStatus.value = '已取消'; files.value.forEach((f) => { f.status = 'pending'; f.uploaded = 0; }); }
     },
     // 对端信令到达（offer/answer）：更新状态反映协商进展。
@@ -334,7 +334,15 @@ onUnmounted(() => { sender.close(); if (p2pEarlySig) { p2pEarlySig.close(); p2pE
     <!-- ===== 本地直传模式 ===== -->
     <template v-else>
     <div class="local-send-panel">
-      <p class="hint">文件经 HTTP 流式中继转发，不落服务器磁盘；双方需同时在线，关闭即止。</p>
+      <!-- 当前模式标识 -->
+      <div class="mode-badge-row">
+        <span v-if="localTransport === 'p2p'" class="mode-badge p2p">P2P 直连</span>
+        <span v-else class="mode-badge http">HTTP 中继</span>
+      </div>
+
+      <!-- 按模式显示对应说明（不堆两行） -->
+      <p v-if="localTransport === 'http'" class="hint">文件经 HTTP 流式中继转发，不落服务器磁盘；双方需同时在线，关闭即止。</p>
+      <p v-else class="hint">文件端到端不经服务器中转（仅信令过 relay），适合同网/可穿透场景；NAT 穿透失败可切回 HTTP 中继。</p>
       <p class="hint e2ee-hint">🔒 已端到端加密：密钥仅在你的浏览器本地派生，服务器只转发密文、无法解密。</p>
 
       <div class="opt" v-if="!lRoom">
@@ -344,7 +352,6 @@ onUnmounted(() => { sender.close(); if (p2pEarlySig) { p2pEarlySig.close(); p2pE
           <button :class="{ on: localTransport === 'p2p' }" @click="localTransport = 'p2p'">P2P 直连</button>
         </div>
       </div>
-      <p v-if="localTransport === 'p2p'" class="hint">P2P 直连：文件端到端不经服务器中转（仅信令过 relay），适合同网/可穿透场景；NAT 穿透失败请切回 HTTP 中继。</p>
 
       <div v-if="!lRoom" class="actions">
         <button class="btn primary" :disabled="!files.length" @click="genRoom">生成直传房间</button>
