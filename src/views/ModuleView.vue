@@ -108,6 +108,13 @@ function closeNav() {
 .doc-body :deep(ul), .doc-body :deep(ol) { padding-left: 18px; }
 .doc-body :deep(blockquote) { margin: 8px 0; padding-left: 12px; border-left: 3px solid var(--border); color: var(--text-faint); }
 .doc-body :deep(p) { margin: 6px 0; }
+.doc-body :deep(img) { max-width: 100%; border-radius: 8px; margin: 8px 0; display: block; }
+.doc-body :deep(table) { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13px; }
+.doc-body :deep(th), .doc-body :deep(td) { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+.doc-body :deep(th) { background: var(--panel-2); color: var(--text); }
+.doc-body :deep(hr) { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+.doc-body :deep(del) { color: var(--text-faint); }
+.doc-body :deep(h4), .doc-body :deep(h5), .doc-body :deep(h6) { color: var(--text); margin: 8px 0 4px; }
 .pager { display: flex; align-items: center; gap: 12px; margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--border); }
 .pg { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); padding: 7px 14px; border-radius: 8px; font-size: 13px; }
 .pg:disabled { opacity: 0.4; cursor: not-allowed; }

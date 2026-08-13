@@ -37,41 +37,69 @@ export async function fetchDocs(moduleId: string): Promise<DocItem[]> {
   }
 }
 
-// markdown → HTML 的轻量渲染（纯函数，先转义再格式化，防 XSS；常用子集足够展示）。
+// markdown → HTML 的轻量渲染（纯函数，先转义再格式化，防 XSS；覆盖常用子集：标题/图片/链接/列表/表格/引用/代码/分隔线/行内格式）。
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// 防协议注入：仅放行 http(s)/相对路径/锚点/data:image
+function safeUrl(u: string): string {
+  return /^(https?:\/\/|\/|#|\.\/|\.\.\/|data:image\/)/i.test(u) ? u : '#';
+}
+
 function inline(s: string): string {
+  s = escapeHtml(s);
   return s
     .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt, u) => {
+      const a = String(alt).replace(/"/g, '&quot;');
+      return `<img src="${safeUrl(u)}" alt="${a}" />`;
+    })
+    .replace(/\*\*\*([^*]+)\*\*\*/g, '<strong><em>$1</em></strong>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-    .replace(
-      /\[([^\]]+)\]\(([^)\s]+)\)/g,
-      (_m, t, u) =>
-        u.startsWith('http')
-          ? `<a href="${u}" target="_blank" rel="noopener">${t}</a>`
-          : `<a href="${u}">${t}</a>`,
-    );
+    .replace(/~~([^~]+)~~/g, '<del>$1</del>')
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, t, u) => {
+      const url = safeUrl(u);
+      return u.startsWith('http')
+        ? `<a href="${url}" target="_blank" rel="noopener">${t}</a>`
+        : `<a href="${url}">${t}</a>`;
+    });
+}
+
+function splitRow(l: string): string[] {
+  return l
+    .replace(/^\s*\|/, '')
+    .replace(/\|\s*$/, '')
+    .split('|')
+    .map((c) => c.trim());
+}
+function isTableRow(l: string): boolean {
+  return /^\s*\|.*\|\s*$/.test(l);
+}
+function isTableSep(l: string): boolean {
+  return /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(l) && l.includes('-');
 }
 
 export function renderMarkdown(src: string): string {
-  const lines = escapeHtml(src).split('\n');
+  const lines = src.split('\n');
   const out: string[] = [];
-  let inList = false;
+  let listType: 'ul' | 'ol' | null = null;
   let inCode = false;
+  let i = 0;
 
   const closeList = () => {
-    if (inList) {
-      out.push('</ul>');
-      inList = false;
+    if (listType) {
+      out.push(`</${listType}>`);
+      listType = null;
     }
   };
 
-  for (const raw of lines) {
-    const line = raw;
-    if (/^```/.test(line.trim())) {
+  while (i < lines.length) {
+    const raw = lines[i];
+
+    // 代码块
+    if (/^```/.test(raw.trim())) {
       if (inCode) {
         out.push('</code></pre>');
         inCode = false;
@@ -80,40 +108,94 @@ export function renderMarkdown(src: string): string {
         out.push('<pre><code>');
         inCode = true;
       }
+      i++;
       continue;
     }
     if (inCode) {
-      out.push(line);
+      out.push(escapeHtml(raw));
+      i++;
       continue;
     }
-    const h = line.match(/^(#{1,3})\s+(.*)$/);
+
+    // 表格（当前行为表头行且下一行是分隔行）
+    if (isTableRow(raw) && i + 1 < lines.length && isTableSep(lines[i + 1])) {
+      closeList();
+      const head = splitRow(raw)
+        .map((c) => `<th>${inline(c)}</th>`)
+        .join('');
+      let j = i + 2;
+      const body: string[] = [];
+      while (j < lines.length && isTableRow(lines[j]) && lines[j].trim() !== '') {
+        body.push(
+          '<tr>' + splitRow(lines[j]).map((c) => `<td>${inline(c)}</td>`).join('') + '</tr>',
+        );
+        j++;
+      }
+      out.push(
+        `<table><thead><tr>${head}</tr></thead><tbody>${body.join('')}</tbody></table>`,
+      );
+      i = j;
+      continue;
+    }
+
+    // 标题 1-6 级
+    const h = raw.match(/^(#{1,6})\s+(.*)$/);
     if (h) {
       closeList();
-      const level = h[1].length;
-      out.push(`<h${level}>${inline(h[2])}</h${level}>`);
+      const n = h[1].length;
+      out.push(`<h${n}>${inline(h[2])}</h${n}>`);
+      i++;
       continue;
     }
-    const q = line.match(/^>\s?(.*)$/);
+
+    // 引用
+    const q = raw.match(/^>\s?(.*)$/);
     if (q) {
       closeList();
       out.push(`<blockquote>${inline(q[1])}</blockquote>`);
+      i++;
       continue;
     }
-    const li = line.match(/^[-*]\s+(.*)$/);
-    if (li) {
-      if (!inList) {
-        out.push('<ul>');
-        inList = true;
+
+    // 列表（无序 - / * ；有序 1.）
+    const uli = raw.match(/^[-*]\s+(.*)$/);
+    const oli = raw.match(/^\d+\.\s+(.*)$/);
+    if (uli || oli) {
+      if (uli) {
+        if (listType !== 'ul') {
+          closeList();
+          out.push('<ul>');
+          listType = 'ul';
+        }
+        out.push(`<li>${inline(uli[1])}</li>`);
+      } else if (oli) {
+        if (listType !== 'ol') {
+          closeList();
+          out.push('<ol>');
+          listType = 'ol';
+        }
+        out.push(`<li>${inline(oli[1])}</li>`);
       }
-      out.push(`<li>${inline(li[1])}</li>`);
+      i++;
       continue;
     }
+
+    // 分隔线（--- / *** / ___ 单独成行）
+    if (/^(\s*[-*_]){3,}\s*$/.test(raw)) {
+      closeList();
+      out.push('<hr />');
+      i++;
+      continue;
+    }
+
     closeList();
-    if (line.trim() === '') {
+    if (raw.trim() === '') {
       out.push('');
+      i++;
       continue;
     }
-    out.push(`<p>${inline(line)}</p>`);
+    out.push(`<p>${inline(raw)}</p>`);
+    i++;
   }
 
   if (inCode) out.push('</code></pre>');
