@@ -1,20 +1,29 @@
 // 后端文档模块公共逻辑（前端只读展示）：取数 + markdown 渲染。
-// 内容由后端（本地工具 / Workers + DB）按 moduleId 提供；前端只拉取并渲染。
+// 内容由本地 data.ts（文档生成器工具产出）或后端（Workers + DB）提供；前端只拉取并渲染。
 // 扩展端口：fetchDocs(moduleId) 统一走可配置源，后期接 Workers + DB 只改此实现与数据源约定。
+import type { DocItem } from './types';
 
-export interface DocItem {
-  id: string;
-  title: string;
-  module: string; // 所属模块（后端建文档时选好归到哪个模块）
-  markdown: string; // 文档正文（markdown 源）
-  updatedAt?: string; // 排序用，如 '2026-08-13'
-}
+// 本地模块数据（文档生成器工具产出的 data.ts）：有则优先使用，免去后端。
+// 工具生成的模块放在 src/extensions/<id>/data.ts，导出 { moduleId, docs }。
+const localModules = import.meta.glob('./*/data.ts', { eager: true }) as Record<
+  string,
+  { moduleId?: string; docs?: DocItem[] }
+>;
 
 // 数据源入口（扩展端口）：约定 /api/<moduleId>/docs.json 返回 DocItem[] 或 { docs: DocItem[] }。
 // 后期接 Workers + DB 时只改这里（含排序/过滤规则），UI 不变。
 const docSource = (moduleId: string) => `/api/${moduleId}/docs.json`;
 
 export async function fetchDocs(moduleId: string): Promise<DocItem[]> {
+  // 1) 优先本地数据（工具生成的模块自带 data.ts，丢进 src/extensions/<id>/ 即生效，无需后端）
+  for (const mod of Object.values(localModules)) {
+    if (mod.moduleId === moduleId && Array.isArray(mod.docs)) {
+      return mod.docs
+        .filter((d) => !d.module || d.module === moduleId)
+        .sort((a, b) => (a.updatedAt || '').localeCompare(b.updatedAt || ''));
+    }
+  }
+  // 2) fallback：后端 API（未生成本地数据时走这里，兼容原项目动态模块）
   try {
     const res = await fetch(docSource(moduleId), { cache: 'no-store' });
     if (!res.ok) return [];

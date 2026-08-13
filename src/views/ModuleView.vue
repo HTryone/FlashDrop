@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
-import { fetchDocs, renderMarkdown, type DocItem } from '@/extensions/doc';
+import { fetchDocs, renderMarkdown } from '@/extensions/doc';
+import type { DocItem } from '@/extensions/types';
 
 const props = defineProps<{ moduleId: string }>();
 
