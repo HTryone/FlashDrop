@@ -1,15 +1,13 @@
 <script setup lang="ts">
 import { ref, provide, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
-import ExtensionsDrawer from './components/ExtensionsDrawer.vue';
+import { useRoute } from 'vue-router';
+import ExtensionPanel from './views/ExtensionPanel.vue';
 
 type TabType = 'send' | 'receive' | 'manage';
 const activeTab = ref<TabType>('send');
 provide('homeTab', activeTab);
 
 const route = useRoute();
-const router = useRouter();
-
 watch(
   () => route.fullPath,
   () => {
@@ -19,15 +17,10 @@ watch(
     if (code) activeTab.value = 'receive';
     else if (t === 'local') activeTab.value = 'receive';
   },
-  { immediate: true }
+  { immediate: true },
 );
 
-const drawerOpen = ref(false);
-
-function selectExt(id: string) {
-  drawerOpen.value = false;
-  router.push('/ext/' + id);
-}
+const extOpen = ref(false);
 </script>
 
 <template>
@@ -37,19 +30,22 @@ function selectExt(id: string) {
         <span class="logo gradient-text">⚡ 闪传</span>
         <span class="tag">FlashDrop</span>
       </div>
-      <nav v-if="route.path === '/'" class="tabs">
+      <nav v-if="!extOpen && route.path === '/'" class="tabs">
         <button :class="{ on: activeTab === 'send' }" @click="activeTab = 'send'">发送</button>
         <button :class="{ on: activeTab === 'receive' }" @click="activeTab = 'receive'">接收</button>
         <button :class="{ on: activeTab === 'manage' }" @click="activeTab = 'manage'">我的传输</button>
       </nav>
-      <button class="ext-btn" @click="drawerOpen = true" title="扩展模块">⚙ 更多</button>
+      <button class="ext-btn" :class="{ on: extOpen }" @click="extOpen = !extOpen">
+        {{ extOpen ? '✕ 关闭' : '⚙ 更多' }}
+      </button>
     </header>
 
     <main class="main">
-      <router-view />
+      <router-view v-if="!extOpen" />
+      <div v-else class="ext-panel-host">
+        <ExtensionPanel :open="extOpen" @close="extOpen = false" />
+      </div>
     </main>
-
-    <ExtensionsDrawer :open="drawerOpen" @close="drawerOpen = false" @select="selectExt" />
   </div>
 </template>
 
@@ -69,13 +65,10 @@ function selectExt(id: string) {
 .tabs button.on { background: var(--accent-grad); color: #07101f; }
 .ext-btn { margin-left: auto; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); padding: 8px 14px; border-radius: 999px; font-size: 13px; }
 .ext-btn:hover { border-color: var(--accent); }
+.ext-btn.on { border-color: var(--accent); color: var(--accent); }
 .main { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 28px 18px 40px; }
+.ext-panel-host { width: 100%; max-width: 980px; }
 
-@media (max-width: 640px) {
-  .ext-btn { display: none; } /* 小屏隐藏扩展按钮 */
-}
-
-/* 手机/平板：面板铺满并去掉外层卡片框，减少层层叠靠 */
 @media (max-width: 900px) {
   .topbar { padding: 12px 14px; }
   .main { padding: 12px 6px 24px; }

@@ -1,22 +1,26 @@
-// 扩展模块注册表：右侧「更多」抽屉里的内容。
-// 数组顺序 = 抽屉展示顺序（可配置/可排序）；新增模块只需加一项 + 一个子目录，抽屉零改动。
+// 扩展/导航注册表：右侧「更多」常驻分栏里的左侧导航。
+// 数组顺序 = 导航展示顺序（可配置）；首项「首页」由 ExtensionPanel 注入。
 // 核心逻辑写 .ts，UI 写对应子目录的 .vue（见各 extension 子目录）。
+// 类型：
+//  - panel: 静态面板组件（如 usage / sponsor）
+//  - action: 操作型（如 clearCache）
+//  - doc:   后端文档模块（目录 + 翻页，如 markdown-post）—— 内容由后端按 moduleId 提供，前端只读
 
 import type { Component } from 'vue';
 import UsagePanel from './usage/UsagePanel.vue';
 import ClearCachePanel from './clearCache/ClearCachePanel.vue';
-import MarkdownPostPanel from './markdown-post/MarkdownPostPanel.vue';
 import SponsorPanel from './sponsor/SponsorPanel.vue';
 
-export type ExtensionKind = 'panel' | 'action';
+export type ExtensionKind = 'panel' | 'action' | 'doc';
 
 export interface Extension {
   id: string;
   title: string;
   desc: string;
-  icon: string; // emoji 或字符
+  icon: string;
   kind: ExtensionKind;
-  component: Component; // 点方框后渲染的页面组件
+  component: Component; // panel/action 用：点导航后渲染的页面组件
+  moduleId?: string; // kind==='doc' 时：后端数据源的模块标识
 }
 
 export const extensions: Extension[] = [
@@ -41,8 +45,9 @@ export const extensions: Extension[] = [
     title: '项目动态',
     desc: '公告与更新（后端发布，前端只读展示）',
     icon: '📰',
-    kind: 'panel',
-    component: MarkdownPostPanel,
+    kind: 'doc',
+    component: SponsorPanel, // 占位，doc 实际渲染走 ModuleView
+    moduleId: 'posts',
   },
   {
     id: 'sponsor',
