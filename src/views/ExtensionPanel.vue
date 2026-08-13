@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { computed } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { extensions } from '@/extensions';
 import ModuleView from './ModuleView.vue';
 
-defineProps<{ open: boolean }>();
+const props = defineProps<{ id?: string }>();
+const route = useRoute();
+const router = useRouter();
 
-// null = 模块选择页（目录）；选中后展示该模块整页
-const active = ref<string | null>(null);
+// 路由 /ext 无 id → 模块选择页；/ext/:id → 选中该模块整页（刷新保活）
+const active = computed(() => props.id ?? null);
 
 const current = computed(() => extensions.find((e) => e.id === active.value) ?? null);
 const docModuleId = computed(() =>
@@ -14,10 +17,10 @@ const docModuleId = computed(() =>
 );
 
 function openModule(id: string) {
-  active.value = id;
+  router.push('/ext/' + id);
 }
 function back() {
-  active.value = null;
+  router.push('/ext');
 }
 </script>
 

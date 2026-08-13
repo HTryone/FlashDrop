@@ -1,15 +1,13 @@
 <script setup lang="ts">
-import { ref, provide, watch, defineAsyncComponent } from 'vue';
-import { useRoute } from 'vue-router';
-
-// 懒加载：仅当用户点开「更多」时才拉取该面板及其子模块（ModuleView / 扩展模块 / markdown 渲染）
-const ExtensionPanel = defineAsyncComponent(() => import('./views/ExtensionPanel.vue'));
+import { ref, provide, watch, computed } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 
 type TabType = 'send' | 'receive' | 'manage';
 const activeTab = ref<TabType>('send');
 provide('homeTab', activeTab);
 
 const route = useRoute();
+const router = useRouter();
 watch(
   () => route.fullPath,
   () => {
@@ -22,7 +20,11 @@ watch(
   { immediate: true },
 );
 
-const extOpen = ref(false);
+// 「更多」= 路由 /ext*；点击切换，刷新后停在对应模块
+const inExt = computed(() => route.path.startsWith('/ext'));
+function toggleExt() {
+  router.push(inExt.value ? '/' : '/ext');
+}
 </script>
 
 <template>
@@ -32,21 +34,18 @@ const extOpen = ref(false);
         <span class="logo gradient-text">⚡ 闪传</span>
         <span class="tag">FlashDrop</span>
       </div>
-      <nav v-if="!extOpen && route.path === '/'" class="tabs">
+      <nav v-if="route.path === '/'" class="tabs">
         <button :class="{ on: activeTab === 'send' }" @click="activeTab = 'send'">发送</button>
         <button :class="{ on: activeTab === 'receive' }" @click="activeTab = 'receive'">接收</button>
         <button :class="{ on: activeTab === 'manage' }" @click="activeTab = 'manage'">我的传输</button>
       </nav>
-      <button class="ext-btn" :class="{ on: extOpen }" @click="extOpen = !extOpen">
-        {{ extOpen ? '✕ 关闭' : '⚙ 更多' }}
+      <button class="ext-btn" :class="{ on: inExt }" @click="toggleExt">
+        {{ inExt ? '✕ 关闭' : '⚙ 更多' }}
       </button>
     </header>
 
     <main class="main">
-      <router-view v-if="!extOpen" />
-      <div v-else class="ext-panel-host">
-        <ExtensionPanel :open="extOpen" @close="extOpen = false" />
-      </div>
+      <router-view />
     </main>
   </div>
 </template>
@@ -77,7 +76,6 @@ const extOpen = ref(false);
 .ext-btn:hover { border-color: var(--accent); }
 .ext-btn.on { border-color: var(--accent); color: var(--accent); }
 .main { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 28px 18px 40px; }
-.ext-panel-host { width: 100%; max-width: 980px; }
 
 @media (max-width: 640px) {
   .topbar { padding: 12px 12px; gap: 10px; }
