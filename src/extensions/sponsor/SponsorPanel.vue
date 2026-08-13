@@ -24,23 +24,27 @@ function go(link: string) {
 </template>
 
 <style scoped>
-.sponsor { display: flex; flex-direction: column; gap: 16px; }
-.sponsor-card { display: flex; gap: 16px; align-items: flex-start; }
-.thumb {
-  width: 140px; height: 140px; flex: none;
-  border-radius: var(--radius-sm); overflow: hidden;
-  background: var(--panel-2); border: 1px solid var(--border);
-  display: flex; align-items: center; justify-content: center;
+.sponsor { display: flex; flex-direction: column; gap: 32px; align-items: center; }
+.sponsor-card {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 16px; text-align: center;
+  width: 100%; max-width: 360px;
 }
-.thumb img { width: 100%; height: 100%; object-fit: cover; }
+.thumb {
+  width: 280px; height: 280px; flex: none;
+  border-radius: var(--radius-sm); overflow: hidden;
+  background: #fff; border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 2px 12px rgba(0,0,0,.35);
+}
+.thumb img { width: 100%; height: 100%; object-fit: contain; }
 .thumb-empty { font-size: 12px; color: var(--text-faint); text-align: center; padding: 8px; }
-.info { flex: 1; }
-.info h3 { margin: 0 0 6px; font-size: 16px; }
-.info .muted { margin: 0 0 12px; line-height: 1.6; }
+.info { flex: none; width: 100%; }
+.info h3 { margin: 0 0 8px; font-size: 18px; }
+.info .muted { margin: 0 0 16px; line-height: 1.6; }
 .small { font-size: 12px; }
 
 @media (max-width: 520px) {
-  .sponsor-card { flex-direction: column; }
-  .thumb { width: 100%; height: 180px; }
+  .thumb { width: min(100%, 280px); height: auto; aspect-ratio: 1 / 1; }
 }
 </style>

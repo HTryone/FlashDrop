@@ -63,7 +63,8 @@
   .tabs button.on { border-color:var(--accent); color:var(--accent); }
   .empty { color:var(--faint); padding:30px; text-align:center; }
 
-  .preview { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:18px 20px; max-width:860px; line-height:1.75; color:#e6edf3; font-size:15px; }
+  /* 外层卡片仅保留边框/底色/内边距；宽度完全由同元素上的 .doc-body（doc-style.css 统一定义 max-width:1041px）驱动。此处严禁写 max-width，否则会覆盖 .doc-body 的单一来源宽度。仅用 fit-content 让卡片收缩到内容宽度并居中。 */
+  .preview { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:18px 20px; width:fit-content; margin:0 auto; line-height:1.75; color:#e6edf3; font-size:15px; }
   /* 文档正文样式已抽到同目录 doc-style.css（与线上 ModuleView 共用），此处仅保留 .preview 外框。 */
   code.k { background:var(--panel2); padding:1px 5px; border-radius:4px; color:var(--accent); }
 </style>
@@ -171,7 +172,8 @@ function renderDocs(){
   const box = $('docList'); box.innerHTML='';
   $('docModName').textContent = curMod ? (curMod.title||'(未命名)') : '—';
   if(!curMod) return;
-  curMod.docs.forEach((d)=>{
+  const list = curMod.docs.slice().sort((a,b)=> (b.date||'').localeCompare(a.date||''));
+  list.forEach((d)=>{
     const el = document.createElement('div');
     el.className = 'doc-item' + (d===curDoc?' on':'');
     el.innerHTML = `<span class="t">${esc(d.title||'(无标题)')}</span><button class="del" title="删除">✕</button>`;

@@ -20,7 +20,7 @@ export async function fetchDocs(moduleId: string): Promise<DocItem[]> {
     if (mod.moduleId === moduleId && Array.isArray(mod.docs)) {
       return mod.docs
         .filter((d) => !d.module || d.module === moduleId)
-        .sort((a, b) => (a.updatedAt || '').localeCompare(b.updatedAt || ''));
+        .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
     }
   }
   // 2) fallback：后端 API（未生成本地数据时走这里，兼容原项目动态模块）
@@ -31,7 +31,7 @@ export async function fetchDocs(moduleId: string): Promise<DocItem[]> {
     const list = Array.isArray(data) ? data : data.docs ?? [];
     return list
       .filter((d) => !d.module || d.module === moduleId)
-      .sort((a, b) => (a.updatedAt || '').localeCompare(b.updatedAt || ''));
+      .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
   } catch {
     return [];
   }

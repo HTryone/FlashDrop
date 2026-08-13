@@ -49,7 +49,6 @@ onMounted(load);
 watch(() => props.moduleId, load);
 
 watch(activeId, (id) => {
-  nav.value.forEach((n) => (n.open = n.doc.id === id));
   activeHeadingId.value = nav.value.find((n) => n.doc.id === id)?.headings[0]?.id || '';
 });
 
@@ -62,13 +61,7 @@ const contentHtml = computed(() => {
   const title = active.value.title.trim();
   const html = renderMarkdown(active.value.markdown);
   if (!title) return html;
-  const div = document.createElement('div');
-  div.innerHTML = html;
-  const firstH1 = div.querySelector('h1');
-  if (firstH1 && firstH1.textContent?.trim() === title) {
-    firstH1.classList.add('doc-title-hidden');
-  }
-  return div.innerHTML;
+  return html;
 });
 const idx = computed(() => docs.value.findIndex((d) => d.id === activeId.value));
 const prev = computed(() => (idx.value > 0 ? docs.value[idx.value - 1] : null));
@@ -134,7 +127,6 @@ function onScroll() {
     }
     if (current.docId !== activeId.value) activeId.value = current.docId;
     activeHeadingId.value = current.id;
-    nav.value.forEach((n) => (n.open = n.doc.id === current.docId));
   });
 }
 onMounted(() => window.addEventListener('scroll', onScroll, { passive: true }));
@@ -221,11 +213,18 @@ onUnmounted(() => window.removeEventListener('scroll', onScroll));
 .toc-doc.on > .toc-doc-name { color: var(--accent); border-left-color: var(--accent); font-weight: 600; }
 
 .toc-arrow {
-  width: 0; height: 0;
-  border-top: 4px solid transparent; border-bottom: 4px solid transparent; border-left: 5px solid currentColor;
-  opacity: .6; transition: transform .2s;
+  flex: none; width: 30px; height: 30px;
+  display: inline-flex; align-items: center; justify-content: center;
+  margin-right: 2px; cursor: pointer; border-radius: 6px;
+  transition: background .15s;
 }
-.toc-arrow.open { transform: rotate(90deg); }
+.toc-arrow:hover { background: var(--panel-2); }
+.toc-arrow::after {
+  content: ''; width: 0; height: 0;
+  border-top: 7px solid transparent; border-bottom: 7px solid transparent; border-left: 9px solid currentColor;
+  opacity: .8; transition: transform .2s;
+}
+.toc-arrow.open::after { transform: rotate(90deg); }
 
 .toc-headings {
   display: flex; flex-direction: column; padding: 2px 0 6px 24px; border-left: 2px solid transparent;
