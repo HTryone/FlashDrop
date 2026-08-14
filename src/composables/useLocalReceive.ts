@@ -22,6 +22,8 @@ export function useLocalReceive() {
   const recvSpeed = ref<number | null>(null); // MB/s，接收中按字节增量推算（单流总速度，只显示一条）
   const recvStatus = ref('输入房间码（或粘贴整条链接）后点连接');
   const recvSegCount = ref(1);
+  const recvDone = ref(false);   // 接收完成态（显示「接收完成」+ 全新开始）
+  const recvFailed = ref(false); // 接收失败态（两端回初始，房间码/口令可改）
 
   // 接收总字节数（由清单累加），用于把 0..1 进度还原成字节、进而算速度
   const recvTotalBytes = computed(() => recvFiles.value.reduce((a, f) => a + f.size, 0));
@@ -59,7 +61,13 @@ export function useLocalReceive() {
     onFileProgress: (progs) => { recvFileProgress.value = progs; },
     onProgress: (p) => { sampleRecv(p * recvTotalBytes.value, recvTotalBytes.value); },
     onSegCount: (n) => { recvSegCount.value = n; },
-    onReceiving: (v) => { receiving.value = v; },
+    onReceiving: (v) => { receiving.value = v; if (v) { recvDone.value = false; recvFailed.value = false; } },
+    onDone: () => { recvDone.value = true; recvFailed.value = false; receiving.value = false; },
+    onFail: (msg) => {
+      recvFailed.value = true; recvDone.value = false; receiving.value = false;
+      recvFiles.value = []; recvFileProgress.value = []; recvProgress.value = 0;
+      recvStatus.value = (msg || '接收失败') + '，已回到可重新连接状态，可改密码后重新点连接接收';
+    },
   });
 
   // 从 URL 自动填入房间码 / 口令
@@ -136,11 +144,11 @@ export function useLocalReceive() {
       onFiles: (files) => { recvFiles.value = files; recvFileProgress.value = []; },
       onFileProgress: (progs) => { recvFileProgress.value = progs; },
       onState: (s, d) => {
-        if (s === 'connected') { senderOnline.value = true; recvStatus.value = 'P2P 直连已建立，等待文件清单…'; }
-        else if (s === 'transferring') { senderOnline.value = true; recvStatus.value = 'P2P 接收中…'; }
-        else if (s === 'done') { receiving.value = false; recvStatus.value = 'P2P 接收完成，文件已保存'; }
-        else if (s === 'error') { senderOnline.value = false; recvStatus.value = `P2P 出错：${d || ''}`; }
-        else if (s === 'aborted') { senderOnline.value = false; receiving.value = false; recvStatus.value = '已取消'; }
+        if (s === 'connected') { senderOnline.value = true; recvDone.value = false; recvFailed.value = false; recvStatus.value = 'P2P 直连已建立，等待文件清单…'; }
+        else if (s === 'transferring') { senderOnline.value = true; recvDone.value = false; recvFailed.value = false; recvStatus.value = 'P2P 接收中…'; }
+        else if (s === 'done') { receiving.value = false; recvDone.value = true; recvFailed.value = false; recvStatus.value = 'P2P 接收完成，文件已保存'; }
+        else if (s === 'error') { senderOnline.value = false; receiving.value = false; recvFailed.value = true; recvStatus.value = `P2P 出错：${d || ''}`; }
+        else if (s === 'aborted') { senderOnline.value = false; receiving.value = false; recvDone.value = false; recvFailed.value = false; recvStatus.value = '已取消'; }
       },
       // 发送端已加入房间并开始协商：提前点亮在线指示灯，给出「发送端在线」反馈
       onPeerJoined: () => {
@@ -157,7 +165,7 @@ export function useLocalReceive() {
         }
       },
       onProgress: (p) => { sampleRecv(p.received, p.total); },
-      onFail: (e) => { recvStatus.value = `P2P 接收失败：${e.message}`; receiving.value = false; },
+      onFail: (e) => { recvStatus.value = `P2P 接收失败：${e.message}`; receiving.value = false; recvFailed.value = true; },
     });
     p2pReceiver = inst;
     try {
@@ -181,13 +189,34 @@ export function useLocalReceive() {
     recvProgress.value = 0;
   }
 
+  /** 全新开始：清空本次接收内容，回到「连接接收」初始态（房间码/口令一并清空） */
+  function resetRecv() {
+    receiving.value = false;
+    recvReady.value = false;
+    recvDone.value = false;
+    recvFailed.value = false;
+    recvFiles.value = [];
+    recvFileProgress.value = [];
+    recvProgress.value = 0;
+    senderOnline.value = false;
+    recvSegCount.value = 1;
+    recvStatus.value = '输入房间码（或粘贴整条链接）后点连接';
+    resetRecvSpeed();
+    recvRoom.value = '';
+    recvPass.value = '';
+    receiver.setRoom('');
+    receiver.setPass('');
+    receiver.close();
+    if (p2pReceiver) { try { p2pReceiver.abort(); } catch { /* ignore */ } p2pReceiver = null; }
+  }
+
   onUnmounted(() => {
     if (p2pReceiver) { try { p2pReceiver.abort(); } catch { /* ignore */ } }
     receiver.close();
   });
 
   return {
-    recvRoom, recvPass, recvLinkInput, receiving, recvReady, senderOnline, recvFiles, recvProgress, recvFileProgress, recvSpeed, recvStatus, recvSegCount,
-    parsePastedLink, localTransport, startRecv, onCancelRecv,
+    recvRoom, recvPass, recvLinkInput, receiving, recvReady, senderOnline, recvFiles, recvProgress, recvFileProgress, recvSpeed, recvStatus, recvSegCount, recvDone, recvFailed,
+    parsePastedLink, localTransport, startRecv, onCancelRecv, resetRecv,
   };
 }

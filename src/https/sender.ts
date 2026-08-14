@@ -52,6 +52,7 @@ export class LocalSender {
   // 修复「接收端先点连接接收，发送端灯要等到点开始传输才亮」——那时才建连导致早先的 ready/peer-joined 通知无人接收。
   private presenceCtrl: RelayControl | null = null;
   private remoteAborted = false; // 对方（接收端）取消，区别于本地取消
+  private remoteFailed = false;  // 对方（接收端）接收失败，区别于取消
   private currentSegRoom = '';   // 当前段对应的 relay 房间（含段号），供 closeStream 关流
   private streamClosed = false;  // 当前段流是否已 POST /close，防重复关闭
 
@@ -219,6 +220,7 @@ export class LocalSender {
     this.cb.onStatus('正在建立控制通道…');
     this.abort = new AbortController();
     this.remoteAborted = false;
+    this.remoteFailed = false;
 
     try {
       let startIdx = 0;
@@ -244,7 +246,8 @@ export class LocalSender {
         }, 30000);
       }
     } catch (e: any) {
-      if (this.remoteAborted) this.cb.onStatus('对方已取消接收');
+      if (this.remoteFailed) this.cb.onStatus('对方接收失败，请重新点「开始传输」重发');
+      else if (this.remoteAborted) this.cb.onStatus('对方已取消接收');
       else if (this.abort?.signal.aborted) this.cb.onStatus('已取消发送');
       else this.cb.onStatus(`传输出错: ${e?.message || e}`);
       this.setSending(false);
@@ -302,6 +305,14 @@ export class LocalSender {
         this.remoteAborted = true;
         this.abort?.abort();
         this.cb.onStatus('对方已取消接收');
+        this.setSending(false);
+        this.close();
+      } else if (data.type === 'recv-error') {
+        // 接收端接收失败：中止本段、恢复「开始发送」按钮，等待对方重发
+        this.remoteAborted = true;
+        this.remoteFailed = true;
+        this.abort?.abort();
+        this.cb.onStatus(`对方接收失败：${data.reason || '未知原因'}，请重新点「开始传输」重发`);
         this.setSending(false);
         this.close();
       }

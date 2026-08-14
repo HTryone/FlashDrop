@@ -20,6 +20,8 @@ export interface ReceiverCallbacks {
   onFileProgress?: (progs: number[]) => void; // 逐文件进度（0..1，与 files 同序）；底层单流顺序写盘，按全局序号推导
   onSegCount: (n: number) => void;
   onReceiving: (v: boolean) => void;
+  onDone?: () => void;
+  onFail?: (msg: string) => void;
 }
 
 export class LocalReceiver {
@@ -111,6 +113,7 @@ export class LocalReceiver {
     this.lastProgressAt = 0; this.recvDoneSent = false;
     this.perFileChunks = []; this.nextWriteSeq = 0; this.readyBuf.clear(); this.drainRunning = false;
     this.pendingDone = false;
+    this.finishing = false;
   }
 
   // ============ 启动 ============
@@ -197,11 +200,11 @@ export class LocalReceiver {
       });
     } catch (e: any) {
       this.cb.onStatus(`连接失败: ${e?.message || e}`);
-      this.receiving = false; return false;
+      this.failRecv(`连接失败: ${e?.message || e}`); return false;
     }
     if (!resp.ok || !resp.body) {
       this.cb.onStatus(`连接失败: HTTP ${resp.status}`);
-      this.receiving = false; return false;
+      this.failRecv(`连接失败: HTTP ${resp.status}`); return false;
     }
 
     this.cb.onSenderOnline(true);
@@ -215,7 +218,7 @@ export class LocalReceiver {
       if (attempt > 0) {
         reader.cancel();
         const r2 = await fetch(`${base}/stream/${room}`, { signal: this.recvAbort!.signal, headers: { 'Accept': 'application/octet-stream' } });
-        if (!r2.ok || !r2.body) { this.cb.onStatus(`连接失败(重试${attempt}): HTTP ${r2.status}`); this.receiving = false; return false; }
+        if (!r2.ok || !r2.body) { this.cb.onStatus(`连接失败(重试${attempt}): HTTP ${r2.status}`); this.failRecv(`连接失败(重试${attempt}): HTTP ${r2.status}`); return false; }
         resp = r2; reader = r2.body.getReader(); this.fr.setReader(reader);
         await new Promise((r) => setTimeout(r, 1000 * attempt));
       }
@@ -228,9 +231,9 @@ export class LocalReceiver {
         } catch { /* 开场帧等非法 JSON，忽略继续读 */ }
       }
     }
-    if (!offerPayload) { this.cb.onStatus('未收到文件清单，对方可能已断开'); this.receiving = false; return false; }
+    if (!offerPayload) { this.cb.onStatus('未收到文件清单，对方可能已断开'); this.failRecv('未收到文件清单，对方可能已断开'); return false; }
     const offer = JSON.parse(new TextDecoder().decode(offerPayload));
-    if (!Array.isArray(offer.files) || offer.files.length === 0) { this.cb.onStatus('收到无效的文件清单'); this.receiving = false; return false; }
+    if (!Array.isArray(offer.files) || offer.files.length === 0) { this.cb.onStatus('收到无效的文件清单'); this.failRecv('收到无效的文件清单'); return false; }
     const segIndex = offer.segIndex || 0;
     const segCount = offer.segCount || 1;
     let segIsLast = typeof offer.isLast === 'boolean' ? offer.isLast : segIndex >= segCount - 1;
@@ -239,7 +242,7 @@ export class LocalReceiver {
     this.cb.onSegCount(this.segCount);
     if (segIndex !== seg) {
       this.cb.onStatus(`段序号错乱：期望第 ${seg + 1} 段，收到第 ${segIndex + 1} 段`);
-      this.receiving = false; return false;
+      this.failRecv(`段序号错乱：期望第 ${seg + 1} 段，收到第 ${segIndex + 1} 段`); return false;
     }
 
     if (seg === 0) {
@@ -253,7 +256,7 @@ export class LocalReceiver {
         const r = await makeSinks(offer.files, dirHandle);
         this.writers = r.writers; this.fallback = r.fallback;
       } catch (e: any) {
-        this.cb.onStatus(`初始化接收失败: ${e?.message || e}`); this.receiving = false; return false;
+        this.cb.onStatus(`初始化接收失败: ${e?.message || e}`); this.failRecv(`初始化接收失败: ${e?.message || e}`); return false;
       }
       if (this.recvTotalChunks === 0) {
         this.cb.onStatus('接收完成（无文件）');
@@ -264,7 +267,7 @@ export class LocalReceiver {
     } else {
       const same = this.manifest0 && this.manifest0.length === offer.files.length &&
         offer.files.every((f: any, i: number) => f.name === this.manifest0![i].name && f.size === this.manifest0![i].size);
-      if (!same) { this.cb.onStatus('文件清单与第 1 段不一致，传输可能损坏'); this.receiving = false; return false; }
+      if (!same) { this.cb.onStatus('文件清单与第 1 段不一致，传输可能损坏'); this.failRecv('文件清单与第 1 段不一致，传输可能损坏'); return false; }
     }
 
     this.cb.onRecvReady(true);
@@ -302,6 +305,18 @@ export class LocalReceiver {
     return true;
   }
 
+  /** 接收失败：回初始状态，通知 UI 与发送端，房间码/口令保留可改 */
+  private failRecv(msg: string) {
+    if (this.finishing) return;
+    this.receiving = false;
+    this.cb.onReceiving(false);
+    this.cb.onFail?.(msg);
+    // 通知发送端「我接收失败」，让对方恢复「开始发送」按钮重发
+    if (this.ctrl?.isOpen) { try { this.ctrl.send({ type: 'recv-error', reason: msg }); } catch { /* ignore */ } }
+    this.closeConn();
+    this.resetReceiver();
+  }
+
   private async finishRecv() {
     if (this.finishing) return;
     this.finishing = true;
@@ -320,8 +335,10 @@ export class LocalReceiver {
         ? '接收完成，文件已流式保存到浏览器下载目录（如未自动弹出，请查看下载管理器）'
         : '接收完成（部分文件写入失败）');
     }
+    // 完成态：通知 UI 进入「接收完成」态（保留文件清单展示），并通过 onReceiving(false) 解锁按钮
     this.receiving = false;
-    this.cb.onRecvReady(false);
+    this.cb.onReceiving(false);
+    this.cb.onDone?.();
     this.writers = [];
   }
 

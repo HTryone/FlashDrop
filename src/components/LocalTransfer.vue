@@ -7,8 +7,8 @@ const props = defineProps<{ side?: 'send' | 'receive' }>();
 
 // 本地直传（HTTP + P2P）接收编排已抽到 src/composables/useLocalReceive.ts
 const {
-  recvRoom, recvPass, recvLinkInput, receiving, recvReady, senderOnline, recvFiles, recvProgress, recvFileProgress, recvSpeed, recvStatus, recvSegCount,
-  parsePastedLink, localTransport, startRecv, onCancelRecv,
+  recvRoom, recvPass, recvLinkInput, receiving, recvReady, senderOnline, recvFiles, recvProgress, recvFileProgress, recvSpeed, recvStatus, recvSegCount, recvDone, recvFailed,
+  parsePastedLink, localTransport, startRecv, onCancelRecv, resetRecv,
 } = useLocalReceive();
 </script>
 
@@ -39,8 +39,16 @@ const {
         <span class="transport p2p" v-else>P2P 直连</span>
       </div>
       <div class="actions">
-        <button v-if="!receiving" class="btn primary" :disabled="receiving" @click="startRecv">连接接收</button>
-        <button v-else class="btn danger" @click="onCancelRecv">取消接收</button>
+        <template v-if="recvDone">
+          <button class="btn" disabled>接收完成</button>
+          <button class="btn ghost" @click="resetRecv">全新开始</button>
+        </template>
+        <template v-else-if="receiving">
+          <button class="btn danger" @click="onCancelRecv">取消接收</button>
+        </template>
+        <template v-else>
+          <button class="btn primary" @click="startRecv">连接接收</button>
+        </template>
       </div>
       <div v-if="recvFiles.length" class="filelist">
         <div class="recv-summary" v-if="receiving || recvReady">
@@ -108,5 +116,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
   .btn.sm.on { background: var(--accent-grad); color: #07101f; border: none; }
   .transport.p2p { color: #7aa2ff; border-color: #7aa2ff; }
   .btn.danger { background: var(--danger, #e24b4a); color: #fff; border: none; }
+  .btn.ghost { background: transparent; color: var(--text-dim); border: 1px solid var(--border); }
+  .btn.ghost:hover { color: var(--text); border-color: var(--accent); }
   input[type=file] { font-size: 13px; color: var(--text-dim); }
 </style>
