@@ -67,6 +67,11 @@
   .preview { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:18px 20px; width:fit-content; margin:0 auto; line-height:1.75; color:#e6edf3; font-size:15px; }
   /* 文档正文样式已抽到同目录 doc-style.css（与线上 ModuleView 共用），此处仅保留 .preview 外框。 */
   code.k { background:var(--panel2); padding:1px 5px; border-radius:4px; color:var(--accent); }
+
+  /* 拖入 .md/.txt 文件时的高亮与提示 */
+  textarea.drag { border-color:var(--accent); background:rgba(77,163,255,0.08); box-shadow:0 0 0 3px rgba(77,163,255,0.18); }
+  .dnd-hint { font-size:11px; color:var(--faint); margin:0 0 6px; }
+  .dnd-hint b { color:var(--accent); font-weight:600; }
 </style>
 </head>
 <body>
@@ -126,6 +131,7 @@
             <button id="tabPrev">预览</button>
             <button id="insLink">🔗 插入跳转链接</button>
           </div>
+          <div class="dnd-hint">💡 可直接把 <b>.md / .txt</b> 文件拖进下面的输入框（没选文档时拖入会新建一篇）</div>
           <textarea id="dMd" placeholder="在这里粘贴 / 写 Markdown…"></textarea>
           <div id="prevBox" class="preview doc-body" style="display:none"></div>
         </div>
@@ -457,6 +463,35 @@ $('openDir').onclick=openFolder;
 $('dTitle').oninput=()=>{ if(curDoc){ curDoc.title=$('dTitle').value; renderDocs(); } };
 $('dDate').oninput=()=>{ if(curDoc) curDoc.date=$('dDate').value; };
 $('dMd').oninput=()=>{ if(curDoc) curDoc.md=$('dMd').value; };
+
+// ===== 拖入 .md/.txt 文件：直接灌进编辑框 =====
+const docEditBox = $('docEdit');
+const mdType = (f)=> /\.(md|markdown|txt|text)$/i.test(f.name) || /text\//.test(f.type);
+function readDroppedFile(file){
+  if(!mdType(file)){ alert('只支持 .md / .txt 文本文件'); return; }
+  const reader = new FileReader();
+  reader.onload = ()=>{
+    const text = String(reader.result||'');
+    if(curDoc){ $('dMd').value = text; curDoc.md = text; }
+    else if(curMod){
+      const name = file.name.replace(/\.(md|markdown|txt|text)$/i,'') || '导入文档';
+      const d = { id:uid(), title:name, date:new Date().toISOString().slice(0,10), md:text };
+      curMod.docs.push(d); curDoc = d;
+    } else { alert('请先选 / 建一个模块，再拖入文件。'); return; }
+    renderAll();
+  };
+  reader.readAsText(file);
+}
+docEditBox.addEventListener('dragover', (e)=>{ e.preventDefault(); $('dMd').classList.add('drag'); });
+docEditBox.addEventListener('dragleave', ()=> $('dMd').classList.remove('drag'));
+docEditBox.addEventListener('drop', (e)=>{
+  e.preventDefault(); $('dMd').classList.remove('drag');
+  const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if(file) readDroppedFile(file);
+});
+// 阻止把文件拖到页面其它位置时浏览器直接打开文件（导航走掉）
+window.addEventListener('dragover', (e)=> e.preventDefault());
+window.addEventListener('drop', (e)=>{ if(e.target!==$('dMd') && !docEditBox.contains(e.target)) e.preventDefault(); });
 
 renderAll();
 </script>

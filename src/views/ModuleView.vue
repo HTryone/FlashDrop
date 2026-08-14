@@ -110,22 +110,22 @@ function closeNav() {
   navOpen.value = false;
 }
 
-// 滚动时自动高亮当前 h1/h2
+// 滚动时只高亮当前篇的 h1/h2，绝不切换文档（否则回滚到顶会把 activeId 重置回第一篇）
 let ticking = false;
 function onScroll() {
   if (ticking) return;
   ticking = true;
   requestAnimationFrame(() => {
     ticking = false;
-    const headings = nav.value.flatMap((n) => n.headings.map((h) => ({ ...h, docId: n.doc.id })));
+    // 只看当前打开文档的标题，不混入其它未渲染文档的标题
+    const headings = nav.value.find((n) => n.doc.id === activeId.value)?.headings || [];
     if (!headings.length) return;
-    const top = window.scrollY + 100;
+    const threshold = 100; // 视口顶部 100px 内的标题算"当前"
     let current = headings[0];
     for (const h of headings) {
       const el = document.getElementById(h.id);
-      if (el && el.offsetTop <= top) current = h;
+      if (el && el.getBoundingClientRect().top <= threshold) current = h;
     }
-    if (current.docId !== activeId.value) activeId.value = current.docId;
     activeHeadingId.value = current.id;
   });
 }
