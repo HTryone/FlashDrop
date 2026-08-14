@@ -202,7 +202,11 @@ function resetLocalRoom() {
 // 中转发送状态机已抽到 src/transfer/tus/useRelayTransfer.ts（relay 实例在文件顶部创建）
 
 // 组件卸载时清理本地直传连接 + 提前信令（中转上传 abort 已在 useRelayTransfer 内处理）
-onUnmounted(() => { sender.close(); if (p2pEarlySig) { p2pEarlySig.close(); p2pEarlySig = null; } });
+onUnmounted(() => {
+  sender.close();
+  if (p2pEarlySig) { p2pEarlySig.close(); p2pEarlySig = null; }
+  if (p2pSender) { p2pSender.abort(); p2pSender = null; }
+});
 </script>
 
 <template>

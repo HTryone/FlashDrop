@@ -52,6 +52,11 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
 
   const setState = (s: P2PState, d?: string) => opts.onState?.(s, d);
 
+  // 传输完成后延迟释放连接，避免孤儿连接堆积（延迟确保 done 帧先发出）；peer.destroy/sig.close 均幂等，重复调用安全
+  const scheduleCleanup = () => {
+    setTimeout(() => { peer?.destroy(); sig?.close(); }, 150);
+  };
+
   // 收尾判定：发送端已广播结束 且 本地已收齐全部字节 → 完成。
   // 不依赖「最后一块 seq 恰好到达」的单点触发，recvBytes 到顶即兜底完成，
   // 避免最后一块在息屏重连边界丢失时两端状态不一致（发送端 done、接收端卡中间态）。
@@ -59,6 +64,7 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
     if (senderDone && !finished && recvBytes >= totalBytes) {
       finished = true;
       setState('done');
+      scheduleCleanup();
     }
   };
 
@@ -116,6 +122,7 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
             await sink.close();
             if (dc && dc.readyState === 'open') dc.send(JSON.stringify({ type: 'done' }));
             setState('done');
+            scheduleCleanup();
           }
         }
       }
@@ -229,27 +236,34 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
   async function connect(): Promise<void> {
     cryptoCtx = await deriveP2PKey(opts.pass);
     setState('signaling');
-    sig = new SignalingClient({
-      relayBase: opts.relayBase,
-      room: opts.room,
-      role: 'receiver',
-      onSignal: (d) => peer?.onSignal(d),
-      onReconnecting: () => setState('signaling', '信令重连中'),
-      onPeerConnected: (role) => { if (role === 'sender') opts.onPeerPresent?.('sender'); },
-    });
-    const ice = await fetchIceServers(opts.relayBase, opts.relayBase.startsWith('https') ? 'wss' : 'ws');
-    peer = new PeerLink({
-      role: 'receiver',
-      sendSignal: (d) => sig?.send(d),
-      onDcOpen,
-      onDcMessage,
-      onState: (c) => {
-        if (c) setState('connecting');
-      },
-      onPeerJoined: () => opts.onPeerJoined?.(),
-    });
-    sig.connect();
-    peer.connect(ice);
+    try {
+      sig = new SignalingClient({
+        relayBase: opts.relayBase,
+        room: opts.room,
+        role: 'receiver',
+        onSignal: (d) => peer?.onSignal(d),
+        onReconnecting: () => setState('signaling', '信令重连中'),
+        onPeerConnected: (role) => { if (role === 'sender') opts.onPeerPresent?.('sender'); },
+      });
+      const ice = await fetchIceServers(opts.relayBase, opts.relayBase.startsWith('https') ? 'wss' : 'ws');
+      peer = new PeerLink({
+        role: 'receiver',
+        sendSignal: (d) => sig?.send(d),
+        onDcOpen,
+        onDcMessage,
+        onState: (c) => {
+          if (c) setState('connecting');
+        },
+        onPeerJoined: () => opts.onPeerJoined?.(),
+      });
+      sig.connect();
+      peer.connect(ice);
+    } catch (e: any) {
+      // 建连阶段失败（如取 ICE 失败）：释放本次新建的资源，避免信令 WS 残留自动重连形成僵尸连接。
+      sig?.close();
+      peer?.destroy();
+      throw e;
+    }
   }
 
   function abort() {

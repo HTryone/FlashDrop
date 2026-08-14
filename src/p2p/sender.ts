@@ -154,12 +154,16 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
           try { dc.send(JSON.stringify({ type: 'done' })); } catch { /* ignore */ }
         }
         setState('done');
+        // 传输完成即释放 WebRTC 连接与信令 WS，避免孤儿连接堆积（延迟确保 done 帧先发出）
+        setTimeout(() => { peer?.destroy(); sig?.close(); }, 150);
       }
     } catch (e: any) {
       if (!aborted) {
         finished = true;
         setState('error', e?.message || String(e));
         opts.onFail?.(e instanceof Error ? e : new Error(String(e)));
+        // 异常路径同样释放连接，避免泄漏（无待发帧，立即销毁）
+        peer?.destroy(); sig?.close();
       }
     } finally {
       pumping = false;
@@ -179,37 +183,49 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
   async function connect(externalSig?: SignalingClient): Promise<void> {
     cryptoCtx = await deriveP2PKey(opts.pass);
     setState('signaling');
-    if (externalSig) {
-      // 复用提前连好的信令 WS（genRoom 时已连），重新接线到本 PeerLink
-      sig = externalSig;
-      sig.setOnSignal((d) => peer?.onSignal(d));
-    } else {
-      sig = new SignalingClient({
-        relayBase: opts.relayBase,
-        room: opts.room,
+    // ownSig 标记 sig 是否为本次自己创建：失败时只关 ownSig，绝不关复用的 externalSig，
+    // 否则会误杀对方仍在使用的信令 WS（genRoom 时提前连好的 p2pEarlySig）。
+    let ownSig = false;
+    try {
+      if (externalSig) {
+        // 复用提前连好的信令 WS（genRoom 时已连），重新接线到本 PeerLink
+        sig = externalSig;
+        sig.setOnSignal((d) => peer?.onSignal(d));
+      } else {
+        sig = new SignalingClient({
+          relayBase: opts.relayBase,
+          room: opts.room,
+          role: 'sender',
+          onSignal: (d) => peer?.onSignal(d),
+          onReconnecting: () => setState('signaling', '信令重连中'),
+          onPeerConnected: (role) => { if (role === 'receiver') opts.onPeerPresent?.('receiver'); },
+        });
+        sig.connect();
+        ownSig = true;
+      }
+      const ice = await fetchIceServers(opts.relayBase, opts.relayBase.startsWith('https') ? 'wss' : 'ws');
+      peer = new PeerLink({
         role: 'sender',
-        onSignal: (d) => peer?.onSignal(d),
-        onReconnecting: () => setState('signaling', '信令重连中'),
-        onPeerConnected: (role) => { if (role === 'receiver') opts.onPeerPresent?.('receiver'); },
+        sendSignal: (d) => sig?.send(d),
+        onDcOpen,
+        onDcMessage,
+        onState: (c) => {
+          if (c) setState('connecting');
+        },
+        onReconnect: () => {
+          // 重连后续传：从已确认的最高序号之后继续，不重发已落盘帧
+          sentSeq = lastAcked;
+        },
+        onPeerJoined: () => opts.onPeerJoined?.(),
       });
-      sig.connect();
+      peer.connect(ice);
+    } catch (e: any) {
+      // 建连阶段失败（如取 ICE 失败）：释放本次新建的资源，避免信令 WS 残留自动重连形成僵尸连接。
+      // peer 始终为本次新建，可安全销毁；sig 仅 ownSig 时才关，复用的 externalSig 不动。
+      if (ownSig) sig?.close();
+      peer?.destroy();
+      throw e;
     }
-    const ice = await fetchIceServers(opts.relayBase, opts.relayBase.startsWith('https') ? 'wss' : 'ws');
-    peer = new PeerLink({
-      role: 'sender',
-      sendSignal: (d) => sig?.send(d),
-      onDcOpen,
-      onDcMessage,
-      onState: (c) => {
-        if (c) setState('connecting');
-      },
-      onReconnect: () => {
-        // 重连后续传：从已确认的最高序号之后继续，不重发已落盘帧
-        sentSeq = lastAcked;
-      },
-      onPeerJoined: () => opts.onPeerJoined?.(),
-    });
-    peer.connect(ice);
   }
 
   function abort() {
