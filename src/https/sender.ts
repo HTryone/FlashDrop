@@ -52,6 +52,8 @@ export class LocalSender {
   // 修复「接收端先点连接接收，发送端灯要等到点开始传输才亮」——那时才建连导致早先的 ready/peer-joined 通知无人接收。
   private presenceCtrl: RelayControl | null = null;
   private remoteAborted = false; // 对方（接收端）取消，区别于本地取消
+  private currentSegRoom = '';   // 当前段对应的 relay 房间（含段号），供 closeStream 关流
+  private streamClosed = false;  // 当前段流是否已 POST /close，防重复关闭
 
   // 端到端滑动窗口状态（控制通道 onmessage 与发送流 pull 共享）
   private ackBytes = 0;
@@ -122,6 +124,8 @@ export class LocalSender {
     this.recvReady = false;
     this.recvReadyResolve = null;
     this.recvReadyPromise = Promise.resolve();
+    this.streamClosed = false;
+    this.currentSegRoom = '';
   }
 
   // ============ 取消 / 关闭 ============
@@ -143,6 +147,25 @@ export class LocalSender {
     // 中止由调用方（handleCtrlMsg 的 cancel 分支 / cancel()）显式触发。
     if (this.ctrl) { this.ctrl.close(); this.ctrl = null; }
     if (this.presenceCtrl) { this.presenceCtrl.close(); this.presenceCtrl = null; }
+  }
+
+  // 关闭当前段在 relay 上的可读流（POST /close）。
+  // 关键：最后段不在发完数据后立刻调用，而是等接收端回 recv-done 后再调，
+  // 避免 relay 在尾帧尚未被 GET 消费时即 controller.close() 截断，导致接收端差一帧卡 99%。
+  // 幂等：streamClosed 守卫，重复调用（recv-done + 超时兜底）只关一次。
+  private async closeStream(): Promise<void> {
+    if (this.streamClosed) return;
+    this.streamClosed = true;
+    if (!this.currentSegRoom) return;
+    try {
+      await fetch(`${resolveRelayBase()}/stream/${this.currentSegRoom}/close`, {
+        method: 'POST', headers: { 'Content-Type': 'application/octet-stream' },
+        body: new Uint8Array(0), signal: this.abort?.signal,
+      });
+    } catch (e: any) {
+      if (this.abort?.signal.aborted) return;
+      console.warn(`关闭流提示失败（数据已送达，relay 会超时回收）: ${e?.message || e}`);
+    }
   }
 
   private setSending(v: boolean) {
@@ -207,6 +230,7 @@ export class LocalSender {
             this.cb.onProgress(1);
             this.setSending(false);
             this.close();
+            void this.closeStream(); // 兜底：接收端未回 recv-done（如崩溃）时关闭流，避免悬挂
           }
         }, 30000);
       }
@@ -216,6 +240,7 @@ export class LocalSender {
       else this.cb.onStatus(`传输出错: ${e?.message || e}`);
       this.setSending(false);
       this.close();
+      void this.closeStream();
     } finally {
       if (this.abort?.signal.aborted) this.setSending(false);
     }
@@ -225,6 +250,8 @@ export class LocalSender {
   private async transferSegment(ctx: SegCtx): Promise<{ sentUpTo: number; isLast: boolean }> {
     const { seg, startIdx, chunkListAll, filesList, total, keyHex } = ctx;
     const room = segRoom(this.room, seg);
+    this.currentSegRoom = room;
+    this.streamClosed = false;
     const base = resolveRelayBase();
 
     let segOffset = 0;
@@ -260,6 +287,7 @@ export class LocalSender {
         this.setSending(false);
         this.cb.onStatus('传输完成');
         this.close();
+        void this.closeStream(); // 接收端已收齐 → 关流，relay EOF 触发接收端退出读循环
       } else if (data.type === 'cancel') {
         this.remoteAborted = true;
         this.abort?.abort();
@@ -471,18 +499,6 @@ export class LocalSender {
       throw new Error(`第 ${seg + 1} 段上传 segend 失败: ${lastErr?.message || lastErr}`);
     };
 
-    const sendCloseSeg = async (): Promise<void> => {
-      try {
-        await fetch(`${base}/stream/${room}/close`, {
-          method: 'POST', headers: { 'Content-Type': 'application/octet-stream' },
-          body: new Uint8Array(0), signal: this.abort!.signal,
-        });
-      } catch (e: any) {
-        if (this.abort?.signal.aborted) throw e;
-        console.warn(`第 ${seg + 1} 段关闭流提示失败（数据已送达，relay 会超时回收）: ${e?.message || e}`);
-      }
-    };
-
     if (startIdx < chunkListAll.length) {
       const producer = (async () => {
         try {
@@ -563,9 +579,15 @@ export class LocalSender {
     const realIsLast = !segTimeUp;
     try { await postSegendFrame(realIsLast); }
     catch (e: any) { console.warn(`第 ${seg + 1} 段 segend 发送失败（接收端将按 EOF 判定）: ${e?.message || e}`); }
-    await sendCloseSeg();
-    segClosed = true;
-    if (!realIsLast) { try { ctrl.close(); } catch { /* ignore */ } }
+    if (!realIsLast) {
+      // 中间段：发完即关流（EOF 推进段号），与原逻辑一致
+      await this.closeStream();
+      segClosed = true;
+      try { ctrl.close(); } catch { /* ignore */ }
+    } else {
+      // 最后段：不主动关流。等接收端收齐回 recv-done 后由 handleCtrlMsg 调 closeStream 关流，
+      // 避免 relay /close 截断尾帧导致接收端差一帧卡 99%。超时兜底见 startSend 的 30s 定时器。
+    }
     return { sentUpTo: producedUpTo, isLast: realIsLast };
   }
 }
