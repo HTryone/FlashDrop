@@ -47,6 +47,10 @@ export class LocalSender {
   private dataStarted = false; // 是否已真正开始推数据，用于精确驱动「传输中」状态（区别于 setSending 的流程级标记）
   private abort: AbortController | null = null;
   private ctrl: RelayControl | null = null;
+  // 在场侦听 WS：genRoom 即开，早于「开始传输」。仅用于接收端加入时点亮 peerOnline 灯，
+  // 不承载数据传输门控（门控由 transferSegment 内的 this.ctrl 负责）。
+  // 修复「接收端先点连接接收，发送端灯要等到点开始传输才亮」——那时才建连导致早先的 ready/peer-joined 通知无人接收。
+  private presenceCtrl: RelayControl | null = null;
   private remoteAborted = false; // 对方（接收端）取消，区别于本地取消
 
   // 端到端滑动窗口状态（控制通道 onmessage 与发送流 pull 共享）
@@ -87,6 +91,28 @@ export class LocalSender {
     this.link = `${location.origin}/?tab=local&room=${s}#k=${pass}`;
     this.cb.onStatus('房间已生成，等待对方加入…');
     this.cb.onRoom(s, this.link, pass);
+    this.armPresence(); // 提前开在场侦听 WS，接收端一加入即点亮「对方在线」灯
+  }
+
+  // 提前开在场侦听 WS（genRoom 时调用）：只监听 ready/peer-joined/recv-ready 以点亮 peerOnline，
+  // 不处理进度/recv-done（那些由 transferSegment 的 this.ctrl 负责）。relay 的 wsSender 单槽，
+  // 本 WS 先连即先占用；点「开始传输」后 transferSegment 新建的 this.ctrl 会覆盖 wsSender，
+  // 后续数据门控消息改走 this.ctrl，本 WS 退为闲连、在 close() 一并清理。
+  private armPresence() {
+    if (this.presenceCtrl) return;
+    const base = resolveRelayBase();
+    this.presenceCtrl = new RelayControl({
+      base, room: this.room, role: 'sender',
+      onMessage: (d: any) => {
+        if (!d) return;
+        if (d.type === 'ready' || d.type === 'peer-joined' || d.type === 'recv-ready') {
+          if (!this.peerOnline) { this.peerOnline = true; this.cb.onPeerOnline(true); }
+        }
+      },
+      reconnect: true, reconnectDelay: 1000,
+      shouldReconnect: () => !this.done,
+    });
+    this.presenceCtrl.connect();
   }
 
   private resetWindow() {
@@ -116,6 +142,7 @@ export class LocalSender {
     // 在途 fetch 因 this.abort!.signal 空引用抛错被误判为「网络抖动」重试，并覆盖取消状态。
     // 中止由调用方（handleCtrlMsg 的 cancel 分支 / cancel()）显式触发。
     if (this.ctrl) { this.ctrl.close(); this.ctrl = null; }
+    if (this.presenceCtrl) { this.presenceCtrl.close(); this.presenceCtrl = null; }
   }
 
   private setSending(v: boolean) {
