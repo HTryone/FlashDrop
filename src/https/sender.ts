@@ -97,14 +97,19 @@ export class LocalSender {
   }
 
   // 提前开在场侦听 WS（genRoom 时调用）：只监听 ready/peer-joined/recv-ready 以点亮 peerOnline，
-  // 不处理进度/recv-done（那些由 transferSegment 的 this.ctrl 负责）。relay 的 wsSender 单槽，
-  // 本 WS 先连即先占用；点「开始传输」后 transferSegment 新建的 this.ctrl 会覆盖 wsSender，
-  // 后续数据门控消息改走 this.ctrl，本 WS 退为闲连、在 close() 一并清理。
+  // 不处理进度/recv-done（那些由 transferSegment 的 this.ctrl 负责）。
+  // 关键：必须连「段房间 segRoom(this.room,0)」——接收端 recvSegment 连的正是这个房间
+  // （receiver.ts:174 = segRoom(this.room,0)），relay 的 peer-joined/recv-ready 按房间隔离转发
+  // （relay.js:281-318）。此前错连基础房间 this.room，与接收端不在同一房间，永远收不到对方加入，
+  // 导致「生成房间即亮灯」失效、灯要等到点开始传输（this.ctrl 连段房间）才亮。
+  // relay 的 wsSender 单槽：本 WS 先连即占用段房间 wsSender；startSend 一开始传输即关闭本 WS
+  // （见 startSend 内 presenceCtrl.close()），把 wsSender 单槽让给 this.ctrl，避免两者争夺导致
+  // 进度/recv-done 被误转给闲连而卡死。
   private armPresence() {
     if (this.presenceCtrl) return;
     const base = resolveRelayBase();
     this.presenceCtrl = new RelayControl({
-      base, room: this.room, role: 'sender',
+      base, room: segRoom(this.room, 0), role: 'sender',
       onMessage: (d: any) => {
         if (!d) return;
         if (d.type === 'ready' || d.type === 'peer-joined' || d.type === 'recv-ready') {
@@ -205,6 +210,10 @@ export class LocalSender {
 
     const { list: chunkListAll, total } = this.buildChunkList(files);
     this.setSending(true);
+    // 在场侦听 WS 已完成使命：接收端若已在 genRoom 阶段加入，灯已点亮；若尚未加入，
+    // 后续由 transferSegment 的 this.ctrl 在收到 peer-joined 时点亮（handleCtrlMsg 已认 peer-joined）。
+    // 此处关闭，把段房间 wsSender 单槽让给 this.ctrl，避免两 WS 争夺导致进度/recv-done 被误转。
+    if (this.presenceCtrl) { this.presenceCtrl.close(); this.presenceCtrl = null; }
     this.cb.onProgress(0);
     this.setDone(false);
     this.cb.onStatus('正在建立控制通道…');
@@ -271,10 +280,11 @@ export class LocalSender {
     let segClosed = false;
 
     const handleCtrlMsg = (data: any) => {
-      if (data.type === 'ready') {
-        this.peerOnline = true; this.cb.onPeerOnline(true);
-        this.cb.onStatus('对方已在线，可开始传输');
-      } else if (data.type === 'pull' || data.type === 'recv-ready') {
+      if (data.type === 'ready' || data.type === 'peer-joined' || data.type === 'recv-ready') {
+        if (!this.peerOnline) { this.peerOnline = true; this.cb.onPeerOnline(true); }
+        if (data.type === 'ready') this.cb.onStatus('对方已在线，可开始传输');
+      }
+      if (data.type === 'pull' || data.type === 'recv-ready') {
         this.recvReady = true; this.recvReadyResolve?.(); this.recvReadyResolve = null;
       } else if (data.type === 'progress') {
         const t = data.total || 1;
