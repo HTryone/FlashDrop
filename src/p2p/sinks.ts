@@ -1,6 +1,7 @@
 // 落盘 Sink：FSA 主路径（支持 seek，断线续传可定位写） + Blob 退化路径（逐文件下载）。
 // 模块自包含，不 import 组件；仅依赖 DOM File System Access API。
 import type { P2PFileMeta } from './types';
+import { isTauriEnv, TauriP2PSink } from '../tauri/tauri-sink';
 
 export interface Sink {
   ready: Promise<void>;
@@ -10,6 +11,10 @@ export interface Sink {
 }
 
 export function createSink(dirHandle: FileSystemDirectoryHandle | null, files: P2PFileMeta[]): Sink {
+  // ── Tauri 原生壳：Rust 后端接管落盘（共存不替代）── 同步工厂返回，dialog 放进 ready
+  if (isTauriEnv()) {
+    return new TauriP2PSink(files);
+  }
   if (dirHandle && typeof (dirHandle as any).getFileHandle === 'function') {
     return createFsaSink(dirHandle, files);
   }

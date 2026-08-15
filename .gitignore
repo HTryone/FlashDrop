@@ -17,6 +17,15 @@ server.log
 # 构建产物（Vite 将输出 dist/）
 dist/
 
+# Tauri Rust 构建产物（cargo 编译缓存，巨量，绝不入库）
+src-tauri/target/
+
+# Tauri 自动生成的代码（bindings/Windows 资源等，由 tauri 命令再生）
+src-tauri/gen/
+
+# Tauri 图标源图（保留生成的 .ico/.icns/.png，忽略重生成用的源）
+src-tauri/icons/source.png
+
 # AI 工作区数据，不进仓库
 .workbuddy/
 

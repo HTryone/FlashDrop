@@ -14,6 +14,10 @@ export default defineConfig({
   server: {
     host: true, // 暴露到局域网，方便手机/其他电脑测
     port: 3001,
+    watch: {
+      // 忽略 Tauri 原生壳目录，避免 Rust 改动触发 Vite 热重载
+      ignored: ['**/src-tauri/**'],
+    },
     proxy: {
       '/files': { target: 'http://localhost:3000', changeOrigin: true },
       '/api': { target: 'http://localhost:3000', changeOrigin: true },

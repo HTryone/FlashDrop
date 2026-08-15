@@ -3,6 +3,8 @@
 // Chromium 优先走 File System Access API 直写磁盘（无 SW/iframe，避开扩展消息污染导致的崩溃）。
 // 纯浏览器 API，无 Vue 依赖。由 https/sink.ts 迁入 composables 成为全工作区共用落盘件。
 
+import { isTauriEnv, TauriRelaySink, tauriPickSavePath } from '../tauri/tauri-sink';
+
 export interface FileMeta {
   name: string;
   size: number;
@@ -140,6 +142,13 @@ async function ensureRwPermission(dh: any): Promise<boolean> {
 
 /** 根据文件清单 + 目录句柄，构造一组落盘 Sink（优先级：FSA > StreamSaver > Blob） */
 export async function makeSinks(files: FileMeta[], dirHandle?: any): Promise<MakeSinksResult> {
+  // ── Tauri 原生壳：Rust 后端接管落盘，绕过浏览器 FSA 不兼容（共存不替代）──
+  if (isTauriEnv()) {
+    const name = files[0]?.name ?? 'download';
+    const path = await tauriPickSavePath(name);
+    if (!path) return { writers: [], fallback: false, permissionFallback: false };
+    return { writers: [new TauriRelaySink(path)], fallback: false, permissionFallback: false };
+  }
   let writers: Sink[] = [];
   let fallback = false;
   let permissionFallback = false;
