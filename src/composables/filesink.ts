@@ -105,6 +105,9 @@ class FSAccessSink implements Sink {
 
 /** 用户手势内调用（连接接收按钮触发），拿到目录句柄；非 Chromium 返回 null 走 StreamSaver 兜底。 */
 export async function pickSaveDir(): Promise<any | null> {
+  // Tauri 壳内：目录/文件选择由 makeSinks → tauriPickSavePath/tauriPickSaveDir 统一弹原生框，
+  // 此处直接返回 null，避免再弹浏览器 FSA 文件夹框（否则桌面端会「浏览器框 + 原生框」双弹）。
+  if (isTauriEnv()) return null;
   const w = window as any;
   if (typeof w.showDirectoryPicker !== 'function') return null;
   try {

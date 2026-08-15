@@ -7,6 +7,7 @@ import { ref, computed, watch, onUnmounted } from 'vue';
 import { LocalReceiver } from '@/https';
 import { resolveRelayBase } from '@/transfer/room';
 import { createP2PReceiver } from '@/p2p';
+import { pickSaveDir } from '@/composables/filesink';
 
 export function useLocalReceive() {
   // UI 绑定的房间码 / 口令（与 LocalReceiver 内部状态双向同步）
@@ -86,18 +87,6 @@ export function useLocalReceive() {
   // ========== P2P 段（调用 @/p2p 引擎，复用同一房间码/口令，不触碰 HTTP 代码）==========
   const localTransport = ref<'http' | 'p2p'>('http');
   let p2pReceiver: ReturnType<typeof createP2PReceiver> | null = null;
-
-  // 必须在用户手势内调用（连接接收按钮触发），拿到目录句柄；非 Chromium 返回 null 走兜底。
-  async function pickSaveDir(): Promise<any | null> {
-    const w = window as any;
-    if (typeof w.showDirectoryPicker !== 'function') return null;
-    try {
-      const dir = await w.showDirectoryPicker({ mode: 'readwrite' });
-      return dir;
-    } catch (e: any) {
-      return { __cancelled: true, __error: e?.name || String(e) };
-    }
-  }
 
   // 在用户手势内把目录句柄提升到 readwrite，避免后续异步回调里因缺用户激活抛 SecurityError。
   async function ensureRwPermission(dh: any): Promise<string> {
