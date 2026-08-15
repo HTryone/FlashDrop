@@ -206,8 +206,14 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
     const report = () => {
       const up = committed + inflight;
       let frac = opts.e2ee.enabled ? 0.5 + 0.5 * (up / size) : up / size;
-      // 关键：真正完成（finished）前进度封顶 99%，避免「浏览器发完最后一块」就显示 100%
-      // 误导用户提前关页/下载 → 末块未真正落盘 → 下载末尾 HMAC 失配。
+      // ╔══════════════════════════════════════════════════════════════════════════╗
+      // ║ 【铁律·不可删改】中转上传「100% 成功」必须同时满足两层落盘，少一层都不行： ║
+      // ║   ① 服务器落盘成功：每块 PUT 回 200 且 commit 经 Worker head 确认          ║
+      // ║      R2 上该 part 已真正写入（绝非「浏览器把最后一段数据发出」就算成功）。  ║
+      // ║   ② 用户落盘成功：由接收端本地磁盘 close 落盘决定（本端只负责到 ①）。     ║
+      // ║ 仅「最后一段数据发出」≠ 成功。未到 finished 前硬封顶 99%，               ║
+      // ║ 杜绝用户误判完成而提前关闭发送端 → 末块未真正入 R2 → 整文件残缺 / HMAC 失配。║
+      // ╚══════════════════════════════════════════════════════════════════════════╝
       if (!finished) frac = Math.min(frac, 0.99);
       opts.onProgress(Math.floor(qf.file.size * frac), qf.file.size);
     };
@@ -317,8 +323,13 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
       }
     }
 
-    // 真正完成：先置位 finished 让进度补到 100%，再通知上层「已完成」。
-    // 此刻所有块 PUT 已回 200 且 commit 已确认落盘，关页/下载都安全。
+    // ╔══════════════════════════════════════════════════════════════════════════╗
+    // ║ 【铁律·不可删改】此刻才允许进度补到 100% 并 onSuccess：                 ║
+    // ║ 所有块 PUT 均已回 200，且 commit 已异步全部完成（Worker head 确认        ║
+    // ║ R2 上每一个 part 真正落盘）。此前（finished=false）进度硬封顶 99%。      ║
+    // ║ 严禁在「最后一块 PUT 发出 / 回 200」时即置 finished —— 那等于提前宣告     ║
+    // ║ 成功，用户一关发送端，末块可能尚未入 R2，整文件残缺（接收端下到坏文件）。 ║
+    // ╚══════════════════════════════════════════════════════════════════════════╝
     finished = true;
     report();
     opts.onSuccess();

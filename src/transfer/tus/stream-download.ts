@@ -281,8 +281,17 @@ export async function streamDownloadToSink(opts: StreamDownloadOpts): Promise<{ 
       if (dec.failed) throw new Error('完整性校验失败：数据可能被篡改');
     }
   } finally {
-    await sink.close();
+    await sink.close(); // 必须等最后一个分块真正写入磁盘 + 句柄关闭，才进入收尾
   }
+  // ╔══════════════════════════════════════════════════════════════════════════╗
+  // ║ 【铁律·不可删改】本函数返回成功 ≡ 「用户落盘成功」（接收端）。              ║
+  // ║ 最后一个分块必须已 sink.write 写入 + dec.flush() 校验通过 +               ║
+  // ║ sink.close() 真正关闭磁盘句柄后，才允许 return（上层据此标 100% / done）。║
+  // ║ 仅「fetch 完最后一块密文」≠ 落盘成功；若在此前 return / 标完成，          ║
+  // ║ 用户一关页 → flush/close 未执行 → 末块未落盘 → 文件残缺 / HMAC 失配。      ║
+  // ║ 与上传端铁律互补：上传端管「服务器落盘」（R2 + commit），本端管「用户落盘」；║
+  // ║ 两端都真正落盘，中转才算 100% 成功。任何「提前完成 / 提前关闭」都禁止。     ║
+  // ╚══════════════════════════════════════════════════════════════════════════╝
   await scheduler; // 等调度器收尾（捕获潜在未决错误）
   return { permissionFallback };
 }
