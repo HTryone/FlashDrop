@@ -3,7 +3,8 @@
 // Chromium 优先走 File System Access API 直写磁盘（无 SW/iframe，避开扩展消息污染导致的崩溃）。
 // 纯浏览器 API，无 Vue 依赖。由 https/sink.ts 迁入 composables 成为全工作区共用落盘件。
 
-import { isTauriEnv, TauriRelaySink, tauriPickSavePath } from '../tauri/tauri-sink';
+import { invoke } from '@tauri-apps/api/core';
+import { isTauriEnv, TauriRelaySink, tauriPickSavePath, TauriFileWriter, tauriPickSaveDir } from '../tauri/tauri-sink';
 
 export interface FileMeta {
   name: string;
@@ -144,10 +145,26 @@ async function ensureRwPermission(dh: any): Promise<boolean> {
 export async function makeSinks(files: FileMeta[], dirHandle?: any): Promise<MakeSinksResult> {
   // ── Tauri 原生壳：Rust 后端接管落盘，绕过浏览器 FSA 不兼容（共存不替代）──
   if (isTauriEnv()) {
-    const name = files[0]?.name ?? 'download';
-    const path = await tauriPickSavePath(name);
-    if (!path) return { writers: [], fallback: false, permissionFallback: false };
-    return { writers: [new TauriRelaySink(path)], fallback: false, permissionFallback: false };
+    // 单文件（中转 tus / 单文件本地直传）：save 对话框 → 单个 TauriRelaySink
+    if (files.length <= 1) {
+      const name = files[0]?.name ?? 'download';
+      const path = await tauriPickSavePath(name);
+      if (!path) return { writers: [], fallback: false, permissionFallback: false };
+      return { writers: [new TauriRelaySink(path)], fallback: false, permissionFallback: false };
+    }
+    // 多文件（本地直传 HTTP 多文件）：open 目录对话框 → 逐文件 TauriFileWriter，writers 数 = files 数
+    const dir = await tauriPickSaveDir();
+    if (!dir) return { writers: [], fallback: false, permissionFallback: false };
+    const writers: Sink[] = await Promise.all(
+      files.map(async (f) => {
+        const safe = String(f.name).replace(/[\\/]/g, '_');
+        const finalPath = await invoke<string>('resolve_save_path', { dir, name: safe });
+        const w = new TauriFileWriter(finalPath);
+        await w.ensureOpen();
+        return w;
+      }),
+    );
+    return { writers, fallback: false, permissionFallback: false };
   }
   let writers: Sink[] = [];
   let fallback = false;
