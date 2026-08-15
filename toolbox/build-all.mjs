@@ -70,11 +70,13 @@ function sh(cmd) {
   }
 }
 
-/** 在 SDK 的 ndk/ 下找已安装的 NDK 目录 */
+/** 在 SDK 的 ndk/ 下找已安装的 NDK 目录（兼容 ndk-build 在根目录或 build/ 子目录） */
 function findNdk(sdk) {
   const ndkDir = join(sdk, 'ndk');
   if (!existsSync(ndkDir)) return undefined;
-  const subs = readdirSync(ndkDir).filter((d) => existsSync(join(ndkDir, d, 'ndk-build')));
+  const subs = readdirSync(ndkDir).filter(
+    (d) => existsSync(join(ndkDir, d, 'ndk-build')) || existsSync(join(ndkDir, d, 'build', 'ndk-build'))
+  );
   return subs.length ? join(ndkDir, subs[subs.length - 1]) : undefined;
 }
 
@@ -165,6 +167,11 @@ function setVersion(v, code) {
   console.log(`  tauri.conf.json & package.json 已同步`);
 }
 
+// ---------- 安卓 ABI 限制（只 64 位）----------
+// 控制点：直接调 `tauri.cmd android build -t aarch64 x86_64`（见 buildAndroid）。
+// 关键坑：-t 的多值参数经 `npm run` 会被吞，必须直接调 tauri.cmd 绕过。
+// 注意：Tauri v2 的 gradle `rust {}` 插件无 `targets` 属性，不要往 gradle 注入（会 Unresolved reference）。
+
 // ---------- 各平台构建 ----------
 function buildWindows() {
   console.log(`\n========== 构建 Windows 桌面 (NSIS) ==========`);
@@ -205,8 +212,9 @@ function buildAndroid() {
   } else {
     console.log(yellow('[警告] 未找到 JDK（设置 JAVA_HOME），Android 构建可能失败。'));
   }
-  // -t aarch64 x86_64：只打 64 位（arm64-v8a + x86_64），去掉 32 位 armv7/i686，不兼容老旧设备。
-  sh('npm run tauri android build -t aarch64 x86_64');
+  // 限制 ABI：只构建 64 位（aarch64 + x86_64），不兼容 32 位老旧设备。
+  // 用 node 直跑 tauri 入口 tauri.js（不经 npm run，避免 npm 吞掉多值 -t 参数）；-t 后跟空格分隔的架构列表。
+  sh('node node_modules/@tauri-apps/cli/tauri.js android build -t aarch64 x86_64');
   return true;
 }
 

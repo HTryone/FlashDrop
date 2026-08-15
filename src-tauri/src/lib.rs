@@ -8,7 +8,6 @@ mod state;
 
 use boot::resolve_remote_url;
 use state::AppState;
-use tauri::Manager;
 use tauri::WebviewUrl;
 use tauri::WebviewWindowBuilder;
 
@@ -38,16 +37,17 @@ pub fn run() {
             let url = resolve_remote_url();
             // 壳在网页代码运行前注入设备标识（同步、零网络）；远程页读 window.__FLASHDROP_CLIENT__ 即知是哪端。
             let inject = format!("window.__FLASHDROP_CLIENT__={{kind:'{}'}};", CLIENT_KIND);
-            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url.parse().unwrap()))
+            WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url.parse().unwrap()))
                 .title("FlashDrop")
                 .initialization_script(inject)
                 .build()?;
             // 桌面：窗口设为屏幕逻辑尺寸的 75% 并居中；手机保持全屏（不在此设尺寸）。
             #[cfg(not(target_os = "android"))]
             {
-                if let Some(monitor) = app.primary_monitor() {
-                    let scale = monitor.scale_factor();
-                    if let Some(phys) = monitor.size() {
+                if let Some(window) = app.get_webview_window("main") {
+                    if let Ok(Some(monitor)) = app.primary_monitor() {
+                        let scale = monitor.scale_factor();
+                        let phys = monitor.size();
                         let w = (phys.width as f64 / scale * 0.75) as u32;
                         let h = (phys.height as f64 / scale * 0.75) as u32;
                         let _ = window.set_size(tauri::LogicalSize::new(w as f64, h as f64));
