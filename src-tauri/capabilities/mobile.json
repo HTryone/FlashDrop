@@ -17,5 +17,8 @@
     "allow-close-file",
     "allow-abort-file",
     "allow-resolve-save-path"
-  ]
+  ],
+  "remote": {
+    "urls": ["https://flashdrop.pages.dev"]
+  }
 }

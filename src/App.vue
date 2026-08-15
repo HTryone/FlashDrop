@@ -1,15 +1,10 @@
 <script setup lang="ts">
 import { ref, provide, watch, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { useRubberBand } from './composables/useRubberBand';
 
 type TabType = 'send' | 'receive' | 'manage';
 const activeTab = ref<TabType>('send');
 provide('homeTab', activeTab);
-
-// 弹性滚动：过界回弹逻辑下沉到 composable，这里只挂载（遵循 UI/逻辑分离铁律）。
-const mainRef = ref<HTMLElement | null>(null);
-useRubberBand(mainRef);
 
 const route = useRoute();
 const router = useRouter();
@@ -49,7 +44,7 @@ function toggleExt() {
       </button>
     </header>
 
-    <main class="main" ref="mainRef">
+    <main class="main">
       <router-view />
     </main>
   </div>
