@@ -1,20 +1,20 @@
 #!/usr/bin/env node
 /**
- * FlashDrop 统一打包脚本
+ * FlashDrop 统一打包脚本 —— 本文件即打包规范，改动打包流程只改这里、只维护这里。
  * ---------------------------------------------------------------------------
  * 一执行即按当前操作系统自动构建可构建的全部平台安装包，并归集到 releases/。
  *
  * 已支持：
  *   - Windows 桌面  (NSIS 安装包)        —— 在 Windows 上自动构建
- *   - Android       (APK)               —— 需要 Android SDK/NDK（脚本自动探测常见路径）
+ *   - Android       (APK/AAB, 仅64位)   —— 需要 Android SDK/NDK（脚本自动探测常见路径）
  * 预留扩展：
- *   - macOS 桌面    (dmg / app)         —— 在 macOS 上自动构建（本机在 Windows，暂不触发）
- *   - iOS           (ipa)              —— 未来在 macOS 上加 --ios 即可
+ *   - macOS 桌面    (dmg / app)         —— 在 macOS 上自动构建
+ *   - iOS           (ipa)              —— 未来加 --ios 即可
  *
  * 用法（在项目根目录执行）：
  *   node toolbox/build-all.mjs                # 构建当前系统能构建的全部平台（默认含 Android）
  *   node toolbox/build-all.mjs --windows     # 只构建 Windows 桌面
- *   node toolbox/build-all.mjs --android     # 只构建 Android
+ *   node toolbox/build-all.mjs --android     # 只构建 Android（仅 64 位：aarch64 + x86_64）
  *   node toolbox/build-all.mjs --macos       # 只构建 macOS（需在 macOS 上运行）
  *   node toolbox/build-all.mjs --no-android  # 跳过 Android
  *   node toolbox/build-all.mjs --local-nsis # Windows 构建走本地 toolbox/nsis（默认走网络下载）
@@ -31,7 +31,34 @@
  *   ANDROID_HOME    Android SDK 根目录
  *   NDK_HOME        Android NDK 根目录
  *   NSIS_PATH       Windows 本地 NSIS 目录（等价于 --local-nsis）
- * ---------------------------------------------------------------------------
+ *
+ * ===========================================================================
+ * 铁律：任何 Rust 改动必须先过【四步验证】，再跑本脚本（前台实时跑，不要 | tail 隐藏报错）
+ *   1. cargo fmt --check        （不符则 cargo fmt 自动修后 --check 复核）
+ *   2. cargo check
+ *   3. cargo clippy --all-targets -- -D warnings   （警告当错误，必须清零）
+ *   4. cargo test
+ *   注意：clippy 只覆盖当前编译目标，桌面 clippy 不触发安卓 cfg 分支告警。
+ *         规避：目标平台专属代码缩进到对应 cfg 块内取句柄，避免跨端未用变量。
+ *
+ * 踩坑清单（每一条都真实发生过，改脚本/壳层时对照）：
+ *   - 安卓「只打 64 位」：❌`npm run tauri android build -t ...`（npm 吞多值参数→默认编全4架构含32位）
+ *                        ❌gradle rust{} 注入 targets（v2 插件无此属性→Unresolved reference）
+ *                        ✅`node node_modules/@tauri-apps/cli/tauri.js android build -t aarch64 x86_64`
+ *   - lib.rs Tauri v2 API 差异：primary_monitor() 返回 Result（写 if let Ok(Some(m)) 非 if let Some(m)）；
+ *                        Monitor::size()/scale_factor() 是公开方法（写 m.size() 非 m.size 字段）；
+ *                        改完对照 tauri-<ver>/src/ 源码确认签名，别猜。
+ *   - node_modules/.bin/tauri 在 Windows 跑不了（那是 bash 脚本）→ 用 npm run 或 node .../tauri.js。
+ *   - 外置架构远程 IPC：远程页调 open_file/write_chunk 被 Tauri v2 默认拦 →
+ *                        capabilities/*.json 必须加 "remote":{"urls":["https://flashdrop.pages.dev"]}。
+ *   - 桌面双弹窗：Tauri 内 pickSaveDir 直接 return null，统一单框（见 composables/filesink.ts）。
+ *   - 根目录必须英文（中文路径→GBK 乱码）；构建 5–15 分钟非卡死别中断；
+ *        改完代码再启构建、别按名批量杀 cargo/tauri 进程（会误杀新构建）。
+ *
+ * 产物验证：
+ *   - 安卓 APK 仅 64 位：解包查 lib/ 只含 arm64-v8a + x86_64（无任何 32 位）。
+ *   - 签名：apksigner verify --print-certs releases/app-universal-release.apk → VERIFY PASSED。
+ * ===========================================================================
  */
 
 import { spawnSync } from 'node:child_process';
