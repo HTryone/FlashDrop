@@ -205,7 +205,8 @@ function buildAndroid() {
   } else {
     console.log(yellow('[警告] 未找到 JDK（设置 JAVA_HOME），Android 构建可能失败。'));
   }
-  sh('npm run tauri android build');
+  // -t aarch64 x86_64：只打 64 位（arm64-v8a + x86_64），去掉 32 位 armv7/i686，不兼容老旧设备。
+  sh('npm run tauri android build -t aarch64 x86_64');
   return true;
 }
 

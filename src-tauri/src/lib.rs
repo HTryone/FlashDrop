@@ -8,8 +8,16 @@ mod state;
 
 use boot::resolve_remote_url;
 use state::AppState;
+use tauri::Manager;
 use tauri::WebviewUrl;
 use tauri::WebviewWindowBuilder;
+
+// 设备标识（壳注入，网页同步读取）：桌面 = 'windows'，手机 = 'phone'。
+// 当前仅出 Windows 桌面 + Android，故桌面统一标 'windows'；后续加 macOS/Linux 再扩展此分支。
+#[cfg(target_os = "android")]
+const CLIENT_KIND: &str = "phone";
+#[cfg(not(target_os = "android"))]
+const CLIENT_KIND: &str = "windows";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -28,9 +36,25 @@ pub fn run() {
             // 外置架构：WebView 加载远程前端（release）/ 本地 dev server（debug）。
             // 窗口 label 仍为 "main"，capabilities 授权照常生效，远程页可 invoke 本地命令。
             let url = resolve_remote_url();
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url.parse().unwrap()))
+            // 壳在网页代码运行前注入设备标识（同步、零网络）；远程页读 window.__FLASHDROP_CLIENT__ 即知是哪端。
+            let inject = format!("window.__FLASHDROP_CLIENT__={{kind:'{}'}};", CLIENT_KIND);
+            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url.parse().unwrap()))
                 .title("FlashDrop")
+                .initialization_script(inject)
                 .build()?;
+            // 桌面：窗口设为屏幕逻辑尺寸的 75% 并居中；手机保持全屏（不在此设尺寸）。
+            #[cfg(not(target_os = "android"))]
+            {
+                if let Some(monitor) = app.primary_monitor() {
+                    let scale = monitor.scale_factor();
+                    if let Some(phys) = monitor.size() {
+                        let w = (phys.width as f64 / scale * 0.75) as u32;
+                        let h = (phys.height as f64 / scale * 0.75) as u32;
+                        let _ = window.set_size(tauri::LogicalSize::new(w as f64, h as f64));
+                        let _ = window.center();
+                    }
+                }
+            }
             Ok(())
         })
         .run(tauri::generate_context!())
