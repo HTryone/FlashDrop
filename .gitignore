@@ -29,6 +29,10 @@ src-tauri/icons/source.png
 # 打包产物统一输出目录（exe/apk 放这里，绝不入库）
 releases/
 
+# Android 自签名 keystore 与密码（含私钥，绝不入库）
+src-tauri/release-key.jks
+src-tauri/keystore.env
+
 # 本地 NSIS 打包器（Tauri 打 nsis 包所需）。默认走网络下载；
 # 若网络下不动，在 tauri:build 前加 set "NSIS_PATH=toolbox\nsis" 切本地。
 # 不入库，避免仓库胀；换机器需自行放置或联网拉取。

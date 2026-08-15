@@ -1,10 +1,15 @@
 <script setup lang="ts">
 import { ref, provide, watch, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { useRubberBand } from './composables/useRubberBand';
 
 type TabType = 'send' | 'receive' | 'manage';
 const activeTab = ref<TabType>('send');
 provide('homeTab', activeTab);
+
+// 弹性滚动：过界回弹逻辑下沉到 composable，这里只挂载（遵循 UI/逻辑分离铁律）。
+const mainRef = ref<HTMLElement | null>(null);
+useRubberBand(mainRef);
 
 const route = useRoute();
 const router = useRouter();
@@ -44,7 +49,7 @@ function toggleExt() {
       </button>
     </header>
 
-    <main class="main">
+    <main class="main" ref="mainRef">
       <router-view />
     </main>
   </div>
@@ -54,7 +59,7 @@ function toggleExt() {
 .app { min-height: 100%; display: flex; flex-direction: column; }
 .topbar {
   display: flex; align-items: center; gap: 12px;
-  padding: 14px 22px; border-bottom: 1px solid var(--border);
+  padding: max(14px, env(safe-area-inset-top)) 22px 14px; border-bottom: 1px solid var(--border);
   background: rgba(18, 23, 37, 0.7); backdrop-filter: blur(8px);
   position: sticky; top: 0; z-index: 10;
   flex-wrap: nowrap;
@@ -78,7 +83,7 @@ function toggleExt() {
 .main { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 28px 18px 40px; }
 
 @media (max-width: 640px) {
-  .topbar { padding: 12px 12px; gap: 10px; }
+  .topbar { padding: max(12px, env(safe-area-inset-top)) 12px 12px; gap: 10px; }
   .tag { display: none; }
   .logo { font-size: 18px; }
   .tabs { margin-left: 4px; }

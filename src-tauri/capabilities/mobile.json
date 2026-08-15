@@ -1,8 +1,9 @@
 {
-  "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "default",
-  "description": "FlashDrop 默认能力：含 FSA 不兼容浏览器下由 Rust 接管落盘所需的全部权限",
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "移动端能力：落盘所需全部权限（含方案A的自定义命令与 SAF 兜底的文件写入）",
   "windows": ["main"],
+  "platforms": ["android", "iOS"],
   "permissions": [
     "core:default",
     "dialog:allow-save",

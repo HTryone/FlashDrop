@@ -9,7 +9,7 @@
 //     set "NSIS_PATH=toolbox\nsis" && tauri build && node toolbox/copy-bundles.mjs
 //   即用本地 toolbox/nsis/（含 makensis.exe + 插件）跳过联网。
 import { existsSync, mkdirSync, copyFileSync, readdirSync, statSync } from 'node:fs';
-import { join, dirname, basename } from 'node:path';
+import { join, dirname, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -54,3 +54,5 @@ for (const p of hits) {
   console.log(`[copy-bundles] ${basename(p)} -> releases/`);
 }
 console.log(`[copy-bundles] 完成，共 ${hits.length} 个文件已输出到 releases/`);
+// 打印绝对路径，避免换了目录名/盘符后找不到 releases（今天踩过的坑）
+console.log(`[copy-bundles] releases 绝对路径: ${resolve(outDir)}`);
