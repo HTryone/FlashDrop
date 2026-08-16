@@ -54,3 +54,6 @@ test_*.bin
 
 # 临时文档/任务清单（不入库，本地参考）
 /tmp/
+# Worker dry-run / 构建临时产物（不入库）
+/conduit/tmp/
+/conduit-tus/tmp/
