@@ -1,97 +1,51 @@
 #!/usr/bin/env node
 /**
- * ArkPulse（闪云）统一打包脚本 —— 本文件即打包规范，改动打包流程只改这里、只维护这里。
- * ---------------------------------------------------------------------------
- * 一执行即按当前操作系统自动构建可构建的全部平台安装包，并归集到 releases/。
+ * ArkPulse（闪云）统一打包脚本 —— 本文件即打包规范，改打包流程只改这里、只维护这里。
+ * 一执行即按当前系统构建可构建的全部平台安装包，并归集到 releases/。
+ * 平台：Windows(NSIS) / Android(APK+AAB，仅 arm64-v8a + x86_64) 已通；macOS(dmg) 在 mac 上就地可跑；iOS 待加 --ios。
  *
- * 已支持：
- *   - Windows 桌面  (NSIS 安装包)        —— 在 Windows 上自动构建
- *   - Android       (APK/AAB, 仅64位)   —— 需要 Android SDK/NDK（脚本自动探测常见路径）
- * 预留扩展：
- *   - macOS 桌面    (dmg / app)         —— 在 macOS 上自动构建
- *   - iOS           (ipa)              —— 未来加 --ios 即可
+ * 用法（在项目根目录 D:\arkpulse 执行；环境已固化，勿先 export 变量）：
+ *   node toolbox/build-all.mjs                        双端：Windows NSIS + Android 仅64位
+ *   node toolbox/build-all.mjs --windows|--android|--macos    只构建单个平台
+ *   node toolbox/build-all.mjs --no-android           跳过 Android
+ *   node toolbox/build-all.mjs --local-nsis           Windows 走本地 toolbox/nsis（默认走网络下载）
+ *   node toolbox/build-all.mjs --skip-copy            不归集到 releases/
+ *   node toolbox/build-all.mjs --version 1.2.3        同步改 tauri.conf.json + package.json 版本再打包
+ *                                                     （驱动 PC 安装包版本 + Android versionName）
+ *   ... --version 1.2.3 --version-code 12345          显式锁 Android versionCode（省略则按 semver 自动递增）
+ *   以上开关可组合，如 `--version 1.0.0 --windows`。
  *
- * 用法（在项目根目录执行）：
- *   node toolbox/build-all.mjs                # 构建当前系统能构建的全部平台（默认含 Android）
- *   node toolbox/build-all.mjs --windows     # 只构建 Windows 桌面
- *   node toolbox/build-all.mjs --android     # 只构建 Android（仅 64 位：aarch64 + x86_64）
- *   node toolbox/build-all.mjs --macos       # 只构建 macOS（需在 macOS 上运行）
- *   node toolbox/build-all.mjs --no-android  # 跳过 Android
- *   node toolbox/build-all.mjs --local-nsis # Windows 构建走本地 toolbox/nsis（默认走网络下载）
- *   node toolbox/build-all.mjs --skip-copy   # 不执行归集到 releases/
+ * 本机环境固定位置（脚本自动探测即命中，无需 export；ANDROID_HOME / NDK_HOME / NSIS_PATH 可覆盖）：
+ *   Android SDK = D:/Apps/SDKS                  NDK         = D:/Apps/SDKS/ndk/30.0.15729638
+ *   JDK 17      = D:/Apps/SDKS/jdk17/jdk-17.0.20+8   build-tools = D:/Apps/SDKS/build-tools/36.0.0
+ *   VS2026      = D:/Apps/vsc/vsc2026（vswhere 自动定位并注入 MSVC）   NSIS 本地 = toolbox/nsis
+ *   cargo 已在默认 PATH；Android Studio D:/Apps/android 自带 jbr 作 JDK 兜底。
  *
- * 版本号（一键改版本再打包，电脑版与手机版同时生效）：
- *   node toolbox/build-all.mjs --version 1.2.3
- *       ↑ 同时修改 tauri.conf.json 顶层 version（驱动 PC 安装包版本 + Android versionName）
- *         与 package.json version，保持单一认知；Android versionCode 按 semver 自动推导。
- *   node toolbox/build-all.mjs --version 1.2.3 --version-code 12345
- *       ↑ --version-code 显式指定 Android versionCode（升级必须递增，省略则随版本号自动递增）。
+ * 铁律：任何 Rust 改动先过【四步验证】再跑本脚本（前台实时跑，勿 | tail 隐藏报错）：
+ *   cargo fmt --check（不符则 cargo fmt 后复核）→ cargo check
+ *   → cargo clippy --all-targets -- -D warnings（警告清零）→ cargo test
+ *   clippy 只覆盖当前编译目标，桌面 clippy 不触发安卓 cfg 分支告警；
+ *   故平台专属代码要缩进到对应 cfg 块内取句柄，避免跨端未用变量。
  *
- * ── 本机环境固定位置（写死在此，一眼可见；勿每次重找/手动 export）────────
- *   以下为本机真实安装路径，脚本自动探测即命中此处。以后直接打包即可，
- *   不要先 export 一堆变量（cargo 已在默认 PATH，SDK/NDK/JDK 由脚本探测）。
- *     ANDROID_HOME  Android SDK 根   = D:/Apps/SDKS
- *     NDK_HOME      NDK 根           = D:/Apps/SDKS/ndk/30.0.15729638
- *     JAVA_HOME     JDK 17           = D:/Apps/SDKS/jdk17/jdk-17.0.20+8
- *     build-tools                     = D:/Apps/SDKS/build-tools/36.0.0 (含 zipalign/apksigner)
- *     Android Studio 本体            = D:/Apps/android（自带 jbr/JDK，作兜底）
- *     NSIS 本地                       = toolbox/nsis（等价于 --local-nsis）
- *     VS2026 自定义路径               = D:/Apps/vsc/vsc2026（脚本用 vswhere 自动定位并注入）
- *     cargo 已在默认 PATH            = C:/Users/Htryone/.cargo/bin（无需 prepend）
- *
- * 启动命令（最常用，环境已固化，直接跑即可，勿先 export / 找环境）：
- *     node toolbox/build-all.mjs            # 双端：Windows NSIS 安装包 + Android 仅64位 APK/AAB
- *     node toolbox/build-all.mjs --windows # 只打 Windows
- *     node toolbox/build-all.mjs --android # 只打 Android（仅 arm64-v8a + x86_64）
- *   打包时一并更新版本号（先改 tauri.conf.json + package.json 两处，再打包，一步到位）：
- *     node toolbox/build-all.mjs --version 1.0.0            # 双端，版本升到 1.0.0 一并打包
- *     node toolbox/build-all.mjs --version 1.0.0 --windows # 只打 Windows 且升到 1.0.0
- *     node toolbox/build-all.mjs --version 1.0.0 --version-code 1001  # 安卓 versionCode 显式锁 1001
- *       ↑ 省略 --version-code 时，安卓 versionCode 由 Tauri 按公式自动重算(随版本递增)，无需手动管
- *   （在 D:\arkpulse 项目根目录执行；--local-nsis 走本地 toolbox/nsis 免网络下载）
- *
- * 可选环境变量（脚本也会自动探测，无需手动设置）：
- *   ANDROID_HOME    Android SDK 根目录
- *   NDK_HOME        Android NDK 根目录
- *   NSIS_PATH       Windows 本地 NSIS 目录（等价于 --local-nsis）
- *
- * ===========================================================================
- * 铁律：任何 Rust 改动必须先过【四步验证】，再跑本脚本（前台实时跑，不要 | tail 隐藏报错）
- *   1. cargo fmt --check        （不符则 cargo fmt 自动修后 --check 复核）
- *   2. cargo check
- *   3. cargo clippy --all-targets -- -D warnings   （警告当错误，必须清零）
- *   4. cargo test
- *   注意：clippy 只覆盖当前编译目标，桌面 clippy 不触发安卓 cfg 分支告警。
- *         规避：目标平台专属代码缩进到对应 cfg 块内取句柄，避免跨端未用变量。
- *
- * 踩坑清单（每一条都真实发生过，改脚本/壳层时对照）：
- *   - 安卓「只打 64 位」：❌`npm run tauri android build -t ...`（npm 吞多值参数→默认编全4架构含32位）
- *                        ❌gradle rust{} 注入 targets（v2 插件无此属性→Unresolved reference）
- *                        ✅`node node_modules/@tauri-apps/cli/tauri.js android build -t aarch64 x86_64`
- *   - lib.rs Tauri v2 API 差异：primary_monitor() 返回 Result（写 if let Ok(Some(m)) 非 if let Some(m)）；
- *                        Monitor::size()/scale_factor() 是公开方法（写 m.size() 非 m.size 字段）；
- *                        改完对照 tauri-<ver>/src/ 源码确认签名，别猜。
+ * 踩坑清单（每条都真实发生过，改脚本/壳层时对照）：
+ *   - 安卓只打 64 位：❌ npm run tauri android build -t ...（npm 吞多值→编全 4 架构含 32 位）
+ *                     ❌ gradle rust{} 注入 targets（v2 插件无此属性→Unresolved reference）
+ *                     ✅ node node_modules/@tauri-apps/cli/tauri.js android build -t aarch64 x86_64
+ *   - Tauri v2 API 差异：primary_monitor() 返回 Result（写 if let Ok(Some(m))）；size()/scale_factor() 是方法非字段；
+ *                     改壳层先对照 tauri-<ver>/src/ 源码确认签名，别猜。
  *   - node_modules/.bin/tauri 在 Windows 跑不了（那是 bash 脚本）→ 用 npm run 或 node .../tauri.js。
- *   - 外置架构远程 IPC：远程页调 open_file/write_chunk 被 Tauri v2 默认拦 →
- *                        capabilities/*.json 必须加 "remote":{"urls":["https://flashdrop.pages.dev"]}。
+ *   - 外置架构远程 IPC：远程页调 open_file/write_chunk 被 v2 默认拦 →
+ *                     capabilities/*.json 必须加 "remote":{"urls":["https://flashdrop.pages.dev"]}。
  *   - 桌面双弹窗：Tauri 内 pickSaveDir 直接 return null，统一单框（见 composables/filesink.ts）。
  *   - 根目录必须英文（中文路径→GBK 乱码）；构建 5–15 分钟非卡死别中断；
- *        改完代码再启构建、别按名批量杀 cargo/tauri 进程（会误杀新构建）。
- *   - Windows 自定义 VS 路径（如 D:\Apps\vsc\vsc2026）：buildWindows 已用 vswhere 自动定位并调 vcvarsall.bat 注入 MSVC 环境，任意 shell 直接全打包；无需手动开 Developer Command Prompt。
+ *     改完代码再启构建，别按名批量杀 cargo/tauri 进程（会误杀新构建）。
  *
- * 品牌资产单一源（换 logo / 改应用名只动这两处）：
- *   - 图形源：public/logo.svg  → 网页 favicon + 启动遮罩直接引用；
- *             改完跑 `node node_modules/@tauri-apps/cli/tauri.js icon public/logo.svg`
- *             重生成 src-tauri/icons/*（Windows ico/macOS icns/安卓全密度 mipmap）。
- *   - 应用名：tauri.conf.json 的 productName（英文，桌面窗口/NSIS 安装包/安卓桌面名统一取它）。
- *   桌面端图标由 bundle.icon 直接读 icons/*；安卓侧图标 / 自适应底色 / 应用名由
- *   syncAndroidBrand() 在安卓构建前自动对齐（含 tauri icon 输出位置随 gen 存在与否而变的坑，见函数注释）。
- *   ⇒ 结论：换 logo 只改 public/logo.svg、改应用名只改 productName，跑本脚本即全端生效，不用手跑 tauri icon。
+ * 品牌资产单一源：换 logo 只改 public/logo.svg，改应用名只改 tauri.conf.json 的 productName（英文，
+ *   桌面窗口 / NSIS 安装包 / 安卓桌面名统一取它），跑本脚本即全端生效、不用手跑 tauri icon。
+ *   桌面 bundle.icon 直读 icons/*；安卓图标 + 自适应底色 + 应用名由 syncAndroidBrand() 自动对齐（坑见该函数）。
  *
- * 产物验证：
- *   - 安卓 APK 仅 64 位：解包查 lib/ 只含 arm64-v8a + x86_64（无任何 32 位）。
- *   - 签名：apksigner verify --print-certs releases/app-universal-release.apk → VERIFY PASSED。
- * ===========================================================================
+ * 产物验证：安卓 APK 解包查 lib/ 只含 arm64-v8a + x86_64（无 32 位）；
+ *   apksigner verify --print-certs releases/app-universal-release.apk → VERIFY PASSED。
  */
 
 import { spawnSync } from 'node:child_process';
@@ -110,6 +64,12 @@ const isMac = process.platform === 'darwin';
 // ---------- 参数解析 ----------
 const argv = process.argv.slice(2);
 const has = (f) => argv.includes(f);
+/** 取 `--flag value` 或 `--flag=value` 的值 */
+const argVal = (f) => {
+  const i = argv.indexOf(f);
+  if (i !== -1 && argv[i + 1]) return argv[i + 1];
+  return argv.find((a) => a.startsWith(f + '='))?.slice(f.length + 1);
+};
 const only = { windows: has('--windows'), android: has('--android'), macos: has('--macos') };
 const explicit = only.windows || only.android || only.macos;
 const skipAndroid = has('--no-android') || has('--skip-android');
@@ -165,7 +125,6 @@ function resolveAndroidEnv() {
 function resolveJava() {
   const hasJava = (p) => p && (existsSync(join(p, 'bin', 'java.exe')) || existsSync(join(p, 'bin', 'java')));
   if (hasJava(process.env.JAVA_HOME)) return process.env.JAVA_HOME;
-  // 探测顺序：本机临时工具链配套 JDK → Android Studio 自带 JBR
   const candidates = [
     'D:/Apps/SDKS/jdk17/jdk-17.0.20+8',                    // 本机正式 JDK 17（Gradle 8.14.3 兼容）
     'D:/Apps/android/jbr',                                // Android Studio 自带 JBR（JDK 25，Gradle 支持后可用）
@@ -177,28 +136,7 @@ function resolveJava() {
 }
 
 // ---------- 版本号 ----------
-// --version X.Y.Z   指定本次构建版本（同时驱动 PC 安装包版本与 Android versionName）
-// --version-code N  可选，显式设置 Android versionCode（升级必须递增）；省略则按 semver 自动推导
-function parseVersionArg() {
-  const i = argv.indexOf('--version');
-  if (i !== -1 && argv[i + 1]) return argv[i + 1];
-  const eq = argv.find((a) => a.startsWith('--version='));
-  return eq ? eq.slice('--version='.length) : undefined;
-}
-function parseVersionCodeArg() {
-  const i = argv.indexOf('--version-code');
-  if (i !== -1 && argv[i + 1]) {
-    const v = parseInt(argv[i + 1], 10);
-    return Number.isNaN(v) ? undefined : v;
-  }
-  const eq = argv.find((a) => a.startsWith('--version-code='));
-  if (!eq) return undefined;
-  const v = parseInt(eq.slice('--version-code='.length), 10);
-  return Number.isNaN(v) ? undefined : v;
-}
-function isValidVersion(v) {
-  return typeof v === 'string' && /^\d+\.\d+\.\d+$/.test(v);
-}
+// --version 同时驱动 PC 安装包版本与 Android versionName；--version-code 省略则按 semver 自动推导。
 function semverCode(v) {
   const [maj, min, pat] = v.split('.').map(Number);
   return maj * 1000000 + min * 1000 + pat;
@@ -227,15 +165,9 @@ function setVersion(v, code) {
   console.log(`  tauri.conf.json & package.json 已同步`);
 }
 
-// ---------- 安卓 ABI 限制（只 64 位）----------
-// 控制点：直接调 `tauri.cmd android build -t aarch64 x86_64`（见 buildAndroid）。
-// 关键坑：-t 的多值参数经 `npm run` 会被吞，必须直接调 tauri.cmd 绕过。
-// 注意：Tauri v2 的 gradle `rust {}` 插件无 `targets` 属性，不要往 gradle 注入（会 Unresolved reference）。
-
 // ---------- 各平台构建 ----------
-/** 解析 Windows MSVC 工具链：通过 vswhere 自动定位 VS（含自定义安装路径，
- *  如 D:\Apps\vsc\vsc2026），返回其自带 vcvarsall.bat；用它注入 cl.exe/LIB/INCLUDE，
- *  免去手动开 Developer Command Prompt。找不到则返回 undefined（回退到依赖当前 shell 环境）。 */
+/** 定位 VS 自带的 vcvarsall.bat（vswhere 能发现自定义安装路径），用于注入 cl.exe/LIB/INCLUDE，
+ *  免手动开 Developer Command Prompt；找不到返回 undefined（回退到当前 shell 环境）。 */
 function resolveVsDevCmd() {
   const vswhere = 'C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe';
   if (!existsSync(vswhere)) return undefined;
@@ -274,15 +206,12 @@ function buildMacOS() {
 }
 
 // ---------- 品牌资产同步（全端图标 + 安卓应用名） ----------
-// 【必须知道的 tauri icon 行为】安卓图标输出位置随 gen/android 是否存在而变：
-//   - gen/android 不存在 → 写 src-tauri/icons/android/**（仓库里的种子）
-//   - gen/android 已存在 → 【直接写 gen/.../res/**】，不再更新 icons/android
-//   踩坑实录：曾误以为 icons/android 是权威、cpSync 铺到 gen，把 08-15 的旧 logo 刷回覆盖了新图。
-// 另有两处 tauri icon 不管、必须脚本兜住：
-//   - values/ic_launcher_background.xml 默认白底 #fff（深色 logo 周围会露白边）
-//   - values/strings.xml 的应用名停在 android init 那一刻的旧 productName
-// 故安卓构建前统一走本函数：重生成 → 修背景 → 写应用名 → 新图回写 icons/android（仓库种子不落后）。
-// 桌面端无需额外同步：bundle.icon 直接读 icons/*.ico|icns|png，本步的 tauri icon 会一并刷新。
+// 安卓构建前必走本函数，因为 tauri icon 有三个坑：
+//   1. 输出位置随 gen/android 存在与否而变：不存在→写 icons/android（仓库种子）；已存在→直接写 gen/.../res，
+//      不再更新 icons/android。（踩坑实录：曾误当 icons/android 是权威 cpSync 铺到 gen，把旧 logo 刷回覆盖新图）
+//   2. 不管 values/ic_launcher_background.xml，默认白底 #fff → 深色 logo 周围露白边。
+//   3. 不管 values/strings.xml，应用名停在 android init 那一刻的旧 productName。
+// 故流程 = 重生成 → 修背景 → 写应用名 → 新图回写 icons/android。桌面端无需同步（bundle.icon 直读 icons/*）。
 const BRAND_BG = '#0b0e16'; // 与 src/style.css 的 --bg 同值；改深色主题时两处一起改
 function syncAndroidBrand() {
   if (!existsSync(join(projectRoot, 'public', 'logo.svg'))) {
@@ -350,19 +279,16 @@ function buildAndroid() {
   } else {
     console.log(yellow('[警告] 未找到 JDK（设置 JAVA_HOME），Android 构建可能失败。'));
   }
-  // 品牌资产对齐：图标与应用名从单一源铺进 gen/android（gen 被 git 忽略，必须每次同步）。
-  syncAndroidBrand();
-  // 限制 ABI：只构建 64 位（aarch64 + x86_64），不兼容 32 位老旧设备。
-  // 用 node 直跑 tauri 入口 tauri.js（不经 npm run，避免 npm 吞掉多值 -t 参数）；-t 后跟空格分隔的架构列表。
+  syncAndroidBrand(); // gen 被 git 忽略，图标与应用名必须每次从单一源铺进去
+  // 只构建 64 位；直跑 tauri.js 而不走 npm run，否则 npm 会吞掉多值 -t 参数
   sh('node node_modules/@tauri-apps/cli/tauri.js android build -t aarch64 x86_64');
   return true;
 }
 
 // ---------- Android 自签名 ----------
-// Tauri 2.x 的 `tauri android build` 只出 unsigned APK（gen 目录被 Tauri 托管、会重建，
-// 改 gradle 文件签名不持久）。故统一在 build 之后由打包脚本用 keystore + apksigner 自动签名，
-// 输出已签名 APK（去掉 -unsigned），这才是能直接装真机/分发的包。
-// 密钥与密码来自 src-tauri/keystore.env（已 git 忽略）；缺失则降级为 unsigned（旧行为一致）。
+// `tauri android build` 只出 unsigned APK，且 gen 被 Tauri 托管会重建（改 gradle 签名不持久），
+// 故统一在 build 后用 keystore + zipalign/apksigner 自动签名，输出可直接装机的已签名 APK。
+// 密钥来自 src-tauri/keystore.env（已 git 忽略）；缺失则降级为 unsigned（与旧行为一致）。
 function findUnsignedApks(dir, out = []) {
   if (!existsSync(dir)) return out;
   for (const name of readdirSync(dir)) {
@@ -435,11 +361,11 @@ console.log(green('ArkPulse 统一打包脚本'));
 console.log(`当前系统: ${isWin ? 'Windows' : isMac ? 'macOS' : 'Linux'}`);
 
 try {
-  // 版本号：若指定 --version 则先改版本再构建（电脑版 + 手机版同步）
-  const ver = parseVersionArg();
-  const codeArg = parseVersionCodeArg();
+  // 指定 --version 则先同步改版本再构建（电脑版 + 手机版一致）
+  const ver = argVal('--version');
+  const codeArg = Number.parseInt(argVal('--version-code') ?? '', 10); // NaN → setVersion 走自动推导
   if (ver) {
-    if (!isValidVersion(ver)) {
+    if (!/^\d+\.\d+\.\d+$/.test(ver)) {
       console.error(red(`版本号格式错误: "${ver}"（应为 X.Y.Z，如 1.2.3）`));
       process.exit(1);
     }
@@ -448,19 +374,14 @@ try {
     console.log(yellow('未指定 --version，使用 tauri.conf.json 当前版本构建。'));
   }
 
-  // Windows 桌面
   if (explicit ? only.windows : isWin) buildWindows();
-  // macOS 桌面（未来扩展）
   if (explicit ? only.macos : isMac) buildMacOS();
-  // Android
   let androidBuilt = false;
   if (explicit ? only.android : !skipAndroid) {
     androidBuilt = buildAndroid();
     if (!androidBuilt && explicit && only.android) process.exit(1); // 显式要求 Android 却失败
   }
-  // Android 自签名（keystore 自签名，输出已签名 APK；无 keystore 则跳过保持旧行为）
-  if (androidBuilt) signAndroidApks();
-  // 归集到 releases/
+  if (androidBuilt) signAndroidApks(); // 无 keystore 时函数内部自行跳过
   if (!skipCopy) {
     console.log(`\n========== 归集安装包到 releases/ ==========`);
     sh('node toolbox/copy-bundles.mjs');
