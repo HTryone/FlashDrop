@@ -94,6 +94,21 @@ export function useRelayTransfer(
     fatalTriggered = false;
     relayAbort = new AbortController();
     try {
+      // ╔══════════════════════════════════════════════════════════════════════════╗
+      // ║ 【修复·虚报100%】重传/继续前必须把本地文件状态从 done/error 重置回 pending、  ║
+      // ║ 进度归零。否则 uploadAll 内 `if (qf.status === 'done') continue;`（useTusUpload ║
+      // ║ 第360行）会把已 done 的文件全部跳过 → 服务端旧文件已清、本地却零上传 → 末尾  ║
+      // ║ `every(f => f.status==='done')` 判定成立 → 直接置 done（虚报100%）。          ║
+      // ║ 本端 uploadOne 每次都新建 fileId 从0重传，配合 clearTransferFiles 清空服务端，║
+      // ║ 故重传本就是「从0覆盖重传」，重置 pending 与既有意图一致。                    ║
+      // ╚══════════════════════════════════════════════════════════════════════════╝
+      for (const f of files.value) {
+        if (f.status !== 'uploading') {
+          f.status = 'pending';
+          f.uploaded = 0;
+          f.error = undefined;
+        }
+      }
       if (!transferId.value) await ensureTransfer();
       else {
         // 重传（复用同一 transferId）：先清掉上次（可能已取消/失效）的文件行 + R2 分片，
