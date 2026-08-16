@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, provide, watch, computed } from 'vue';
+import { ref, provide, watch, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 type TabType = 'send' | 'receive' | 'manage';
@@ -25,6 +25,12 @@ const inExt = computed(() => route.path.startsWith('/ext'));
 function toggleExt() {
   router.push(inExt.value ? '/' : '/ext');
 }
+
+// Vue 挂载后移除启动遮罩；与 index.html 的 4s 兜底 timeout 形成双保险。
+onMounted(() => {
+  const splash = document.getElementById('splash');
+  if (splash) splash.classList.add('ready');
+});
 </script>
 
 <template>

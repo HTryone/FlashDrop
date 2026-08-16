@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="1024" height="1024">
+  <defs>
+    <!-- 品牌主渐变（蓝→紫） -->
+    <linearGradient id="mainGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00D4FF"/>
+      <stop offset="100%" stop-color="#7B2FBE"/>
+    </linearGradient>
+    <!-- 高光渐变（白→蓝） -->
+    <linearGradient id="lightGrad" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#00D4FF"/>
+    </linearGradient>
+    <!-- 深色模式光晕 A（对齐 body 右上蓝紫光斑 accent #6d8bff） -->
+    <radialGradient id="glowA" cx="80%" cy="-6%" r="95%">
+      <stop offset="0%" stop-color="#6D8BFF" stop-opacity="0.22"/>
+      <stop offset="60%" stop-color="#6D8BFF" stop-opacity="0"/>
+    </radialGradient>
+    <!-- 深色模式光晕 B（对齐 body 左下青光斑 accent-2 #38e1c8） -->
+    <radialGradient id="glowB" cx="-6%" cy="106%" r="90%">
+      <stop offset="0%" stop-color="#38E1C8" stop-opacity="0.18"/>
+      <stop offset="55%" stop-color="#38E1C8" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- 0. 深色底：严格对齐 style.css 的 bg #0b0e16 加 body 双光晕 -->
+  <rect width="200" height="200" fill="#0B0E16"/>
+  <rect width="200" height="200" fill="url(#glowA)"/>
+  <rect width="200" height="200" fill="url(#glowB)"/>
+
+  <!-- 1. 六边形外框（代表HMAC完整性校验） -->
+  <polygon points="100,10 190,55 190,145 100,190 10,145 10,55"
+           fill="#00D4FF" fill-opacity="0.06" stroke="url(#mainGrad)" stroke-width="5" stroke-linejoin="round"/>
+
+  <!-- 2. P2P节点（发送端与接收端） + 虚线链路 -->
+  <circle cx="40" cy="45" r="5" fill="#00D4FF"/>
+  <circle cx="160" cy="155" r="5" fill="#7B2FBE"/>
+  <line x1="45" y1="50" x2="155" y2="150" stroke="url(#mainGrad)" stroke-width="1.5" stroke-dasharray="5,5" opacity="0.5"/>
+
+  <!-- 3. 两道交错闪电（代表闪传的高速直连） -->
+  <polyline points="30,75 80,75 70,105 115,105"
+            fill="none" stroke="url(#lightGrad)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <polyline points="170,125 120,125 130,95 85,95"
+            fill="none" stroke="url(#mainGrad)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- 4. 中心锁孔（代表E2EE端到端加密） -->
+  <circle cx="100" cy="93" r="9" fill="none" stroke="#FFFFFF" stroke-width="3.5"/>
+  <rect x="94" y="98" width="12" height="14" rx="1.5" fill="#FFFFFF"/>
+
+  <!-- 锁孔内的加密光点 -->
+  <circle cx="100" cy="93" r="2.5" fill="#00D4FF" opacity="0.9"/>
+</svg>
