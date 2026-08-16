@@ -4,7 +4,7 @@
 import { ref, computed, watch, onUnmounted, type Ref } from 'vue';
 import type { QueuedFile, StorageType } from '@/types/transfer';
 import {
-  createTransfer, refreshCode, setMessage, terminateTransfer, clearTransfer, clearTransferFiles, zipUrl,
+  createTransfer, setMessage, terminateTransfer, clearTransfer, clearTransferFiles, zipUrl,
 } from '@/api/transfer';
 import { uploadAll } from '@/transfer/tus/useTusUpload';
 import { newSalt, E2EE_CHUNK_SIZE, randomPassphrase } from '@/crypto/tus-crypto';
@@ -25,7 +25,7 @@ export function useRelayTransfer(
   files: Ref<QueuedFile[]>,
   onLoginCode?: (code: string) => void,
 ) {
-  // E2EE 始终开启，口令系统内置（用户不可改）
+  // E2EE 始终开启，口令系统内置且一次性生成（创建传输时定下，不可中途更换/刷新）
   const passphrase = ref(randomPassphrase());
   const transferId = ref('');
   const code = ref('');
@@ -65,11 +65,6 @@ export function useRelayTransfer(
     if (relayPhase.value === 'failed') return 'busy';
     return 'idle';
   });
-
-  /** 刷新加密口令（随机生成新口令） */
-  function refreshPassphrase() {
-    passphrase.value = randomPassphrase();
-  }
 
   // 创建传输（仅首次）：分配分享码/登录码/E2EE salt，并缓存 salt 供重传复用
   async function ensureTransfer() {
@@ -152,12 +147,6 @@ export function useRelayTransfer(
     passphrase.value = randomPassphrase();
   }
 
-  async function onRefresh() {
-    if (!transferId.value) return;
-    const r = await refreshCode(transferId.value);
-    code.value = r.code;
-  }
-
   /** 确认终止传输 */
   async function confirmTerminate() {
     if (!transferId.value) return;
@@ -201,7 +190,7 @@ export function useRelayTransfer(
     passphrase, transferId, code, loginCode, storage, started, error,
     relayPhase, uploading, filesLocked, message, showTerminateDialog,
     shareLink, selStatus, selStatusClass, zipUrl,
-    refreshPassphrase, ensureTransfer, startTransfer, cancelUpload, resumeUpload,
-    startNewTransfer, onRefresh, confirmTerminate, copyShareAll, copyLoginCode,
+    ensureTransfer, startTransfer, cancelUpload, resumeUpload,
+    startNewTransfer, confirmTerminate, copyShareAll, copyLoginCode,
   };
 }

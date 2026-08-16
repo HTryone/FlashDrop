@@ -21,7 +21,7 @@ const {
   relayPhase, filesLocked, message, showTerminateDialog,
   shareLink, selStatus, selStatusClass,
   startTransfer, cancelUpload, resumeUpload, startNewTransfer,
-  onRefresh, confirmTerminate, copyShareAll, copyLoginCode, zipUrl,
+  confirmTerminate, copyShareAll, copyLoginCode, zipUrl,
 } = useRelayTransfer(files, (c) => emit('gotLoginCode', c));
 
 // 本地直传（HTTP + P2P）发送编排已抽到 src/composables/useLocalSend.ts
@@ -141,7 +141,6 @@ const senderStatusClass = computed(() => sendMode.value === 'local' ? sendStatus
 
         <div class="code-actions" style="margin-top:8px">
           <button class="btn sm primary" @click="copyShareAll">一键复制</button>
-          <button class="btn sm" @click="onRefresh">刷新换码</button>
           <a class="btn sm" :href="zipUrl(code)" v-if="storage !== 'r2'">打包下载全部</a>
           <button class="btn sm danger" @click="showTerminateDialog = true" v-if="relayPhase !== 'uploading'">取消分享</button>
         </div>

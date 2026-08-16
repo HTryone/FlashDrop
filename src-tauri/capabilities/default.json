@@ -1,16 +1,8 @@
 {
-  "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "FlashDrop 默认能力：含 FSA 不兼容浏览器下由 Rust 接管落盘所需的全部权限",
+  "description": "Default capability for FlashDrop remote frontend",
   "windows": ["main"],
   "permissions": [
-    "core:default",
-    "dialog:allow-save",
-    "dialog:allow-open",
-    "fs:default",
-    "fs:allow-write-file",
-    "fs:allow-open",
-    "fs:allow-write",
     "allow-open-file",
     "allow-write-chunk",
     "allow-write-chunk-b64",
