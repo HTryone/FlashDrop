@@ -41,8 +41,8 @@
  *     改完代码再启构建，别按名批量杀 cargo/tauri 进程（会误杀新构建）。
  *
  * 品牌资产（图标）已固化在仓库 src-tauri/icons/*（桌面 / iOS / Android 全套，含安卓 #0b0e16 自适应底色，已被 git 跟踪）：
- *   安卓 foreground 自定义源在 src-tauri/icons/android/foreground/（单文件夹 5 尺寸，命名对齐桌面 32x32.png 的 WxH.png 规范）。
- *   打包时本脚本把该源注入 gradle 的 preBuild 任务，覆盖 Tauri 从 icon.png 自动派生的贴满版 → 安卓图标留白、桌面图标撑满，二者解耦。
+ *   安卓自定义图标全套在 src-tauri/icons/android/（git 跟踪）：foreground/ 单源 5 尺寸 + 各密度 ic_launcher.png/round.png + anydpi-v26 自适应定义 + values 背景色 #0b0e16。
+ *   打包时本脚本把该全套注入 gradle 的 preBuild 任务，覆盖 Tauri 从 icon.png 自动派生的默认版（默认绿背景 + 默认机器人前景）→ 安卓全 API 档位（含 API>=26 自适应）都用自定义图标；桌面图标撑满版另由 icon.png 派生，二者解耦。
  *   换 logo 时手动跑一次 `node node_modules/@tauri-apps/cli/tauri.js icon public/logo.svg` 即可全端重生（注意：会改 icon.png，桌面端随之变化）。
  *   应用名统一取 tauri.conf.json 的 productName（英文），桌面窗口 / NSIS 安装包 / 安卓桌面名都从它来。
  *
@@ -234,20 +234,37 @@ function injectForegroundCopyTask() {
   let s = readFileSync(bg, 'utf8');
   if (s.includes('ARKPULSE_FOREGROUND_FIX')) return;
   const inject = `
-// ARKPULSE_FOREGROUND_FIX: 用仓库维护的带 padding 安卓 foreground 单源覆盖自动派生的贴满版
+// ARKPULSE_FOREGROUND_FIX: 用仓库维护的安卓自定义图标覆盖 Tauri 自动派生版
 tasks.register("copyArkPulseForeground") {
-    val fgBase = file("../../../icons/android/foreground")
+    val iconBase = file("../../../icons/android")
     val resBase = file("src/main/res")
-    val map = mapOf(
-        "mdpi" to "108x108", "hdpi" to "162x162", "xhdpi" to "216x216",
-        "xxhdpi" to "324x324", "xxxhdpi" to "432x432"
-    )
     doLast {
-        for ((density, size) in map) {
-            val src = File(fgBase, "\$size.png")
+        // 1) foreground 单源 → 各密度 ic_launcher_foreground.png（留白版，与桌面撑满版解耦）
+        val fgMap = mapOf(
+            "mdpi" to "108x108", "hdpi" to "162x162", "xhdpi" to "216x216",
+            "xxhdpi" to "324x324", "xxxhdpi" to "432x432"
+        )
+        for ((density, size) in fgMap) {
+            val src = File(iconBase, "foreground/\$size.png")
             val dst = File(resBase, "mipmap-\$density/ic_launcher_foreground.png")
             if (src.exists()) { dst.parentFile.mkdirs(); src.copyTo(dst, overwrite = true) }
         }
+        // 2) 完整图标 + round（各密度 png，API<26 设备直接用它）
+        for (density in listOf("mdpi","hdpi","xhdpi","xxhdpi","xxxhdpi")) {
+            for (name in listOf("ic_launcher","ic_launcher_round")) {
+                val src = File(iconBase, "mipmap-\$density/\$name.png")
+                val dst = File(resBase, "mipmap-\$density/\$name.png")
+                if (src.exists()) { dst.parentFile.mkdirs(); src.copyTo(dst, overwrite = true) }
+            }
+        }
+        // 3) 自适应图标定义 anydpi-v26（API>=26 设备用它组合 foreground+背景色）
+        val anydpiSrc = File(iconBase, "mipmap-anydpi-v26/ic_launcher.xml")
+        val anydpiDst = File(resBase, "mipmap-anydpi-v26/ic_launcher.xml")
+        if (anydpiSrc.exists()) { anydpiDst.parentFile.mkdirs(); anydpiSrc.copyTo(anydpiDst, overwrite = true) }
+        // 4) 背景色（覆盖 Tauri 默认绿 #3DDC84 → 我们的 #0b0e16 深蓝黑）
+        val bgSrc = File(iconBase, "values/ic_launcher_background.xml")
+        val bgDst = File(resBase, "values/ic_launcher_background.xml")
+        if (bgSrc.exists()) { bgDst.parentFile.mkdirs(); bgSrc.copyTo(bgDst, overwrite = true) }
     }
 }
 tasks.preBuild { dependsOn("copyArkPulseForeground") }

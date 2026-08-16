@@ -4,11 +4,13 @@ use base64::Engine;
 use tauri::ipc::{InvokeBody, Request};
 use tauri::State;
 
+use crate::files::file_writer;
+use crate::files::path_resolver;
 use crate::state::AppState;
 
 #[tauri::command]
 pub fn open_file(state: State<'_, AppState>, path: String) -> Result<String, String> {
-    crate::file_writer::open_file(state.inner(), &path)
+    file_writer::open_file(state.inner(), &path)
 }
 
 /// 桌面路径：二进制 Raw 载荷直传，零膨胀。
@@ -25,7 +27,7 @@ pub fn write_chunk(state: State<'_, AppState>, request: Request<'_>) -> Result<(
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| "缺少文件句柄请求头 x-fd-handle".to_string())?;
     match request.body() {
-        InvokeBody::Raw(data) => crate::file_writer::write_chunk(state.inner(), handle, data),
+        InvokeBody::Raw(data) => file_writer::write_chunk(state.inner(), handle, data),
         InvokeBody::Json(_) => {
             Err("write_chunk 只接受二进制载荷；安卓端请调用 write_chunk_b64".to_string())
         }
@@ -45,20 +47,20 @@ pub fn write_chunk_b64(
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data.as_bytes())
         .map_err(|e| format!("载荷 base64 解码失败: {e}"))?;
-    crate::file_writer::write_chunk(state.inner(), &handle, &bytes)
+    file_writer::write_chunk(state.inner(), &handle, &bytes)
 }
 
 #[tauri::command]
 pub fn close_file(state: State<'_, AppState>, handle: String) -> Result<(), String> {
-    crate::file_writer::close_file(state.inner(), &handle)
+    file_writer::close_file(state.inner(), &handle)
 }
 
 #[tauri::command]
 pub fn abort_file(state: State<'_, AppState>, handle: String) -> Result<(), String> {
-    crate::file_writer::abort_file(state.inner(), &handle)
+    file_writer::abort_file(state.inner(), &handle)
 }
 
 #[tauri::command]
 pub fn resolve_save_path(dir: String, name: String) -> Result<String, String> {
-    crate::path_resolver::resolve_save_path(&dir, &name)
+    path_resolver::resolve_save_path(&dir, &name)
 }

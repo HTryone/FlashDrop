@@ -6,72 +6,9 @@
     <title>闪云 ArkPulse · 大文件极速传输</title>
     <meta name="description" content="分片续传 · 端到端加密 · 大文件极速传输" />
     <link rel="icon" type="image/svg+xml" href="/logo.svg" />
-    <style>
-      /* 启动遮罩：与深色模式对齐，在 WebView 首帧与 Vue 挂载之间显示 */
-      #splash {
-        position: fixed;
-        inset: 0;
-        z-index: 2147483647;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        gap: 22px;
-        background:
-          radial-gradient(1200px 600px at 80% -10%, rgba(109, 139, 255, 0.14), transparent 60%),
-          radial-gradient(900px 500px at -10% 110%, rgba(56, 225, 200, 0.11), transparent 55%),
-          #0b0e16;
-        color: #e8edf7;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
-        transition: opacity 320ms ease, visibility 320ms ease;
-        pointer-events: none;
-      }
-      #splash .splash-logo {
-        width: 96px;
-        height: 96px;
-        border-radius: 22px;
-        background: url('/logo.svg') center / contain no-repeat;
-      }
-      #splash .splash-text {
-        font-size: 18px;
-        font-weight: 600;
-        letter-spacing: 0.05em;
-      }
-      #splash .splash-ring {
-        width: 28px;
-        height: 28px;
-        border: 3px solid rgba(109, 139, 255, 0.18);
-        border-top-color: #6d8bff;
-        border-radius: 50%;
-        animation: splash-spin 0.9s linear infinite;
-      }
-      @keyframes splash-spin {
-        to { transform: rotate(360deg); }
-      }
-      #splash.ready {
-        opacity: 0;
-        visibility: hidden;
-      }
-      /* 兜底：就算 Vue 没起来，最长 3 秒也自动淡出，避免遮罩永远挡住 */
-      #splash.timeout {
-        opacity: 0;
-        visibility: hidden;
-      }
-    </style>
   </head>
   <body>
-    <div id="splash">
-      <div class="splash-logo"></div>
-      <div class="splash-text">ArkPulse</div>
-      <div class="splash-ring"></div>
-    </div>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
-    <script>
-      setTimeout(function () {
-        const s = document.getElementById('splash');
-        if (s) s.classList.add('timeout');
-      }, 3000);
-    </script>
   </body>
 </html>

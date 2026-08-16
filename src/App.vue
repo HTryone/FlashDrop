@@ -26,16 +26,12 @@ function toggleExt() {
   router.push(inExt.value ? '/' : '/ext');
 }
 
-// Vue 挂载后：先注入手机标识（同步检测），再移除启动遮罩。
-// 与 index.html 的 3s 兜底 timeout 形成双保险。
+// Vue 挂载后注入手机标识（同步检测），后续模块通过 provide('isMobile') 读取。
+// 启动遮罩已由 Rust 原生 splashscreen 窗口接管，前端不再处理。
 onMounted(() => {
-  // 注入手机标识：同步检测，后续模块通过 provide('isMobile') 读取
   const mobile = typeof navigator !== 'undefined' &&
     (navigator.maxTouchPoints > 0 || /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent));
   provide('isMobile', mobile);
-
-  const splash = document.getElementById('splash');
-  if (splash) splash.classList.add('ready');
 });
 </script>
 
