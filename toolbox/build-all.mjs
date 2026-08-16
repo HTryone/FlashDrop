@@ -41,7 +41,9 @@
  *     改完代码再启构建，别按名批量杀 cargo/tauri 进程（会误杀新构建）。
  *
  * 品牌资产（图标）已固化在仓库 src-tauri/icons/*（桌面 / iOS / Android 全套，含安卓 #0b0e16 自适应底色，已被 git 跟踪）：
- *   本脚本不再处理图标。换 logo 时手动跑一次 `node node_modules/@tauri-apps/cli/tauri.js icon public/logo.svg` 即可全端重生。
+ *   安卓 foreground 自定义源在 src-tauri/icons/android/foreground/（单文件夹 5 尺寸，命名对齐桌面 32x32.png 的 WxH.png 规范）。
+ *   打包时本脚本把该源注入 gradle 的 preBuild 任务，覆盖 Tauri 从 icon.png 自动派生的贴满版 → 安卓图标留白、桌面图标撑满，二者解耦。
+ *   换 logo 时手动跑一次 `node node_modules/@tauri-apps/cli/tauri.js icon public/logo.svg` 即可全端重生（注意：会改 icon.png，桌面端随之变化）。
  *   应用名统一取 tauri.conf.json 的 productName（英文），桌面窗口 / NSIS 安装包 / 安卓桌面名都从它来。
  *
  * 产物验证：安卓 APK 解包查 lib/ 只含 arm64-v8a + x86_64（无 32 位）；
@@ -205,6 +207,67 @@ function buildMacOS() {
   sh('npm run tauri build');
 }
 
+/** 修正 Tauri `android init` 生成的坏 BuildTask.kt：
+ *  其把 `tauri` 当脚本名直接传给 node（node tauri …），本机无法解析 → Cannot find module。
+ *  改为指向真实的 tauri.js。gen 是 gitignore 的本地产物、init 会重写它，故每次构建前校准一次（幂等）。 */
+function patchBuildTaskTauri() {
+  const bt = join(projectRoot, 'src-tauri', 'gen', 'android', 'buildSrc', 'src', 'main', 'java', 'com', 'arkpulse', 'xyz', 'kotlin', 'BuildTask.kt');
+  if (!existsSync(bt)) return;
+  let s = readFileSync(bt, 'utf8');
+  if (s.includes('@tauri-apps/cli/tauri.js')) return; // 已修正
+  const fixed = s.replace(
+    'val args = listOf("tauri", "android", "android-studio-script");',
+    'val args = listOf("../node_modules/@tauri-apps/cli/tauri.js", "android", "android-studio-script");'
+  );
+  if (fixed === s) return;
+  writeFileSync(bt, fixed);
+  console.log(green('已修正 gen BuildTask.kt 的 tauri CLI 调用路径'));
+}
+
+/** 把仓库维护的带 padding 安卓 foreground 单源，作为 gradle 任务注入构建流程：
+ *  在 preBuild 阶段覆盖到各密度 res 下的 ic_launcher_foreground.png，
+ *  使最终 APK 用我们的留白版，而非 Tauri 从 icon.png 自动派生的贴满版。
+ *  源：src-tauri/icons/android/foreground/{WxH}.png（git 跟踪，单文件夹 5 尺寸）。幂等。 */
+function injectForegroundCopyTask() {
+  const bg = join(projectRoot, 'src-tauri', 'gen', 'android', 'app', 'build.gradle.kts');
+  if (!existsSync(bg)) return;
+  let s = readFileSync(bg, 'utf8');
+  if (s.includes('ARKPULSE_FOREGROUND_FIX')) return;
+  const inject = `
+// ARKPULSE_FOREGROUND_FIX: 用仓库维护的带 padding 安卓 foreground 单源覆盖自动派生的贴满版
+tasks.register("copyArkPulseForeground") {
+    val fgBase = file("../../../icons/android/foreground")
+    val resBase = file("src/main/res")
+    val map = mapOf(
+        "mdpi" to "108x108", "hdpi" to "162x162", "xhdpi" to "216x216",
+        "xxhdpi" to "324x324", "xxxhdpi" to "432x432"
+    )
+    doLast {
+        for ((density, size) in map) {
+            val src = File(fgBase, "\$size.png")
+            val dst = File(resBase, "mipmap-\$density/ic_launcher_foreground.png")
+            if (src.exists()) { dst.parentFile.mkdirs(); src.copyTo(dst, overwrite = true) }
+        }
+    }
+}
+tasks.preBuild { dependsOn("copyArkPulseForeground") }
+`;
+  s = s.replace('apply(from = "tauri.build.gradle.kts")', inject + '\napply(from = "tauri.build.gradle.kts")');
+  writeFileSync(bg, s);
+  console.log(green('已注入安卓 foreground 固定任务到 gradle 构建'));
+}
+
+/** 确保 gen/android 存在且处于可构建状态（缺失则先 init），并校准构建脚本。 */
+function ensureAndroidGen() {
+  const genAndroid = join(projectRoot, 'src-tauri', 'gen', 'android');
+  if (!existsSync(genAndroid)) {
+    console.log(yellow('gen/android 不存在，先执行 tauri android init'));
+    sh('node node_modules/@tauri-apps/cli/tauri.js android init');
+  }
+  patchBuildTaskTauri();
+  injectForegroundCopyTask();
+}
+
 
 function buildAndroid() {
   console.log(`\n========== 构建 Android (APK) ==========`);
@@ -231,7 +294,9 @@ function buildAndroid() {
   } else {
     console.log(yellow('[警告] 未找到 JDK（设置 JAVA_HOME），Android 构建可能失败。'));
   }
-  // 只构建 64 位；直跑 tauri.js 而不走 npm run，否则 npm 会吞掉多值 -t 参数
+  // 确保 gen/android 就绪并校准构建脚本（含安卓图标固定）
+  ensureAndroidGen();
+  // 只构建 64 位；gradle 内已注入 foreground 固定任务，APK 直接带留白图标
   sh('node node_modules/@tauri-apps/cli/tauri.js android build -t aarch64 x86_64');
   return true;
 }

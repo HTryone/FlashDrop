@@ -29,6 +29,7 @@
       #splash .splash-logo {
         width: 96px;
         height: 96px;
+        border-radius: 22px;
         background: url('/logo.svg') center / contain no-repeat;
       }
       #splash .splash-text {
@@ -51,7 +52,7 @@
         opacity: 0;
         visibility: hidden;
       }
-      /* 兜底：就算 Vue 没起来，最长 4 秒也自动淡出，避免遮罩永远挡住 */
+      /* 兜底：就算 Vue 没起来，最长 3 秒也自动淡出，避免遮罩永远挡住 */
       #splash.timeout {
         opacity: 0;
         visibility: hidden;
@@ -70,7 +71,7 @@
       setTimeout(function () {
         const s = document.getElementById('splash');
         if (s) s.classList.add('timeout');
-      }, 4000);
+      }, 3000);
     </script>
   </body>
 </html>
