@@ -34,11 +34,11 @@ export function formatInline(src: string): string {
 export const tutorial: Section[] = [
   {
     id: 'intro',
-    title: '一、闪传是什么',
+    title: '一、闪云是什么',
     blocks: [
       {
         type: 'p',
-        text: '**闪传 FlashDrop** 是一个浏览器里的大文件传输工具：把文件切成小块、自动续传，支持端到端加密，也能在局域网内点对点直传。不需要装客户端，打开网页就能用。',
+        text: '**闪云 ArkPulse** 是一个浏览器里的大文件传输工具：把文件切成小块、自动续传，支持端到端加密，也能在局域网内点对点直传。不需要装客户端，打开网页就能用。',
       },
       {
         type: 'ul',

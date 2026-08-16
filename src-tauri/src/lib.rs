@@ -40,7 +40,7 @@ pub fn run() {
             let inject = format!("window.__FLASHDROP_CLIENT__={{kind:'{}'}};", CLIENT_KIND);
             let builder =
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url.parse().unwrap()))
-                    .title("FlashDrop")
+                    .title("ArkPulse")
                     .initialization_script(inject);
 
             // 桌面：窗口在创建前就算好 75% 逻辑尺寸并居中，避免先出现默认小窗再 resize。

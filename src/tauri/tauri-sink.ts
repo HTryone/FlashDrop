@@ -3,7 +3,7 @@
 // 以及路径选择 + 默认下载目录持久化（App 内可改，存 WebView 本地）。
 //
 // 安卓落盘策略（方案 A + 兜底）：
-//   - 方案 A：开启「全部文件访问」权限后，Rust std::fs 直接写公共下载目录 /Download/FlashDrop/…
+//   - 方案 A：开启「全部文件访问」权限后，Rust std::fs 直接写公共下载目录 /Download/ArkPulse/…
 //   - 兜底：用户未授权时，逐文件用 SAF 选择器让用户手动指定保存位置（经 fs 插件写 SAF URI）。
 // 核心 Rust 落盘逻辑（file_writer.rs 的 std::fs）一行未改，符合架构铁律。
 import { invoke } from '@tauri-apps/api/core';
@@ -88,20 +88,20 @@ function parentDir(p: string): string {
   return i > 0 ? p.slice(0, i) : p;
 }
 
-// 安卓基目录：真正的公共下载目录 /storage/emulated/0/Download/FlashDrop。
+// 安卓基目录：真正的公共下载目录 /storage/emulated/0/Download/ArkPulse。
 //
 // 【不可退化】不要用 downloadDir()——Tauri 安卓实现是 getExternalFilesDir(DIRECTORY_DOWNLOADS)，
 // 指向 app 私有沙盒 /Android/data/<包名>/files/Download：不需要任何权限，但用户在文件管理器的
 // 「下载」里根本看不到文件，「全部文件访问」权限等于白授。homeDir() 在安卓是
-// Environment.getExternalStorageDirectory() = /storage/emulated/0，join Download/FlashDrop
+// Environment.getExternalStorageDirectory() = /storage/emulated/0，join Download/ArkPulse
 // 才是用户认知里的下载目录。取不到时才退回私有目录（至少能落地）。
 async function androidBaseDir(): Promise<string> {
   try {
     const home = await homeDir();
-    return await join(home, 'Download', 'FlashDrop');
+    return await join(home, 'Download', 'ArkPulse');
   } catch {
     const dl = await downloadDir();
-    return join(dl, 'FlashDrop').catch(() => dl);
+    return join(dl, 'ArkPulse').catch(() => dl);
   }
 }
 // 尝试用 Rust std::fs 在公共下载目录解析不重名路径。

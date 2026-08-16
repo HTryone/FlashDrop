@@ -1,4 +1,4 @@
-# 闪传 FlashDrop
+# 闪云 ArkPulse
 
 基于浏览器的大文件端到端加密传输工具，免安装、跨平台。支持中转 / 本地直传 / P2P 直连三种模式，文件全程不经第三方明文。
 
@@ -74,7 +74,7 @@ node server.mjs    # 启动服务，访问 http://<lan-ip>:3000
 ## 项目结构
 
 ```
-闪传 FlashDrop/
+ArkPulse/
 ├── index.html
 ├── package.json
 ├── package-lock.json

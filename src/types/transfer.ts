@@ -1,4 +1,4 @@
-// 闪传 FlashDrop 核心类型定义
+// 闪云 ArkPulse 核心类型定义
 
 /** 单个待传文件（发送侧） */
 export interface QueuedFile {

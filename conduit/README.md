@@ -1,4 +1,4 @@
-# FlashDrop 本地磁盘模式 · Cloudflare Worker 中继
+# ArkPulse 本地磁盘模式 · Cloudflare Worker 中继
 
 本地磁盘模式下，文件**不落服务器磁盘**，只在网站（本 Worker）内存里流转，两端浏览器实时收发。
 本文件夹即中继服务，可直接部署到 Cloudflare Workers。

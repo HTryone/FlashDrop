@@ -36,7 +36,7 @@
   <circle cx="160" cy="155" r="5" fill="#7B2FBE"/>
   <line x1="45" y1="50" x2="155" y2="150" stroke="url(#mainGrad)" stroke-width="1.5" stroke-dasharray="5,5" opacity="0.5"/>
 
-  <!-- 3. 两道交错闪电（代表闪传的高速直连） -->
+  <!-- 3. 两道交错闪电（代表极速直连） -->
   <polyline points="30,75 80,75 70,105 115,105"
             fill="none" stroke="url(#lightGrad)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
   <polyline points="170,125 120,125 130,95 85,95"

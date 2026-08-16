@@ -37,8 +37,9 @@ onMounted(() => {
   <div class="app">
     <header class="topbar">
       <div class="brand">
-        <span class="logo gradient-text">⚡ 闪传</span>
-        <span class="tag">FlashDrop</span>
+        <img class="brand-logo" src="/logo.svg" alt="闪云 ArkPulse" />
+        <span class="logo gradient-text">闪云</span>
+        <span class="tag">ArkPulse</span>
       </div>
       <nav v-if="route.path === '/'" class="tabs">
         <button :class="{ on: activeTab === 'send' }" @click="activeTab = 'send'">发送</button>
@@ -65,7 +66,9 @@ onMounted(() => {
   position: sticky; top: 0; z-index: 10;
   flex-wrap: nowrap;
 }
-.brand { display: flex; align-items: baseline; gap: 8px; flex-shrink: 0; }
+.brand { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+/* 唯一品牌图形源：public/logo.svg，换 logo 只改那一个文件 */
+.brand-logo { width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0; display: block; }
 .logo { font-size: 20px; font-weight: 800; white-space: nowrap; }
 .tag { font-size: 12px; color: var(--text-faint); letter-spacing: 1px; }
 .tabs {
@@ -85,8 +88,10 @@ onMounted(() => {
 
 @media (max-width: 640px) {
   .topbar { padding: max(12px, env(safe-area-inset-top)) 12px 12px; gap: 10px; }
-  .tag { display: none; }
-  .logo { font-size: 18px; }
+  /* 手机端只展示图形 logo：中文名与英文标签全部隐藏，把横向空间让给 Tabs */
+  .tag,
+  .logo { display: none; }
+  .brand-logo { width: 26px; height: 26px; border-radius: 7px; }
   .tabs { margin-left: 4px; }
   .tabs button { padding: 7px 12px; font-size: 13px; }
   .ext-btn { padding: 8px 12px; }

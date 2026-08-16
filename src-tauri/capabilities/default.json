@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Default capability for FlashDrop remote frontend",
+  "description": "Default capability for ArkPulse remote frontend",
   "windows": ["main"],
   "permissions": [
     "allow-open-file",

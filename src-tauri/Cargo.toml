@@ -1,8 +1,8 @@
 [package]
 name = "flashdrop-tauri"
 version = "0.1.0"
-description = "FlashDrop 桌面/移动端原生壳（Rust 接管大文件落盘）"
-authors = ["FlashDrop"]
+description = "闪云 ArkPulse 桌面/移动端原生壳（Rust 接管大文件落盘）"
+authors = ["ArkPulse"]
 edition = "2021"
 rust-version = "1.77"
 
