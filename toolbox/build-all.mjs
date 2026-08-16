@@ -39,6 +39,12 @@
  *     VS2026 自定义路径               = D:/Apps/vsc/vsc2026（脚本用 vswhere 自动定位并注入）
  *     cargo 已在默认 PATH            = C:/Users/Htryone/.cargo/bin（无需 prepend）
  *
+ * 启动命令（最常用，环境已固化，直接跑即可，勿先 export / 找环境）：
+ *     node toolbox/build-all.mjs            # 双端：Windows NSIS 安装包 + Android 仅64位 APK/AAB
+ *     node toolbox/build-all.mjs --windows # 只打 Windows
+ *     node toolbox/build-all.mjs --android # 只打 Android（仅 arm64-v8a + x86_64）
+ *   （在 D:\arkpulse 项目根目录执行；--local-nsis 走本地 toolbox/nsis 免网络下载）
+ *
  * 可选环境变量（脚本也会自动探测，无需手动设置）：
  *   ANDROID_HOME    Android SDK 根目录
  *   NDK_HOME        Android NDK 根目录
