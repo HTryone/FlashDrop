@@ -27,6 +27,18 @@
  *   node toolbox/build-all.mjs --version 1.2.3 --version-code 12345
  *       ↑ --version-code 显式指定 Android versionCode（升级必须递增，省略则随版本号自动递增）。
  *
+ * ── 本机环境固定位置（写死在此，一眼可见；勿每次重找/手动 export）────────
+ *   以下为本机真实安装路径，脚本自动探测即命中此处。以后直接打包即可，
+ *   不要先 export 一堆变量（cargo 已在默认 PATH，SDK/NDK/JDK 由脚本探测）。
+ *     ANDROID_HOME  Android SDK 根   = D:/Apps/SDKS
+ *     NDK_HOME      NDK 根           = D:/Apps/SDKS/ndk/30.0.15729638
+ *     JAVA_HOME     JDK 17           = D:/Apps/SDKS/jdk17/jdk-17.0.20+8
+ *     build-tools                     = D:/Apps/SDKS/build-tools/36.0.0 (含 zipalign/apksigner)
+ *     Android Studio 本体            = D:/Apps/android（自带 jbr/JDK，作兜底）
+ *     NSIS 本地                       = toolbox/nsis（等价于 --local-nsis）
+ *     VS2026 自定义路径               = D:/Apps/vsc/vsc2026（脚本用 vswhere 自动定位并注入）
+ *     cargo 已在默认 PATH            = C:/Users/Htryone/.cargo/bin（无需 prepend）
+ *
  * 可选环境变量（脚本也会自动探测，无需手动设置）：
  *   ANDROID_HOME    Android SDK 根目录
  *   NDK_HOME        Android NDK 根目录
