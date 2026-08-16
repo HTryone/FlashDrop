@@ -2,6 +2,10 @@ import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import { fileURLToPath, URL } from 'node:url';
 
+// 启动遮罩 splashscreen.html 由 Rust 壳层经 bundle.resources 内嵌进安装包
+// （桌面落 exe 同目录 splash/，安卓落 APK assets/splash/），Rust 侧用 resource_dir()/App 加载，
+// 不进前端 frontendDist(dist/)。故 vite 无需为 splash 做任何复制。
+
 // 开发期 Vite 跑在 5173，把 API / 上传 / 下载 代理到 Node 服务(3000)，避免跨域。
 // 生产期：node server.mjs 直接托管 dist/，同源零跨域。
 export default defineConfig({

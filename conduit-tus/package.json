@@ -1,5 +1,5 @@
 {
-  "name": "flashdrop-tus",
+  "name": "arkpulse-tus",
   "private": true,
   "scripts": {
     "dev": "wrangler dev",

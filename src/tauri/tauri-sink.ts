@@ -30,7 +30,7 @@ function isAndroid(): boolean {
   return isPhone();
 }
 
-const DEFAULT_DIR_KEY = 'flashdrop.defaultSaveDir';
+const DEFAULT_DIR_KEY = 'arkpulse.defaultSaveDir';
 // 批量 invoke 阈值：降 IPC 往返（修 D5）。手机端取更小值——安卓 IPC 只能传文本（见 flushChunk），
 // 单次载荷越大主线程编码/解析卡顿越明显，2MB 在吞吐与流畅度之间最稳。
 function flushBytes(): number {

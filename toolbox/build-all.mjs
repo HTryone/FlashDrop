@@ -313,7 +313,7 @@ function buildAndroid() {
   }
   // 确保 gen/android 就绪并校准构建脚本（含安卓图标固定）
   ensureAndroidGen();
-  // 只构建 64 位；gradle 内已注入 foreground 固定任务，APK 直接带留白图标
+  // 构建 64 位双 ABI：arm64-v8a(aarch64) + x86_64(X64，模拟机/Intel 安卓真机用)。不打 32 位 x86/armeabi。gradle 内已注入 foreground 固定任务。
   sh('node node_modules/@tauri-apps/cli/tauri.js android build -t aarch64 x86_64');
   return true;
 }
@@ -346,7 +346,7 @@ function signAndroidApks() {
   }
   const ksFile = join(projectRoot, kv.KEYSTORE_FILE || 'src-tauri/release-key.jks');
   const ksPass = kv.KEYSTORE_PASSWORD;
-  const alias = kv.KEY_ALIAS || 'flashdrop';
+  const alias = kv.KEY_ALIAS || 'arkpulse';
   const keyPass = kv.KEY_PASSWORD || ksPass;
   if (!existsSync(ksFile)) {
     console.log(yellow(`[跳过签名] keystore 不存在: ${ksFile}`));

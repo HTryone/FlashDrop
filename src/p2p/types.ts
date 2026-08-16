@@ -55,7 +55,7 @@ export interface P2PProgress {
 }
 
 export interface SenderOpts {
-  relayBase: string; // https://flashdrop-relay.315461.xyz
+  relayBase: string; // https://arkpulse-relay.315461.xyz
   room: string; // 共享房间码
   pass: string; // 口令（#k=），用于 deriveKey
   files: File[]; // 待发送文件

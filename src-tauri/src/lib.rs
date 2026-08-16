@@ -43,11 +43,11 @@ pub fn run() {
             } else {
                 "flashdrop.pages.dev"
             };
-            // 壳在网页代码运行前注入：①设备标识（远程页读 window.__FLASHDROP_CLIENT__ 知是哪端）；
+            // 壳在网页代码运行前注入：①设备标识（远程页读 window.__ARKPULSE_CLIENT__ 知是哪端）；
             // ②就绪检测——远程前端真实挂载（#app 存在且同域）才 emit 事件，错误页不会发，
             // 借此区分「加载成功」与「断网/失败错误页」(二者都会触发 PageLoad Finished，不可用)。
             let inject = format!(
-                "window.__FLASHDROP_CLIENT__={{kind:'{kind}'}};\
+                "window.__ARKPULSE_CLIENT__={{kind:'{kind}'}};\
 (function(){{function r(){{try{{if(location.hostname==='{host}'&&document.getElementById('app')){{window.__TAURI__.event.emit('arkpulse-ready',null);}}}}catch(e){{}}}}\
 if(document.readyState==='loading'){{document.addEventListener('DOMContentLoaded',r);}}else{{r();}}}})();",
                 kind = CLIENT_KIND,

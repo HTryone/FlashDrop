@@ -26,7 +26,7 @@ export default {
       const ttl = Number(env.DEFAULT_TTL_HOURS || 24);
 
       if (pathname === '/health') {
-        return new Response('flashdrop-tus online', {
+        return new Response('arkpulse-tus online', {
           status: 200,
           headers: corsHeaders(origin),
         });
@@ -65,7 +65,7 @@ export default {
       return new Response('Not Found', { status: 404, headers: corsHeaders(origin) });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error('[flashdrop-tus] uncaught', e);
+    console.error('[arkpulse-tus] uncaught', e);
     return new Response(msg, { status: 500, headers: corsHeaders(origin) });
   }
   },

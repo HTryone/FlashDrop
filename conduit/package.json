@@ -1,5 +1,5 @@
 {
-  "name": "flashdrop-relay",
+  "name": "arkpulse-relay",
   "private": true,
   "scripts": {
     "dev": "wrangler dev",

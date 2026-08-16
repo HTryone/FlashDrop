@@ -15,7 +15,7 @@
 //   ④ 仅本地磁盘模式使用：口令随机、单次会话，固定 salt 足够（与 HTTP 的 LOCAL_SALT 同源常量名，
 //      但此处为 P2P 独立实现，UTF-8 编码作 salt，P2P 两端同版本自洽）。
 
-const P2P_SALT = 'flashdrop-local-v1';
+const P2P_SALT = 'arkpulse-local-v1';
 
 export interface P2PCryptoCtx {
   aesKey: CryptoKey;   // AES-256-CBC 密钥（与 HMAC 同源 32 字节）

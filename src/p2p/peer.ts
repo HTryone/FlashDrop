@@ -108,7 +108,7 @@ export class PeerLink {
     this.pendingSignals = [];
     for (const d of pend) { try { await this.onSignal(d); } catch { /* ignore */ } }
     if (this.role === 'sender') {
-      this.dc = this.pc!.createDataChannel('flashdrop');
+      this.dc = this.pc!.createDataChannel('arkpulse');
       this.wireDc(this.dc);
       await this.sendOffer();
     }
@@ -212,7 +212,7 @@ export class PeerLink {
     this.ensurePc();
     this.onReconnectCb?.();
     if (this.role === 'sender') {
-      this.dc = this.pc!.createDataChannel('flashdrop');
+      this.dc = this.pc!.createDataChannel('arkpulse');
       this.wireDc(this.dc);
       this.sendOffer();
     }

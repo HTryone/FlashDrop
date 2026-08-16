@@ -7,19 +7,38 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::webview::Color;
+#[cfg(desktop)]
+use tauri::Url;
 use tauri::{AppHandle, Listener, Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub fn setup_splash(app: AppHandle, url: &str) {
-    // —— 遮罩窗口：加载打包内本地 splashscreen.html（远程前端完全不碰）——
+    // 遮罩窗口加载地址：
+    // - 桌面：从内嵌资源目录加载（bundle.resources 把 src-tauri/splash/ 打进安装包，落 exe 同目录 splash/）。
+    //   注意 WebviewUrl::App 只认 frontendDist(dist/)，内嵌资源在 exe 同目录，必须用 resource_dir() + External(file://) 加载。
+    // - 安卓：从 APK assets/splash/ 加载（安卓 resource_dir=asset://localhost，App 变体正好服务 assets）。
+    // logo 已内联进 HTML，无子资源加载失败问题；离线时遮罩照常显示。
+    #[cfg(desktop)]
+    let webview_url = match app.path().resource_dir() {
+        Ok(dir) => {
+            let p = dir.join("splash").join("splashscreen.html");
+            WebviewUrl::External(Url::from_file_path(&p).unwrap_or_else(|_| {
+                eprintln!("启动遮罩：资源路径不可用 {:?}", p);
+                Url::parse("about:blank").unwrap()
+            }))
+        }
+        Err(e) => {
+            eprintln!("启动遮罩：找不到资源目录 {e}");
+            return;
+        }
+    };
+    #[cfg(mobile)]
+    let webview_url = WebviewUrl::App("splash/splashscreen.html".into());
+
     // 底色深蓝 #0b0e16，消除 WebView 原生白底闪白。
-    let splash_builder = WebviewWindowBuilder::new(
-        &app,
-        "splash",
-        WebviewUrl::App("splash/splashscreen.html".into()),
-    )
-    .title("ArkPulse")
-    .visible(true)
-    .background_color(Color(11, 14, 22, 255));
+    let splash_builder = WebviewWindowBuilder::new(&app, "splash", webview_url)
+        .title("ArkPulse")
+        .visible(true)
+        .background_color(Color(11, 14, 22, 255));
 
     // 以下桌面专用窗口属性在安卓 WebviewWindowBuilder 不支持，必须整行 cfg 隔离，不能插链式调用。
     // 安卓 splash 全屏 + 主窗口初始隐藏，本就盖住，无需这些装饰属性。

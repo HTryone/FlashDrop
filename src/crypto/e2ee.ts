@@ -157,7 +157,7 @@ export const LOCAL_CHUNK_SIZE = 896 * 1024; // 896KB 一块（加密后单帧 �
 // Cloudflare Durable Object WebSocket 单条消息上限约 1MB（≈1,000,000 字节），留约 100KB 余量
 // 之前误用 2MB，加密后 ≈2.06MB 会超标，导致线上 Worker 静默丢弃/截断二进制帧，接收端卡死
 // 本地磁盘口令随机且单次会话使用，固定 salt 足够（避免把 salt 塞进链接）
-export const LOCAL_SALT = 'flashdrop-local-v1';
+export const LOCAL_SALT = 'arkpulse-local-v1';
 
 /** 加密单个明文块 → 帧：[16B IV][ciphertext][32B HMAC] */
 export function encryptChunk(plain: Uint8Array, keyHex: string): Uint8Array<ArrayBuffer> {

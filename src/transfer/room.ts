@@ -2,7 +2,7 @@
 // 发送端与接收端、两种直传方式（HTTP 中继 / P2P 直连）共用同一套房间码与口令体系，
 // 保证用户复制的同一个房间码在两种通道下都能对齐（P2P 走 `${room}::p2p` 命名空间，与 HTTP 互不冲突）。
 
-export const RELAY_DEFAULT = 'flashdrop-relay.315461.xyz';
+export const RELAY_DEFAULT = 'arkpulse-relay.315461.xyz';
 
 /** 解析 relay 基址：默认线上 relay，可用 VITE_RELAY_URL 覆盖（本地联调） */
 export function resolveRelayBase(): string {
@@ -10,7 +10,7 @@ export function resolveRelayBase(): string {
   return `https://${host}`;
 }
 
-export const TUS_DEFAULT = 'flashdrop-tus.315461.xyz';
+export const TUS_DEFAULT = 'arkpulse-tus.315461.xyz';
 
 /** 解析 tus 中转 Worker 基址：默认线上 tus Worker，
  *  可用 VITE_TUS_URL 覆盖（如本地联调设为 http://localhost:3000）。

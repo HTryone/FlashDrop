@@ -38,7 +38,7 @@ pub fn resolve_save_path(dir: &str, name: &str) -> Result<String, String> {
 /// 而安卓「全部文件访问」权限被撤销后目录仍在、写入却会 EACCES。探针写入是确定性判据。
 fn ensure_writable_dir(base: &Path) -> Result<(), String> {
     std::fs::create_dir_all(base).map_err(|e| format!("目标目录无法创建: {e}"))?;
-    let probe = base.join(".flashdrop-write-probe");
+    let probe = base.join(".arkpulse-write-probe");
     std::fs::write(&probe, b"0").map_err(|e| format!("目标目录不可写: {e}"))?;
     let _ = std::fs::remove_file(&probe);
     Ok(())
@@ -80,7 +80,7 @@ mod tests {
     fn 探针文件不残留() {
         let dir = std::env::temp_dir().join("fd-test-c");
         resolve_save_path(dir.to_str().unwrap(), "z.bin").unwrap();
-        assert!(!dir.join(".flashdrop-write-probe").exists());
+        assert!(!dir.join(".arkpulse-write-probe").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

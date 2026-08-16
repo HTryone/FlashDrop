@@ -1,4 +1,4 @@
-name = "flashdrop-tus"
+name = "arkpulse-tus"
 main = "src/index.ts"
 compatibility_date = "2025-01-01"
 
