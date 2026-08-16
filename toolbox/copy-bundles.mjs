@@ -8,7 +8,7 @@
 //   若网络下不动（卡在 Downloading nsis-3.11.zip），把 tauri:build 改回：
 //     set "NSIS_PATH=toolbox\nsis" && tauri build && node toolbox/copy-bundles.mjs
 //   即用本地 toolbox/nsis/（含 makensis.exe + 插件）跳过联网。
-import { existsSync, mkdirSync, copyFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, rmdirSync, unlinkSync, copyFileSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -24,6 +24,22 @@ const sources = [
 
 // 要收集的安装包后缀
 const exts = new Set(['.exe', '.msi', '.appimage', '.deb', '.dmg', '.apk', '.aab']);
+
+// 拷贝前先清空 releases/（直接覆盖、不累积旧版本）。保留目录本身，只删其下条目，
+// 比 rm -rf 整目录更稳；releases/ 本就被 .gitignore 忽略、纯构建产物，清空安全。
+function clearDir(dir) {
+  if (!existsSync(dir)) return;
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name);
+    if (statSync(p).isDirectory()) {
+      // 递归删子目录（releases 下本无嵌套，防御性处理）
+      clearDir(p);
+      rmdirSync(p);
+    } else {
+      unlinkSync(p);
+    }
+  }
+}
 
 function walk(dir, hits) {
   if (!existsSync(dir)) return;
@@ -48,6 +64,7 @@ if (hits.length === 0) {
 }
 
 mkdirSync(outDir, { recursive: true });
+clearDir(outDir); // 先清空，保证只留本次产物（直接覆盖旧版本）
 for (const p of hits) {
   const dest = join(outDir, basename(p));
   copyFileSync(p, dest);

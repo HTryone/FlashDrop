@@ -37,9 +37,8 @@ onMounted(() => {
   <div class="app">
     <header class="topbar">
       <div class="brand">
-        <img class="brand-logo" src="/logo.svg" alt="闪云 ArkPulse" />
-        <span class="logo gradient-text">闪云</span>
-        <span class="tag">ArkPulse</span>
+        <img class="brand-logo" src="/logo.svg" alt="ArkPulse" />
+        <span class="tag gradient-text">ArkPulse</span>
       </div>
       <nav v-if="route.path === '/'" class="tabs">
         <button :class="{ on: activeTab === 'send' }" @click="activeTab = 'send'">发送</button>
@@ -68,12 +67,10 @@ onMounted(() => {
 }
 .brand { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 /* 唯一品牌图形源：public/logo.svg，换 logo 只改那一个文件 */
-/* 品牌展示按视口宽度渐进降级（纯 CSS 断点，不按客户端/UA 区分）：
-   宽 ≥900px → 图标 + 闪云 + ArkPulse；640–899px → 图标 + 闪云；≤639px → 只图标。
-   图标永不隐藏，所以任何宽度下品牌都在；桌面端拖窄窗口同样自动跟随。 */
-.brand-logo { width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0; display: block; }
-.logo { font-size: 20px; font-weight: 800; white-space: nowrap; }
-.tag { font-size: 12px; color: var(--text-faint); letter-spacing: 1px; }
+/* 品牌按视口宽度两态（纯 CSS 断点，不按客户端/UA 区分）：
+   宽 ≥900px → 图标 + ArkPulse；<900px → 只留图标，不展示中文名。 */
+.brand-logo { width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0; display: block; }
+.tag { font-size: 18px; font-weight: 800; letter-spacing: .5px; }
 .tabs {
   display: flex; gap: 4px; margin-left: 8px;
   background: var(--bg-soft); border: 1px solid var(--border);
@@ -89,16 +86,13 @@ onMounted(() => {
 .ext-btn.on { border-color: var(--accent); color: var(--accent); }
 .main { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 28px 18px 40px; }
 
-/* 中等宽度：先舍弃最次要的英文标签，保住中文名 */
+/* 窄视口（<900px）：文字隐藏、只留图标，横向空间让给 Tabs */
 @media (max-width: 899px) {
   .tag { display: none; }
 }
 
 @media (max-width: 640px) {
   .topbar { padding: max(12px, env(safe-area-inset-top)) 12px 12px; gap: 10px; }
-  /* 窄视口：文字全隐藏、只留图标，把横向空间让给 Tabs */
-  .logo { display: none; }
-  .brand-logo { width: 26px; height: 26px; border-radius: 7px; }
   .tabs { margin-left: 4px; }
   .tabs button { padding: 7px 12px; font-size: 13px; }
   .ext-btn { padding: 8px 12px; }

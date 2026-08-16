@@ -40,16 +40,16 @@
  *   - 根目录必须英文（中文路径→GBK 乱码）；构建 5–15 分钟非卡死别中断；
  *     改完代码再启构建，别按名批量杀 cargo/tauri 进程（会误杀新构建）。
  *
- * 品牌资产单一源：换 logo 只改 public/logo.svg，改应用名只改 tauri.conf.json 的 productName（英文，
- *   桌面窗口 / NSIS 安装包 / 安卓桌面名统一取它），跑本脚本即全端生效、不用手跑 tauri icon。
- *   桌面 bundle.icon 直读 icons/*；安卓图标 + 自适应底色 + 应用名由 syncAndroidBrand() 自动对齐（坑见该函数）。
+ * 品牌资产（图标）已固化在仓库 src-tauri/icons/*（桌面 / iOS / Android 全套，含安卓 #0b0e16 自适应底色，已被 git 跟踪）：
+ *   本脚本不再处理图标。换 logo 时手动跑一次 `node node_modules/@tauri-apps/cli/tauri.js icon public/logo.svg` 即可全端重生。
+ *   应用名统一取 tauri.conf.json 的 productName（英文），桌面窗口 / NSIS 安装包 / 安卓桌面名都从它来。
  *
  * 产物验证：安卓 APK 解包查 lib/ 只含 arm64-v8a + x86_64（无 32 位）；
  *   apksigner verify --print-certs releases/app-universal-release.apk → VERIFY PASSED。
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, writeFileSync, unlinkSync, statSync, cpSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync, unlinkSync, statSync } from 'node:fs';
 import { join, dirname, delimiter, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -205,54 +205,6 @@ function buildMacOS() {
   sh('npm run tauri build');
 }
 
-// ---------- 品牌资产同步（全端图标 + 安卓应用名） ----------
-// 安卓构建前必走本函数，因为 tauri icon 有三个坑：
-//   1. 输出位置随 gen/android 存在与否而变：不存在→写 icons/android（仓库种子）；已存在→直接写 gen/.../res，
-//      不再更新 icons/android。（踩坑实录：曾误当 icons/android 是权威 cpSync 铺到 gen，把旧 logo 刷回覆盖新图）
-//   2. 不管 values/ic_launcher_background.xml，默认白底 #fff → 深色 logo 周围露白边。
-//   3. 不管 values/strings.xml，应用名停在 android init 那一刻的旧 productName。
-// 故流程 = 重生成 → 修背景 → 写应用名 → 新图回写 icons/android。桌面端无需同步（bundle.icon 直读 icons/*）。
-const BRAND_BG = '#0b0e16'; // 与 src/style.css 的 --bg 同值；改深色主题时两处一起改
-function syncAndroidBrand() {
-  if (!existsSync(join(projectRoot, 'public', 'logo.svg'))) {
-    console.log(yellow('[跳过品牌同步] public/logo.svg 缺失。'));
-    return;
-  }
-  // 1) 从唯一图形源重生成全平台图标（安卓写向由 gen 是否存在决定，见上）
-  sh('node node_modules/@tauri-apps/cli/tauri.js icon public/logo.svg');
-  const resDir = join(projectRoot, 'src-tauri', 'gen', 'android', 'app', 'src', 'main', 'res');
-  const iconsAndroid = join(projectRoot, 'src-tauri', 'icons', 'android');
-  if (!existsSync(resDir)) {
-    console.log(yellow('[品牌同步] gen/android 未初始化：图标已写入 icons/android，android init 时带入。'));
-    return;
-  }
-  // 2) 自适应图标背景：白底 → 品牌深色
-  writeFileSync(
-    join(resDir, 'values', 'ic_launcher_background.xml'),
-    `<?xml version="1.0" encoding="utf-8"?>\n<resources>\n  <color name="ic_launcher_background">${BRAND_BG}</color>\n</resources>\n`,
-    'utf8',
-  );
-  // 3) 安卓桌面应用名 ← tauri.conf.json 的 productName（英文单一源）
-  const appName = JSON.parse(
-    readFileSync(join(projectRoot, 'src-tauri', 'tauri.conf.json'), 'utf8'),
-  ).productName;
-  writeFileSync(
-    join(resDir, 'values', 'strings.xml'),
-    `<resources>\n    <string name="app_name">"${appName}"</string>\n    <string name="main_activity_title">"${appName}"</string>\n</resources>\n`,
-    'utf8',
-  );
-  // 4) 新图回写仓库种子（gen 被 git 忽略，不回写则仓库里永远停在旧 logo）
-  for (const d of readdirSync(resDir)) {
-    if (!d.startsWith('mipmap-')) continue;
-    cpSync(join(resDir, d), join(iconsAndroid, d), { recursive: true, force: true });
-  }
-  cpSync(
-    join(resDir, 'values', 'ic_launcher_background.xml'),
-    join(iconsAndroid, 'values', 'ic_launcher_background.xml'),
-    { force: true },
-  );
-  console.log(`品牌资产    : logo.svg → 全端图标（安卓底色 ${BRAND_BG}），安卓应用名 = ${appName}`);
-}
 
 function buildAndroid() {
   console.log(`\n========== 构建 Android (APK) ==========`);
@@ -279,7 +231,6 @@ function buildAndroid() {
   } else {
     console.log(yellow('[警告] 未找到 JDK（设置 JAVA_HOME），Android 构建可能失败。'));
   }
-  syncAndroidBrand(); // gen 被 git 忽略，图标与应用名必须每次从单一源铺进去
   // 只构建 64 位；直跑 tauri.js 而不走 npm run，否则 npm 会吞掉多值 -t 参数
   sh('node node_modules/@tauri-apps/cli/tauri.js android build -t aarch64 x86_64');
   return true;
