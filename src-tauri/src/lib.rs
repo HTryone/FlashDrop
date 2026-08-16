@@ -8,6 +8,9 @@ mod state;
 
 use boot::resolve_remote_url;
 use state::AppState;
+// Manager 仅在桌面分支（get_webview_window）用到；安卓目标下不引入，避免 unused import 告警。
+#[cfg(not(target_os = "android"))]
+use tauri::Manager;
 use tauri::WebviewUrl;
 use tauri::WebviewWindowBuilder;
 
@@ -27,6 +30,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::open_file,
             commands::write_chunk,
+            commands::write_chunk_b64,
             commands::close_file,
             commands::abort_file,
             commands::resolve_save_path,

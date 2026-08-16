@@ -13,6 +13,7 @@
     "fs:allow-write",
     "allow-open-file",
     "allow-write-chunk",
+    "allow-write-chunk-b64",
     "allow-close-file",
     "allow-abort-file",
     "allow-resolve-save-path"

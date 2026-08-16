@@ -8,9 +8,9 @@
 // 核心 Rust 落盘逻辑（file_writer.rs 的 std::fs）一行未改，符合架构铁律。
 import { invoke } from '@tauri-apps/api/core';
 import { save, open } from '@tauri-apps/plugin-dialog';
-import { downloadDir, join } from '@tauri-apps/api/path';
+import { downloadDir, homeDir, join } from '@tauri-apps/api/path';
 import { open as fsOpen } from '@tauri-apps/plugin-fs';
-import { platform } from '@tauri-apps/plugin-os';
+import { isPhone } from './client';
 import type { Sink as RelaySink } from '../composables/filesink';
 import type { Sink as P2PSink } from '../p2p/sinks';
 import type { P2PFileMeta } from '../p2p/types';
@@ -20,17 +20,54 @@ export { isTauriEnv } from './env';
 export type SaveTarget = { kind: 'fs'; path: string } | { kind: 'saf'; uri: string };
 export type AnyTauriWriter = TauriFileWriter | TauriSafWriter;
 
-// 安卓判断（plugin-os 提供平台名）；非 Tauri 或桌面返回 false。
-async function isAndroid(): Promise<boolean> {
-  try {
-    return (await platform()) === 'android';
-  } catch {
-    return false;
-  }
+// 安卓判断：用壳在页面运行前同步注入的设备标识（window.__FLASHDROP_CLIENT__），零 IPC、零异步、不可能失败。
+//
+// 【不可退化】旧版用 @tauri-apps/plugin-os 的 platform() 判断，而 Rust 端从未注册该插件、
+// capabilities 也无 os 权限 → invoke 必然抛错 → catch 恒返回 false → 安卓被当成桌面：
+// 弹系统保存框（用户看到的「明明授权了还让我选文件夹」），且拿到的 content:// URI 被当文件路径
+// 喂给 Rust std::fs → 打开必失败 → 下载秒挂、速度 0。判端一律走本函数，不要再引入平台探测插件。
+function isAndroid(): boolean {
+  return isPhone();
 }
 
 const DEFAULT_DIR_KEY = 'flashdrop.defaultSaveDir';
-const FLUSH_BYTES = 4 * 1024 * 1024; // 4MB 批量 invoke，降 IPC 往返（修 D5）
+// 批量 invoke 阈值：降 IPC 往返（修 D5）。手机端取更小值——安卓 IPC 只能传文本（见 flushChunk），
+// 单次载荷越大主线程编码/解析卡顿越明显，2MB 在吞吐与流畅度之间最稳。
+function flushBytes(): number {
+  return isAndroid() ? 2 * 1024 * 1024 : 4 * 1024 * 1024;
+}
+
+// content:// 是安卓 SAF 的文件标识，不是文件系统路径，绝不能交给 Rust std::fs。
+function isContentUri(p: string): boolean {
+  return /^content:\/\//i.test(p) || /^file:\/\//i.test(p);
+}
+
+// 二进制转 base64（分块处理，避免 4MB 一次 apply 爆调用栈）。
+// 仅安卓路径使用：安卓 WebView 的 IPC 只能传字符串，Tauri 的二进制 Raw 载荷在该平台不可用。
+function bytesToBase64(bytes: Uint8Array): string {
+  const CHUNK = 0x8000; // 32KB/次，兼顾栈安全与拼接次数
+  let s = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    s += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK) as unknown as number[]);
+  }
+  return btoa(s);
+}
+
+// 统一的「写一块数据到已打开句柄」：按平台选 IPC 载荷形态。
+//
+// 【性能铁律·不可退化】桌面必须把数据作为 invoke 的整个 args 传（走二进制 Raw，零膨胀），
+// 句柄放请求头；一旦写成 invoke('write_chunk', { handle, data }) 这种对象形态，
+// Tauri 的 processIpcMessage 会 JSON.stringify + Array.from(Uint8Array)，
+// 4MB 二进制膨胀成 12~16MB 数字数组文本（桌面白烧 3~4 倍带宽与 CPU，
+// 手机端直接打死 WebView 主线程 → 进度不动、速度显示 0、55s 看门狗超时 → 误报「网络波动」）。
+// 安卓不支持 Raw（Tauri 官方限制），退到 base64（膨胀 1.33x），是该平台最优解。
+async function flushChunk(handle: string, data: Uint8Array): Promise<void> {
+  if (isAndroid()) {
+    await invoke('write_chunk_b64', { handle, data: bytesToBase64(data) });
+    return;
+  }
+  await invoke('write_chunk', data, { headers: { 'x-fd-handle': handle } });
+}
 
 // ── 默认下载目录 + App 内修改 ──
 export async function getDefaultSaveDir(): Promise<string> {
@@ -46,16 +83,30 @@ export function setDefaultSaveDir(dir: string): void {
   localStorage.setItem(DEFAULT_DIR_KEY, dir);
 }
 function parentDir(p: string): string {
+  if (isContentUri(p)) return ''; // SAF URI 无「父目录」概念，写进 localStorage 会污染后续默认路径
   const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
   return i > 0 ? p.slice(0, i) : p;
 }
 
-// 安卓基目录：公共下载目录下的 FlashDrop 子文件夹（Rust create_dir_all 会自动建）。
+// 安卓基目录：真正的公共下载目录 /storage/emulated/0/Download/FlashDrop。
+//
+// 【不可退化】不要用 downloadDir()——Tauri 安卓实现是 getExternalFilesDir(DIRECTORY_DOWNLOADS)，
+// 指向 app 私有沙盒 /Android/data/<包名>/files/Download：不需要任何权限，但用户在文件管理器的
+// 「下载」里根本看不到文件，「全部文件访问」权限等于白授。homeDir() 在安卓是
+// Environment.getExternalStorageDirectory() = /storage/emulated/0，join Download/FlashDrop
+// 才是用户认知里的下载目录。取不到时才退回私有目录（至少能落地）。
 async function androidBaseDir(): Promise<string> {
-  const dl = await downloadDir();
-  return join(dl, 'FlashDrop').catch(() => dl);
+  try {
+    const home = await homeDir();
+    return await join(home, 'Download', 'FlashDrop');
+  } catch {
+    const dl = await downloadDir();
+    return join(dl, 'FlashDrop').catch(() => dl);
+  }
 }
-// 尝试用 Rust std::fs 在公共下载目录解析不重名路径；无「全部文件访问」权限会抛错，交给调用方走 SAF 兜底。
+// 尝试用 Rust std::fs 在公共下载目录解析不重名路径。
+// Rust 侧会 create_dir_all + 落写探针验证真实可写：未取得「全部文件访问」权限时抛错，
+// 调用方据此走 SAF 兜底（旧版命令永不失败，导致兜底分支形同虚设）。
 async function tryResolveFs(name: string): Promise<string> {
   const dir = await androidBaseDir();
   return invoke<string>('resolve_save_path', { dir, name });
@@ -63,7 +114,7 @@ async function tryResolveFs(name: string): Promise<string> {
 
 // 中转：桌面弹系统保存对话框；安卓优先落系统下载目录（需 MANAGE 权限），失败走 SAF 每次选文件。
 export async function tauriPickSavePath(name: string): Promise<SaveTarget | null> {
-  if (await isAndroid()) {
+  if (isAndroid()) {
     try {
       const path = await tryResolveFs(name);
       setDefaultSaveDir(await androidBaseDir());
@@ -80,16 +131,22 @@ export async function tauriPickSavePath(name: string): Promise<SaveTarget | null
   const defaultPath = dir ? await join(dir, name).catch(() => name) : name;
   // 注：join 失败时用原名兜底（上一行已处理），此处无需再 catch
   const picked = await save({ title: '保存文件', defaultPath });
-  if (picked) setDefaultSaveDir(parentDir(picked)); // 记住本次所在目录
-  return picked ? { kind: 'fs', path: picked } : null;
+  if (!picked) return null;
+  // 兜底防御：任何平台上对话框若返回 content:// / file:// URI，一律走 SAF 写入器。
+  // std::fs 打不开 URI，误当路径会让下载在第一次写入就失败（且错误常被误判成网络问题）。
+  if (isContentUri(picked)) return { kind: 'saf', uri: picked };
+  setDefaultSaveDir(parentDir(picked)); // 记住本次所在目录
+  return { kind: 'fs', path: picked };
 }
 
 // 本地直传多文件 / P2P：桌面弹选文件夹对话框；安卓优先返回系统下载目录（需 MANAGE 权限），
 // 失败返回 null，由 tauriBuildWriters 退化为逐文件 SAF 兜底。
 export async function tauriPickSaveDir(): Promise<string | null> {
-  if (await isAndroid()) {
+  if (isAndroid()) {
     try {
       const dir = await androidBaseDir();
+      // 探测真实可写（Rust 侧 create_dir_all + 写探针）：无「全部文件访问」权限时抛错走 SAF。
+      await invoke<string>('resolve_save_path', { dir, name: '.probe' });
       setDefaultSaveDir(dir);
       return dir;
     } catch {
@@ -142,9 +199,15 @@ export class TauriFileWriter {
 
   ensureOpen(): Promise<void> {
     if (!this.openPromise) {
-      this.openPromise = invoke<string>('open_file', { path: this.resolvedPath }).then((h) => {
-        this.handle = h;
-      });
+      // 错误加「落盘失败：」前缀：上层据此把它归为落盘/权限问题，
+      // 不再套用「多为网络不稳定」的网络文案（那会把确定性故障说成网络波动，误导排查）。
+      this.openPromise = invoke<string>('open_file', { path: this.resolvedPath })
+        .then((h) => {
+          this.handle = h;
+        })
+        .catch((e) => {
+          throw new Error('落盘失败：无法创建文件 ' + this.resolvedPath + '（' + String(e) + '）');
+        });
     }
     return this.openPromise;
   }
@@ -153,7 +216,7 @@ export class TauriFileWriter {
     await this.ensureOpen();
     this.pending.push(data);
     this.bufLen += data.byteLength;
-    if (this.bufLen >= FLUSH_BYTES) await this.flush();
+    if (this.bufLen >= flushBytes()) await this.flush();
   }
 
   private async flush(): Promise<void> {
@@ -166,7 +229,12 @@ export class TauriFileWriter {
     }
     this.pending = [];
     this.bufLen = 0;
-    await invoke('write_chunk', { handle: this.handle, data: combined });
+    if (!this.handle) throw new Error('落盘失败：文件句柄未就绪');
+    try {
+      await flushChunk(this.handle, combined);
+    } catch (e) {
+      throw new Error('落盘失败：写入磁盘出错（' + String(e) + '）');
+    }
   }
 
   async close(): Promise<void> {
@@ -212,7 +280,7 @@ export class TauriSafWriter {
     await this.ensureOpen();
     this.pending.push(data);
     this.bufLen += data.byteLength;
-    if (this.bufLen >= FLUSH_BYTES) await this.flush();
+    if (this.bufLen >= flushBytes()) await this.flush();
   }
 
   private async flush(): Promise<void> {
@@ -225,7 +293,11 @@ export class TauriSafWriter {
     }
     this.pending = [];
     this.bufLen = 0;
-    await this.handle.write(combined);
+    try {
+      await this.handle.write(combined);
+    } catch (e) {
+      throw new Error('落盘失败：写入所选位置出错（' + String(e) + '）');
+    }
   }
 
   async close(): Promise<void> {

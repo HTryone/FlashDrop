@@ -54,6 +54,7 @@
  *   - 桌面双弹窗：Tauri 内 pickSaveDir 直接 return null，统一单框（见 composables/filesink.ts）。
  *   - 根目录必须英文（中文路径→GBK 乱码）；构建 5–15 分钟非卡死别中断；
  *        改完代码再启构建、别按名批量杀 cargo/tauri 进程（会误杀新构建）。
+ *   - Windows 自定义 VS 路径（如 D:\Apps\vsc\vsc2026）：buildWindows 已用 vswhere 自动定位并调 vcvarsall.bat 注入 MSVC 环境，任意 shell 直接全打包；无需手动开 Developer Command Prompt。
  *
  * 产物验证：
  *   - 安卓 APK 仅 64 位：解包查 lib/ 只含 arm64-v8a + x86_64（无任何 32 位）。
@@ -200,13 +201,39 @@ function setVersion(v, code) {
 // 注意：Tauri v2 的 gradle `rust {}` 插件无 `targets` 属性，不要往 gradle 注入（会 Unresolved reference）。
 
 // ---------- 各平台构建 ----------
+/** 解析 Windows MSVC 工具链：通过 vswhere 自动定位 VS（含自定义安装路径，
+ *  如 D:\Apps\vsc\vsc2026），返回其自带 vcvarsall.bat；用它注入 cl.exe/LIB/INCLUDE，
+ *  免去手动开 Developer Command Prompt。找不到则返回 undefined（回退到依赖当前 shell 环境）。 */
+function resolveVsDevCmd() {
+  const vswhere = 'C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe';
+  if (!existsSync(vswhere)) return undefined;
+  try {
+    const r = spawnSync(vswhere, ['-latest', '-products', '*', '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-format', 'json'], { encoding: 'utf8' });
+    if (r.status !== 0 || !r.stdout) return undefined;
+    const list = JSON.parse(r.stdout);
+    if (!Array.isArray(list) || !list.length) return undefined;
+    const vcvars = join(list[0].installationPath, 'VC', 'Auxiliary', 'Build', 'vcvarsall.bat');
+    return existsSync(vcvars) ? vcvars : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function buildWindows() {
   console.log(`\n========== 构建 Windows 桌面 (NSIS) ==========`);
   if (localNsis) {
     process.env.NSIS_PATH = join(projectRoot, 'toolbox', 'nsis');
     console.log(yellow('使用本地 NSIS：' + process.env.NSIS_PATH));
   }
-  sh('npm run tauri build');
+  // 自动注入 VS 编译环境（vswhere 能发现自定义路径的 VS），让脚本在任意 shell 都能直接全打包。
+  const vcvars = resolveVsDevCmd();
+  if (vcvars) {
+    console.log(green(`VS 环境: 通过 ${vcvars} 自动注入 MSVC 工具链（无需手动开 Dev Prompt）`));
+    sh(`call "${vcvars}" x64 && npm run tauri build`);
+  } else {
+    console.log(yellow('[提示] 未发现 VS（vswhere 缺失或非标准安装）；若当前 shell 已含 MSVC 环境则继续，否则将失败。'));
+    sh('npm run tauri build');
+  }
 }
 
 function buildMacOS() {
