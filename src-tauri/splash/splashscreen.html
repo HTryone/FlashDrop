@@ -38,6 +38,13 @@ html, body {
   border-radius: 50%;
   animation: spin 0.9s linear infinite;
 }
+.hint {
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0.03em;
+  color: rgba(232, 237, 247, 0.55);
+  min-height: 18px;
+}
 @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
@@ -70,5 +77,40 @@ html, body {
 </div>
 <div class="text">ArkPulse</div>
 <div class="spinner"></div>
+<div class="hint" id="hint"></div>
+<script>
+(function () {
+  var remote = window.__ARKPULSE_REMOTE__;
+  var hint = document.getElementById('hint');
+  var t0 = Date.now();
+  var attempts = 0;
+  var MIN_MS = 800; // 启动页至少停留，避免一闪而过
+
+  function showHint(msg) { if (hint) hint.textContent = msg; }
+  function go() { window.location.replace(remote); }
+
+  // 探活远程前端：连上就跳转，连不上（离线/DNS失败）就显示「重试中」并持续重试。
+  // 用 no-cors HEAD：网络通即 resolve（不关心返回内容），网络不通才 reject。
+  function tryOnce() {
+    attempts++;
+    fetch(remote, { method: 'HEAD', cache: 'no-store', mode: 'no-cors' })
+      .then(function () {
+        var wait = Math.max(0, MIN_MS - (Date.now() - t0));
+        setTimeout(go, wait);
+      })
+      .catch(function () {
+        if (attempts < 40) {
+          showHint('离线，正在重试… (' + attempts + ')');
+          setTimeout(tryOnce, 1000);
+        } else {
+          go(); // 放弃等待，跳转以暴露错误页
+        }
+      });
+  }
+
+  if (!remote) { showHint('启动配置缺失'); return; }
+  setTimeout(tryOnce, 300);
+})();
+</script>
 </body>
 </html>
