@@ -43,6 +43,11 @@
  *     node toolbox/build-all.mjs            # 双端：Windows NSIS 安装包 + Android 仅64位 APK/AAB
  *     node toolbox/build-all.mjs --windows # 只打 Windows
  *     node toolbox/build-all.mjs --android # 只打 Android（仅 arm64-v8a + x86_64）
+ *   打包时一并更新版本号（先改 tauri.conf.json + package.json 两处，再打包，一步到位）：
+ *     node toolbox/build-all.mjs --version 1.0.0            # 双端，版本升到 1.0.0 一并打包
+ *     node toolbox/build-all.mjs --version 1.0.0 --windows # 只打 Windows 且升到 1.0.0
+ *     node toolbox/build-all.mjs --version 1.0.0 --version-code 1001  # 安卓 versionCode 显式锁 1001
+ *       ↑ 省略 --version-code 时，安卓 versionCode 由 Tauri 按公式自动重算(随版本递增)，无需手动管
  *   （在 D:\arkpulse 项目根目录执行；--local-nsis 走本地 toolbox/nsis 免网络下载）
  *
  * 可选环境变量（脚本也会自动探测，无需手动设置）：
