@@ -1,4 +1,4 @@
-// 传输相关 API：创建传输 / 刷新码 / 留言 / 列表 / 清空 / 登录 / 终止
+// 传输相关 API：创建传输 / 留言 / 列表 / 清空 / 登录 / 终止
 import { apiGet, apiPost, apiPatch, apiDelete } from './client';
 import type { CreateTransferResp, TransferDetail, LoginTransferDetail } from '@/types/transfer';
 import { resolveTusBase } from '@/transfer/room';
@@ -16,11 +16,6 @@ export function createTransfer(
   ttlHours = 0,
 ): Promise<CreateTransferResp> {
   return apiPost<CreateTransferResp>(tusApi('/api/transfers'), { transferId, message, e2ee, ttlHours });
-}
-
-/** 刷新分享码（旧码作废） */
-export function refreshCode(transferId: string): Promise<{ code: string }> {
-  return apiPost<{ code: string }>(tusApi(`/api/transfers/${encodeURIComponent(transferId)}/refresh`));
 }
 
 /** 更新留言 */
