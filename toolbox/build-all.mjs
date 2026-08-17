@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 /**
  * ArkPulse 统一打包脚本 —— 本文件即打包规范，改打包流程只改这里、只维护这里。
- * 一执行即按当前系统构建可构建的全部平台安装包，并归集到 releases/。
+ * 默认（不加参数）构建当前系统可构建的全部平台安装包；加 --windows/--android/--macos 只构建指定平台。产物归集到 releases/。
  * 平台：Windows(NSIS) / Android(APK+AAB，仅 arm64-v8a + x86_64) 已通；macOS(dmg) 在 mac 上就地可跑；iOS 待加 --ios。
  *
- * 唯一打包入口（必读）：本脚本是项目唯一的打包命令，只能在项目根目录用 node 跑；禁止 npm run tauri android build / tauri android build / cargo build / 直调 node_modules/@tauri-apps/cli/tauri.js / gradle 等任何其他打包命令（绕开会丢 JAVA_HOME/签名/归集并触发假错）。用法：
- *   node toolbox/build-all.mjs                        双端：Windows NSIS + Android 仅64位
+ * 唯一打包入口（必读）：本脚本是项目唯一的打包命令，只能在项目根目录用 node 跑；禁止 npm run tauri android build / tauri android build / cargo build / 直调 node_modules/@tauri-apps/cli/tauri.js / gradle 等任何其他打包命令（绕开会丢 JAVA_HOME/签名/归集并触发假错）。
+ *   语义：不加参数 = 全量双端（Windows+Android）；加 --windows/--android/--macos = 只构建该平台（脚本支持单平台打包）。全量场景勿加单端 flag，也勿加 | tail 隐藏实时输出。用法：
+ *   node toolbox/build-all.mjs                        双端全量：Windows NSIS + Android 仅64位
  *   node toolbox/build-all.mjs --windows|--android|--macos    只构建单个平台
  *   node toolbox/build-all.mjs --no-android           跳过 Android
  *   node toolbox/build-all.mjs --local-nsis           Windows 走本地 toolbox/nsis（默认走网络下载）
