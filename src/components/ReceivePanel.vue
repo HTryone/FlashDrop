@@ -64,7 +64,7 @@ onMounted(() => {
       <h3 class="block-title"><span class="recv-badge">接收</span> 中转接收（分享码）</h3>
       <div class="code-input">
         <input v-model="codeInput" placeholder="输入 6 位分享码" maxlength="6" @keyup.enter="load()" />
-        <button class="btn primary" :disabled="loading" @click="load()">{{ loading ? '查询中…' : '获取文件' }}</button>
+        <button class="btn primary" :disabled="loading" @click="load()">{{ loading ? '查询中…' : '获取' }}</button>
       </div>
 
       <div v-if="error" class="err-box">{{ error }}</div>
@@ -118,7 +118,7 @@ onMounted(() => {
         <strong class="empty-title">📥 如何接收文件</strong>
         <ol class="steps">
           <li>把对方发来的 <b>6 位分享码</b>粘贴到上方输入框（或打开对方发来的带码链接）；</li>
-          <li>点「获取文件」，稍候即可看到文件列表；</li>
+          <li>点「获取」，稍候即可看到文件列表；</li>
           <li>若文件已加密，输入对方给的<b>口令</b>并点「解锁」；</li>
           <li>点「解密下载」，文件会自动保存到本机（无需选择保存位置）。</li>
         </ol>
@@ -142,7 +142,7 @@ onMounted(() => {
 .code-input { display: flex; gap: 10px; }
 .code-input input {
   flex: 1; background: var(--bg-soft); border: 1px solid var(--border); color: var(--text);
-  border-radius: var(--radius-sm); padding: 11px 14px; font-size: 15px; letter-spacing: 2px;
+  border-radius: var(--radius-sm); padding: 8px 14px; font-size: 15px; letter-spacing: 2px;
   text-transform: uppercase;
 }
 .code-input input:focus { outline: none; border-color: var(--accent); }

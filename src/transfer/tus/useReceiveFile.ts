@@ -78,7 +78,7 @@ export function useReceiveFile(props: {
       phase.value = '拉取加密数据中…';
       // 流式落盘（边下边解密边写盘）在 stream-download.ts 内完成，此处只驱动进度与状态
       const res = await streamDownloadToSink({ manifest, e2eeKey: props.e2eeKey, onChunk, signal: abortCtrl.signal });
-      phase.value = '已保存到本机';
+      phase.value = '已保存';
       progress.value = 1;
       done.value = true;
       if (res.permissionFallback) {

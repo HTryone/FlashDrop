@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, provide, watch, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { isPhone } from './tauri/client';
+import { requestNotificationAtLaunch } from './tauri/notify';
 
 type TabType = 'send' | 'receive' | 'manage';
 const activeTab = ref<TabType>('send');
@@ -32,6 +34,8 @@ onMounted(() => {
   const mobile = typeof navigator !== 'undefined' &&
     (navigator.maxTouchPoints > 0 || /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent));
   provide('isMobile', mobile);
+  // 安卓首次启动索要通知权限（被拒不再骚扰；与下载完成弹窗解耦，避免收文件中被打断）
+  if (isPhone()) void requestNotificationAtLaunch();
 });
 </script>
 

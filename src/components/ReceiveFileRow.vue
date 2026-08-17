@@ -34,7 +34,7 @@ const { busy, done, err, progress, speed, phase, isNetworkError, onDownload, can
       <template v-if="encrypted && !e2eeKey">
         <span class="lock-hint muted">🔒 输入口令后下载</span>
       </template>
-      <span v-else-if="done" class="done-hint">✓ 已保存到本机</span>
+      <span v-else-if="done" class="done-hint">✓ 已保存</span>
       <button v-else-if="!busy" class="btn sm primary" @click="onDownload">
         {{ err ? '重新下载' : (e2eeKey ? '解密下载' : '下载') }}
       </button>
