@@ -1,0 +1,67 @@
+
+  :root { --bg:#0e1320; --panel:#161c2c; --panel2:#1d2536; --border:#2a3346; --text:#e6ebf5; --dim:#9aa6bd; --faint:#67718c; --accent:#4da3ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); font-size:14px; }
+  header { padding:10px 18px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:10px; }
+  header h1 { font-size:15px; margin:0; }
+  header .sub { color:var(--faint); font-size:11px; }
+  .wrap { display:grid; grid-template-columns:230px 1fr; height:calc(100vh - 45px); }
+
+  /* 左栏：上下两栏 */
+  .left { display:flex; flex-direction:column; border-right:1px solid var(--border); background:var(--panel); overflow:hidden; }
+  .panel-mods { padding:12px; border-bottom:1px solid var(--border); }
+  .panel-mods .bar { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+  .panel-mods .bar span { font-size:13px; font-weight:500; }
+  .panel-btns { display:flex; gap:6px; margin-bottom:10px; }
+  .panel-btns button { flex:1; font-size:12px; padding:6px 8px; }
+  .mod { display:flex; align-items:center; gap:8px; padding:7px 9px; border:1px solid var(--border); border-radius:7px; margin-bottom:6px; cursor:pointer; background:var(--panel2); }
+  .mod.on { border-color:var(--accent); }
+  .mod .ic { font-size:15px; }
+  .mod .nm { flex:1; min-width:0; }
+  .mod .nm b { display:block; font-size:13px; }
+  .mod .nm small { color:var(--faint); font-size:11px; }
+  .mod .del { color:var(--faint); border:none; background:none; cursor:pointer; font-size:14px; }
+  .mod .del:hover { color:#ff6b6b; }
+
+  .panel-docs { padding:12px; flex:1; overflow:auto; }
+  .panel-docs .cap { font-size:12px; color:var(--faint); margin-bottom:10px; }
+  .doc-item { display:flex; align-items:center; gap:8px; padding:7px 9px; border:1px solid var(--border); border-radius:7px; background:var(--panel2); cursor:pointer; font-size:13px; margin-bottom:6px; }
+  .doc-item:hover { border-color:var(--accent); }
+  .doc-item.on { border-color:var(--accent); }
+  .doc-item .t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .doc-item .del { color:var(--faint); border:none; background:none; cursor:pointer; font-size:13px; padding:0 2px; }
+  .doc-item .del:hover { color:#ff6b6b; }
+  .new-doc { width:100%; margin-top:4px; font-size:12px; padding:6px; color:var(--dim); }
+
+  /* 右栏 */
+  .right { display:flex; flex-direction:column; overflow:hidden; }
+  .topbar { display:flex; align-items:center; justify-content:space-between; padding:10px 16px; border-bottom:1px solid var(--border); }
+  .topbar .id { font-size:13px; color:var(--dim); }
+  .topbar .acts { display:flex; gap:8px; }
+  .editor-scroll { padding:16px 20px; overflow:auto; flex:1; }
+
+  input, textarea, select, button { font-family:inherit; font-size:13px; }
+  input, textarea, select { background:var(--panel); border:1px solid var(--border); color:var(--text); border-radius:8px; padding:8px 10px; }
+  textarea { width:100%; min-height:300px; resize:vertical; line-height:1.6; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  button { cursor:pointer; border-radius:8px; border:1px solid var(--border); background:var(--panel2); color:var(--text); padding:8px 14px; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#06101f; border-color:var(--accent); font-weight:600; }
+  .field { display:flex; flex-direction:column; gap:4px; margin-bottom:10px; }
+  .field label { font-size:12px; color:var(--dim); }
+  .grid3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .mod-info { margin-bottom:18px; padding-bottom:16px; border-bottom:1px solid var(--border); }
+  .tabs { display:flex; gap:6px; margin-bottom:10px; }
+  .tabs button { background:var(--panel); }
+  .tabs button.on { border-color:var(--accent); color:var(--accent); }
+  .empty { color:var(--faint); padding:30px; text-align:center; }
+
+  /* 外层卡片仅保留边框/底色/内边距；宽度完全由同元素上的 .doc-body（doc-style.css 统一定义 max-width:1041px）驱动。此处严禁写 max-width，否则会覆盖 .doc-body 的单一来源宽度。仅用 fit-content 让卡片收缩到内容宽度并居中。 */
+  .preview { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:18px 20px; width:fit-content; margin:0 auto; line-height:1.75; color:#e6edf3; font-size:15px; }
+  /* 文档正文样式已抽到同目录 doc-style.css（与线上 ModuleView 共用），此处仅保留 .preview 外框。 */
+  code.k { background:var(--panel2); padding:1px 5px; border-radius:4px; color:var(--accent); }
+
+  /* 拖入 .md/.txt 文件时的高亮与提示 */
+  textarea.drag { border-color:var(--accent); background:rgba(77,163,255,0.08); box-shadow:0 0 0 3px rgba(77,163,255,0.18); }
+  .dnd-hint { font-size:11px; color:var(--faint); margin:0 0 6px; }
+  .dnd-hint b { color:var(--accent); font-weight:600; }
