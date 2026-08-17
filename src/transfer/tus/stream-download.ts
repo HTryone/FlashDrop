@@ -173,9 +173,9 @@ export interface StreamDownloadOpts {
   signal?: AbortSignal;
 }
 
-// 主流程：用户手势内调用。先选保存目录（FSA 直写需用户授权，非 Chromium 返回 null 走 StreamSaver/Blob 兜底），
-// 再 part 级并发下载：N 路 part 在飞（吃满带宽）+ 严格按 part offset 序顺序解密 + 顺序落盘。
-// 关键约束：FrameDecoder 是状态机、不可并发 push（共享 pending 会竞态损坏），故「取数并发、解密顺序」。
+  // 主流程：用户手势内调用。先选保存目录（FSA 直写需用户授权，非 Chromium 返回 null 走 StreamSaver/Blob 兜底），
+  // 再 part 级并发下载：N 路 part 在飞（吃满带宽）+ 严格按 part offset 序顺序解密 + 顺序落盘。
+  // 关键约束：FrameDecoder 是状态机、不可并发 push（共享 pending 会竞态损坏），故「取数并发、解密顺序」。
 export async function streamDownloadToSink(opts: StreamDownloadOpts): Promise<{ permissionFallback?: boolean }> {
   const { manifest, e2eeKey, onChunk, signal } = opts;
   // 严格按 offset 升序：解码必须喂连续全局密文，part 边界与帧边界无关（帧可跨 part，pending 缓冲自动衔接）
@@ -217,6 +217,7 @@ export async function streamDownloadToSink(opts: StreamDownloadOpts): Promise<{ 
     schedulerDone = true;
   })();
 
+  let success = false;
   try {
     if (!e2eeKey) {
       // 无加密：密文即明文，按 part 序顺序落盘
@@ -280,8 +281,12 @@ export async function streamDownloadToSink(opts: StreamDownloadOpts): Promise<{ 
       await dec.flush();
       if (dec.failed) throw new Error('完整性校验失败：数据可能被篡改');
     }
+    success = true;
   } finally {
-    await sink.close(); // 必须等最后一个分块真正写入磁盘 + 句柄关闭，才进入收尾
+    // 只有完整落盘成功才走 sink.close()（触发「下载完成」通知）。
+    // 用户取消/任何失败都走 abort()，避免误弹完成通知。
+    if (success) await sink.close();
+    else sink.abort();
   }
   // ╔══════════════════════════════════════════════════════════════════════════╗
   // ║ 【铁律·不可删改】本函数返回成功 ≡ 「用户落盘成功」（接收端）。              ║
