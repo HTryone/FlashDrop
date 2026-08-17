@@ -242,7 +242,7 @@ onUnmounted(() => window.removeEventListener('scroll', onScroll));
 .doc { min-width: 0; }
 .doc-bar { display: none; }
 .nav-trigger { display: none; }
-/* 文档正文样式已抽到 src/extensions/doc-style.css（与生成器 docs生成器.html 共用同一份）。
+/* 文档正文样式已抽到 src/extensions/ssjs/doc-style.css（与生成器 docs生成器.html 共用同一份）。
    本组件末尾另起一个全局 <style> 通过 @import 引入，改一处两端同步生效。 */
 .pager { display: flex; align-items: center; gap: 12px; margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--border); }
 .pg { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); padding: 7px 14px; border-radius: 8px; font-size: 13px; }
@@ -298,7 +298,7 @@ onUnmounted(() => window.removeEventListener('scroll', onScroll));
 }
 </style>
 
-<!-- 文档正文统一样式：与生成器 docs生成器.html 共用 src/extensions/doc-style.css，改一处两端同步生效 -->
+<!-- 文档正文统一样式：与生成器 docs生成器.html 共用 src/extensions/ssjs/doc-style.css，改一处两端同步生效 -->
 <style>
-@import './../extensions/doc-style.css';
+@import './../extensions/ssjs/doc-style.css';
 </style>
