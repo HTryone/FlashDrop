@@ -2,10 +2,10 @@
 // 对外暴露两个 Sink 实现（中转 TauriRelaySink / P2P TauriP2PSink）对接现有 Sink 抽象，
 // 以及路径选择 + 默认下载目录持久化（App 内可改，存 WebView 本地）。
 //
-// 安卓落盘策略（方案 A + 兜底）：
-//   - 方案 A：开启「全部文件访问」权限后，Rust std::fs 直接写公共下载目录 /Download/ArkPulse/…
-//   - 兜底：用户未授权时，逐文件用 SAF 选择器让用户手动指定保存位置（经 fs 插件写 SAF URI）。
-// 核心 Rust 落盘逻辑（file_writer.rs 的 std::fs）一行未改，符合架构铁律。
+// 安卓落盘级联（v3）：L1 MediaStore(下载/ArkPulse) → L2 std::fs 探针 → L3 持久 SAF → 绝对兜底逐文件 SAF。
+//   仅 L2 走 file_writer.rs 的 std::fs（原样保留作兜底），L1/L3 由独立插件 arkpulse-android-fs 接管。
+//   下载完成：仅成功弹原生「确定」确认框 + 系统通知（位置文案），失败不提示；下载期间亮屏保活。
+// 核心 Rust std::fs 落盘逻辑一行未改，符合架构铁律。
 import { invoke } from '@tauri-apps/api/core';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { downloadDir, homeDir, join } from '@tauri-apps/api/path';
@@ -14,10 +14,14 @@ import { isPhone } from './client';
 import type { Sink as RelaySink } from '../composables/filesink';
 import type { Sink as P2PSink } from '../p2p/sinks';
 import type { P2PFileMeta } from '../p2p/types';
+import { beginDownload, finishDownload } from './notify';
 export { isTauriEnv } from './env';
 
 // 落盘目标：要么走 Rust std::fs（有全部文件访问权限），要么走 SAF（用户手动选的文件 URI）。
-export type SaveTarget = { kind: 'fs'; path: string } | { kind: 'saf'; uri: string };
+export type SaveTarget =
+  | { kind: 'fs'; path: string }
+  | { kind: 'mediastore'; uri: string }
+  | { kind: 'saf'; uri: string };
 export type AnyTauriWriter = TauriFileWriter | TauriSafWriter;
 
 // 安卓判断：用壳在页面运行前同步注入的设备标识（window.__FLASHDROP_CLIENT__），零 IPC、零异步、不可能失败。
@@ -115,16 +119,28 @@ async function tryResolveFs(name: string): Promise<string> {
 // 中转：桌面弹系统保存对话框；安卓优先落系统下载目录（需 MANAGE 权限），失败走 SAF 每次选文件。
 export async function tauriPickSavePath(name: string): Promise<SaveTarget | null> {
   if (isAndroid()) {
+    // L1 MediaStore：固定 Download/ArkPulse，零权限零弹框（现代设备一锤定音）。
     try {
-      const path = await tryResolveFs(name);
-      setDefaultSaveDir(await androidBaseDir());
-      return { kind: 'fs', path };
+      const uri = await invoke<string>('mediastore_insert', { name });
+      beginDownload();
+      return { kind: 'mediastore', uri };
     } catch {
-      const uri = await save({
-        title: '保存文件（未授权“全部文件访问”，请手动选择）',
-        defaultPath: name,
-      });
-      return uri ? { kind: 'saf', uri } : null;
+      // L2 std::fs 探针直写（宽松 ROM / 老设备兜底）。
+      try {
+        const path = await tryResolveFs(name);
+        setDefaultSaveDir(await androidBaseDir());
+        beginDownload();
+        return { kind: 'fs', path };
+      } catch {
+        // L3 兜底：SAF 逐文件选择器（每文件一次）。
+        const uri = await save({
+          title: '保存文件（未授权“全部文件访问”，请手动选择）',
+          defaultPath: name,
+        });
+        if (!uri) return null;
+        beginDownload();
+        return { kind: 'saf', uri };
+      }
     }
   }
   const dir = await getDefaultSaveDir();
@@ -163,29 +179,126 @@ export async function tauriPickSaveDir(): Promise<string | null> {
   return picked ?? null;
 }
 
-// 统一构造多文件写入器：有目录权限走 Rust std::fs，否则逐文件 SAF 兜底。
-// 供「本地直传多文件」（filesink.ts）与「P2P 多文件」（TauriP2PSink）共用，避免两处重复逻辑。
-export async function tauriBuildWriters(files: { name: string }[]): Promise<AnyTauriWriter[]> {
-  const dir = await tauriPickSaveDir();
-  if (dir) {
-    return Promise.all(
+// 统一构造多文件写入器（级联：L1 MediaStore → L2 std::fs → L3 持久 SAF → 绝对兜底逐文件 SAF）。
+// 安卓返回 { writers, targets }；targets 用于关闭时汇总保存位置文案。桌面沿用原 L2 目录直写。
+// 供「本地直传多文件」（filesink.ts）与「P2P 多文件」（TauriP2PSink）共用。
+export async function tauriBuildWriters(
+  files: { name: string }[],
+): Promise<{ writers: AnyTauriWriter[]; targets: SaveTarget[] }> {
+  const sanitize = (n: string) => String(n).replace(/[\\/]/g, '_');
+
+  // 桌面（含 web 经 FSA，但本函数仅 isTauriEnv 内调用）：原 L2 目录直写。
+  if (!isAndroid()) {
+    const dir = await tauriPickSaveDir();
+    if (!dir) throw new Error('未选择保存目录');
+    const targets = await Promise.all(
       files.map(async (f) => {
-        const safe = String(f.name).replace(/[\\/]/g, '_');
-        const finalPath = await invoke<string>('resolve_save_path', { dir, name: safe });
-        const w = new TauriFileWriter(finalPath);
+        const finalPath = await invoke<string>('resolve_save_path', { dir, name: sanitize(f.name) });
+        return { kind: 'fs', path: finalPath } as SaveTarget;
+      }),
+    );
+    const writers = await Promise.all(
+      targets.map(async (t) => {
+        const w = new TauriFileWriter((t as { path: string }).path);
         await w.ensureOpen();
         return w;
       }),
     );
+    return { writers, targets };
   }
-  // 兜底：逐文件 SAF 选位置（可靠，但每文件一次提示）。任一取消则整体取消。
-  const uris = await Promise.all(
-    files.map((f) =>
-      save({ title: '保存文件（未授权“全部文件访问”）', defaultPath: String(f.name).replace(/[\\/]/g, '_') }),
-    ),
-  );
-  if (uris.some((u) => !u)) throw new Error('用户取消了保存');
-  return uris.map((u) => new TauriSafWriter(u as string));
+
+  // L1 MediaStore：批量插入 Download/ArkPulse，零弹框。
+  try {
+    const targets = await Promise.all(
+      files.map(async (f) => {
+        const uri = await invoke<string>('mediastore_insert', { name: sanitize(f.name) });
+        return { kind: 'mediastore', uri } as SaveTarget;
+      }),
+    );
+    const writers = targets.map((t) => new TauriSafWriter((t as { uri: string }).uri));
+    beginDownload();
+    return { writers, targets };
+  } catch {
+    // L2 std::fs 探针直写（宽松 ROM / 老设备）。
+    try {
+      const dir = await tauriPickSaveDir();
+      if (dir) {
+        const targets = await Promise.all(
+          files.map(async (f) => {
+            const finalPath = await invoke<string>('resolve_save_path', { dir, name: sanitize(f.name) });
+            return { kind: 'fs', path: finalPath } as SaveTarget;
+          }),
+        );
+        const writers = await Promise.all(
+          targets.map(async (t) => {
+            const w = new TauriFileWriter((t as { path: string }).path);
+            await w.ensureOpen();
+            return w;
+          }),
+        );
+        beginDownload();
+        return { writers, targets };
+      }
+    } catch {
+      /* 落 L3 */
+    }
+    // L3 持久化 SAF：首次选一次文件夹，之后零弹框。
+    try {
+      const treeUri = await tauriResolveSafDir();
+      if (treeUri) {
+        const targets = await Promise.all(
+          files.map(async (f) => {
+            const uri = await invoke<string>('saf_create_child', { tree_uri: treeUri, name: sanitize(f.name) });
+            return { kind: 'saf', uri } as SaveTarget;
+          }),
+        );
+        const writers = targets.map((t) => new TauriSafWriter((t as { uri: string }).uri));
+        beginDownload();
+        return { writers, targets };
+      }
+    } catch {
+      /* 落绝对兜底 */
+    }
+    // 绝对兜底：逐文件 SAF 选位置（每文件一次提示）。
+    const uris = await Promise.all(
+      files.map((f) =>
+        save({ title: '保存文件（未授权“全部文件访问”）', defaultPath: sanitize(f.name) }),
+      ),
+    );
+    if (uris.some((u) => !u)) throw new Error('用户取消了保存');
+    const targets = uris.map((u) => ({ kind: 'saf', uri: u as string }) as SaveTarget);
+    const writers = targets.map((t) => new TauriSafWriter((t as { uri: string }).uri));
+    beginDownload();
+    return { writers, targets };
+  }
+}
+
+// L3 持久化 SAF 目录授权：首次弹系统目录选择器选一次，takePersistableUriPermission 存系统，
+// tree URI 存 localStorage 跨重启复用；之后直写子树零弹框。授权失效（被撤销/清空）则重新选。
+const SAF_TREE_KEY = 'arkpulse.safTreeUri';
+async function tauriResolveSafDir(): Promise<string | null> {
+  const saved = localStorage.getItem(SAF_TREE_KEY);
+  if (saved) {
+    try {
+      await invoke('saf_take_permission', { tree_uri: saved }); // 复权（重启后仍有效，失败即失效）
+      return saved;
+    } catch {
+      localStorage.removeItem(SAF_TREE_KEY);
+    }
+  }
+  const picked = (await open({
+    directory: true,
+    title: '选择保存文件夹（ArkPulse）',
+  })) as unknown as string | null;
+  if (!picked) return null;
+  try {
+    await invoke('saf_take_permission', { tree_uri: picked });
+    localStorage.setItem(SAF_TREE_KEY, picked);
+    return picked;
+  } catch {
+    localStorage.removeItem(SAF_TREE_KEY);
+    return null;
+  }
 }
 
 // ── 核心写入器：单文件句柄，内部 4MB 批量 invoke，避免每块一次往返 ──
@@ -323,17 +436,20 @@ export class TauriSafWriter {
 // 中转 Sink：对接 filesink.ts 的 Sink 接口（write/close/abort）。
 export class TauriRelaySink implements RelaySink {
   private writer: TauriFileWriter | TauriSafWriter;
-  constructor(target: SaveTarget) {
-    this.writer = target.kind === 'fs' ? new TauriFileWriter(target.path) : new TauriSafWriter(target.uri);
+  constructor(private target: SaveTarget) {
+    this.writer =
+      target.kind === 'fs' ? new TauriFileWriter(target.path) : new TauriSafWriter(target.uri);
   }
   write(p: Uint8Array) {
     return this.writer.write(p);
   }
   async close() {
     await this.writer.close();
+    await finishDownload(true, { usedSaf: this.target.kind === 'saf', count: 1 });
   }
   abort() {
     void this.writer.abort();
+    void finishDownload(false, { usedSaf: this.target.kind === 'saf', count: 1 });
   }
 }
 
@@ -341,6 +457,7 @@ export class TauriRelaySink implements RelaySink {
 // 选目录 + 逐文件开句柄放进 ready；writeChunk 直接转发到对应文件写入器。
 export class TauriP2PSink implements P2PSink {
   private writers: (TauriFileWriter | TauriSafWriter | null)[] = [];
+  private targets: SaveTarget[] = [];
   private readyPromise: Promise<void>;
   private readyErr: any = null;
 
@@ -352,7 +469,9 @@ export class TauriP2PSink implements P2PSink {
   }
 
   private async init() {
-    this.writers = await tauriBuildWriters(this.files);
+    const res = await tauriBuildWriters(this.files);
+    this.writers = res.writers;
+    this.targets = res.targets;
   }
 
   get ready(): Promise<void> {
@@ -376,11 +495,15 @@ export class TauriP2PSink implements P2PSink {
     for (const w of this.writers) {
       if (w) await w.close();
     }
+    const usedSaf = this.targets.some((t) => t.kind === 'saf');
+    await finishDownload(true, { usedSaf, count: this.targets.length });
   }
 
   abort() {
     for (const w of this.writers) {
       if (w) void w.abort();
     }
+    const usedSaf = this.targets.some((t) => t.kind === 'saf');
+    void finishDownload(false, { usedSaf, count: this.targets.length });
   }
 }

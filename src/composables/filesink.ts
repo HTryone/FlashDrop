@@ -155,7 +155,7 @@ export async function makeSinks(files: FileMeta[], dirHandle?: any): Promise<Mak
       return { writers: [new TauriRelaySink(target)], fallback: false, permissionFallback: false };
     }
     // 多文件（本地直传 HTTP 多文件）：tauriBuildWriters 统一处理「目录直写 / SAF 兜底」
-    const writers = await tauriBuildWriters(files);
+    const { writers } = await tauriBuildWriters(files);
     if (writers.length === 0) return { writers: [], fallback: false, permissionFallback: false };
     return { writers, fallback: false, permissionFallback: false };
   }

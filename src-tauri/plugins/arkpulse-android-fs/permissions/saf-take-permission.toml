@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-saf-take-permission"
+description = "允许调用 saf_take_permission（L3 持久化 SAF 目录授权）"
+commands.allow = ["saf_take_permission"]

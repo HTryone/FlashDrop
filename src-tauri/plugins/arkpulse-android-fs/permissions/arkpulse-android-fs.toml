@@ -1,0 +1,10 @@
+[[permission]]
+identifier = "arkpulse-android-fs:default"
+description = "ArkPulse 安卓落盘桥默认权限集合"
+permissions = [
+  "allow-mediastore-insert",
+  "allow-saf-create-child",
+  "allow-saf-take-permission",
+  "allow-show-save-dialog",
+  "allow-set-keep-screen-on"
+]

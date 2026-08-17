@@ -17,7 +17,15 @@
     "allow-write-chunk-b64",
     "allow-close-file",
     "allow-abort-file",
-    "allow-resolve-save-path"
+    "allow-resolve-save-path",
+    "notification:allow-notify",
+    "notification:allow-request-permission",
+    "notification:allow-is-permission-granted",
+    "arkpulse-android-fs:allow-mediastore-insert",
+    "arkpulse-android-fs:allow-saf-create-child",
+    "arkpulse-android-fs:allow-saf-take-permission",
+    "arkpulse-android-fs:allow-show-save-dialog",
+    "arkpulse-android-fs:allow-set-keep-screen-on"
   ],
   "remote": {
     "urls": ["https://flashdrop.pages.dev"]

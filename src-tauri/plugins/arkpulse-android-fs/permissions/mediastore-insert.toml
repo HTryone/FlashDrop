@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-mediastore-insert"
+description = "允许调用 mediastore_insert（L1 落盘到 Download/ArkPulse）"
+commands.allow = ["mediastore_insert"]

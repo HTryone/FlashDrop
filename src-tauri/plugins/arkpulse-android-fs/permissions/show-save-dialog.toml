@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-show-save-dialog"
+description = "允许调用 show_save_dialog（下载完成确认弹窗）"
+commands.allow = ["show_save_dialog"]

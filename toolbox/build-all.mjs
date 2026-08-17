@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * ArkPulse（闪云）统一打包脚本 —— 本文件即打包规范，改打包流程只改这里、只维护这里。
+ * ArkPulse 统一打包脚本 —— 本文件即打包规范，改打包流程只改这里、只维护这里。
  * 一执行即按当前系统构建可构建的全部平台安装包，并归集到 releases/。
  * 平台：Windows(NSIS) / Android(APK+AAB，仅 arm64-v8a + x86_64) 已通；macOS(dmg) 在 mac 上就地可跑；iOS 待加 --ios。
  *
- * 用法（在项目根目录 D:\arkpulse 执行；环境已固化，勿先 export 变量）：
+ * 唯一打包入口（必读）：本脚本是项目唯一的打包命令，只能在项目根目录用 node 跑；禁止 npm run tauri android build / tauri android build / cargo build / 直调 node_modules/@tauri-apps/cli/tauri.js / gradle 等任何其他打包命令（绕开会丢 JAVA_HOME/签名/归集并触发假错）。用法：
  *   node toolbox/build-all.mjs                        双端：Windows NSIS + Android 仅64位
  *   node toolbox/build-all.mjs --windows|--android|--macos    只构建单个平台
  *   node toolbox/build-all.mjs --no-android           跳过 Android
@@ -30,10 +30,10 @@
  * 踩坑清单（每条都真实发生过，改脚本/壳层时对照）：
  *   - 安卓只打 64 位：❌ npm run tauri android build -t ...（npm 吞多值→编全 4 架构含 32 位）
  *                     ❌ gradle rust{} 注入 targets（v2 插件无此属性→Unresolved reference）
- *                     ✅ node node_modules/@tauri-apps/cli/tauri.js android build -t aarch64 x86_64
+ *                     ✅ node toolbox/build-all.mjs --android（脚本内部已正确传 -t aarch64 x86_64，勿手敲 tauri.js）
  *   - Tauri v2 API 差异：primary_monitor() 返回 Result（写 if let Ok(Some(m))）；size()/scale_factor() 是方法非字段；
  *                     改壳层先对照 tauri-<ver>/src/ 源码确认签名，别猜。
- *   - node_modules/.bin/tauri 在 Windows 跑不了（那是 bash 脚本）→ 用 npm run 或 node .../tauri.js。
+ *   - node_modules/.bin/tauri 在 Windows 跑不了（那是 bash 脚本）→ 一律走 node toolbox/build-all.mjs，勿直调 tauri.js/tauri。
  *   - 外置架构远程 IPC：远程页调 open_file/write_chunk 被 v2 默认拦 →
  *                     capabilities/*.json 必须加 "remote":{"urls":["https://flashdrop.pages.dev"]}。
  *   - 桌面双弹窗：Tauri 内 pickSaveDir 直接 return null，统一单框（见 composables/filesink.ts）。
