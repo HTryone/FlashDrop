@@ -20,7 +20,7 @@ const CLIENT_KIND: &str = "windows";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
@@ -33,17 +33,23 @@ pub fn run() {
             commands::close_file,
             commands::abort_file,
             commands::resolve_save_path,
-        ])
+        ]);
+
+    // 注册 arkpulse-splash 自定义协议，提供启动页 HTML（双端统一，绕过 wry 对 data URI 的崩溃）。
+    let builder = splash::register_splash_protocol(builder);
+
+    builder
         .setup(|app| {
             // 外置架构：主窗口首屏加载壳层内嵌的本地启动页（src-tauri/splash/splashscreen.html），
-            // 经 bundle.resources 打进安装包/APK，离线可用、不随远程前端热更新走（壳冷更新层）。
+            // 经自定义协议 arkpulse-splash 提供，离线可用、不随远程前端热更新走（壳冷更新层）。
             // 启动页内 JS 探活远程前端：连上即跳转到远程、离线显示「重试中」持续重试；
             // 不需要 Rust 第二窗口、不需要固定计时、安卓也不会黑屏（首屏永远是壳层本地页）。
-            // 双端加载路径由 splash 模块封装（桌面 resource_dir+External / 安卓 App）。
+            // 双端加载 URL 由 splash 模块封装为自定义协议（合法 http origin，非 data URI）。
             let url = resolve_remote_url();
 
             // 壳在网页代码运行前注入：①设备标识（远程页读 window.__ARKPULSE_CLIENT__ 知是哪端）；
-            // ②启动页读取 window.__ARKPULSE_REMOTE__ 作为跳转目标。
+            // ②远程页读取 window.__ARKPULSE_REMOTE__ 作为跳转目标（启动页本身用 Rust 预替换
+            //   {{REMOTE}}，不依赖此注入，避免 data URI 时代脚本注入不可靠的坑）。
             let inject = format!(
                 "window.__ARKPULSE_CLIENT__={{kind:'{kind}'}};window.__ARKPULSE_REMOTE__='{remote}';",
                 kind = CLIENT_KIND,
