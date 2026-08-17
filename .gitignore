@@ -1,7 +1,6 @@
 # ===== 依赖 / 缓存 / 构建产物（自动生成，绝不入库）=====
 node_modules/
 .wrangler/
-uploads/
 certs/
 server.log
 *.log
