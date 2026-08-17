@@ -359,12 +359,24 @@ export default meta;
 }
 function genData(m){
   const mid = m.moduleId || m.id;
-  const docs = m.docs.map(d=>({ id:d.id, title:d.title, module:mid, markdown:d.md, updatedAt:d.date||'' }));
+  const rows = m.docs.map(d=>{
+    const t = (d.title||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+    return `  {\n    id: '${d.id}',\n    title: '${t}',\n    module: '${mid}',\n    updatedAt: '${d.date||''}',\n    markdown: loadMarkdown('${d.id}'),\n  },`;
+  }).join('\n');
   return `import type { DocItem } from '../types';
+
+// 每篇正文存于 ./posts/<id>.md（Vite \`?raw\` 引入），避免 data.ts 体积膨胀。
+const mdFiles = import.meta.glob('./posts/*.md', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
+function loadMarkdown(id: string): string {
+  const key = Object.keys(mdFiles).find((k) => k.includes(\`\${id}.md\`)) ?? '';
+  return mdFiles[key] ?? '';
+}
 
 export const moduleId = '${mid}';
 
-export const docs = ${JSON.stringify(docs, null, 2)} as DocItem[];
+export const docs: DocItem[] = [
+${rows}
+];
 `;
 }
 
@@ -375,8 +387,10 @@ async function saveOpenedDir(){
   if(!openedDirHandle){ alert('请先点「📂 导入模块」选择要保存的模块文件夹。'); return; }
   try{
     const wf = async (name, text)=>{ const f=await openedDirHandle.getFileHandle(name,{create:true}); const w=await f.createWritable(); await w.write(text); await w.close(); };
+    const writePosts = async ()=>{ const pd=await openedDirHandle.getDirectoryHandle('posts',{create:true}); for(const d of curMod.docs){ if(!d.id) continue; const f=await pd.getFileHandle(d.id+'.md',{create:true}); const w=await f.createWritable(); await w.write(d.md||''); await w.close(); } };
     await wf('meta.ts', genMeta(curMod));
     await wf('data.ts', genData(curMod));
+    await writePosts();
     alert('已保存到当前打开的文件夹');
   }catch(e){ if(e.name!=='AbortError') alert('保存失败：'+e.message); }
 }
@@ -390,8 +404,10 @@ async function exportToExtensionsDir(){
     const dir = await window.showDirectoryPicker();
     const sub = await dir.getDirectoryHandle(curMod.id, { create:true });
     const wf = async (name, text)=>{ const f=await sub.getFileHandle(name,{create:true}); const w=await f.createWritable(); await w.write(text); await w.close(); };
+    const writePosts = async ()=>{ const pd=await sub.getDirectoryHandle('posts',{create:true}); for(const d of curMod.docs){ if(!d.id) continue; const f=await pd.getFileHandle(d.id+'.md',{create:true}); const w=await f.createWritable(); await w.write(d.md||''); await w.close(); } };
     await wf('meta.ts', genMeta(curMod));
     await wf('data.ts', genData(curMod));
+    await writePosts();
     alert('已导出模块「'+curMod.title+'」到 '+curMod.id+'/ 文件夹');
   }catch(e){ if(e.name!=='AbortError') alert('导出失败：'+e.message); }
 }
@@ -422,12 +438,28 @@ async function openFolder(){
     const desc = g(/\bdesc:\s*'([^']*)'/) || g(/\bdesc:\s*"([^"]*)"/) || '';
     let docs=[];
     if(dataText){
-      const m = dataText.match(/export const docs\s*=\s*([\s\S]+?)\s*as DocItem\[\];/);
-      if(m){ try{ const arr=JSON.parse(m[1]); docs=arr.map(d=>({ id:d.id||uid(), title:d.title||'未命名', date:d.updatedAt||'', md:d.markdown||'' })); }catch(_){} }
+      if(dataText.includes("import.meta.glob('./posts/*.md'")){
+        // 新格式：正文在 posts/<id>.md，data.ts 只含元数据
+        const blockRe = /\{\s*id:\s*'([^']+)'[\s\S]*?\}/g; let bm; const tmp=[];
+        while((bm=blockRe.exec(dataText))){ const b=bm[0];
+          const id=(b.match(/id:\s*'([^']+)'/)||[])[1]||'';
+          const title=((b.match(/title:\s*'((?:\\.|[^'])*)'/)||[])[1]||'').replace(/\\'/g,"'");
+          const updatedAt=(b.match(/updatedAt:\s*'([^']*)'/)||[])[1]||'';
+          if(id) tmp.push({ id, title:title||'未命名', date:updatedAt, md:'' });
+        }
+        docs=tmp;
+      } else {
+        const m = dataText.match(/export const docs\s*=\s*([\s\S]+?)\s*as DocItem\[\];/);
+        if(m){ try{ const arr=JSON.parse(m[1]); docs=arr.map(d=>({ id:d.id||uid(), title:d.title||'未命名', date:d.updatedAt||'', md:d.markdown||'' })); }catch(_){} }
+      }
     }
     if(!docs.length && moduleId){
       try{ if(location.protocol.startsWith('http')){ const res=await fetch('/api/'+moduleId+'/docs.json',{cache:'no-store'}); if(res.ok){ const data=await res.json(); const list=Array.isArray(data)?data:(data.docs||[]); docs=list.map(d=>({ id:d.id||uid(), title:d.title||'未命名', date:d.updatedAt||'', md:d.markdown||'' })); } } }catch(_){}
     }
+    // 从 posts/ 读正文（新格式 data.ts 的正文在 posts/<id>.md）
+    let postsDir=null;
+    try{ postsDir = await dir.getDirectoryHandle('posts'); }catch(_){}
+    if(postsDir){ for(const d of docs){ try{ const f=await postsDir.getFileHandle(d.id+'.md'); d.md=await (await f.getFile()).text(); }catch(_){} } }
     const mod={ id, title, icon, desc, moduleId, docs };
     const idx=modules.findIndex(x=>x.id===id);
     if(idx>=0) modules[idx]=mod; else modules.push(mod);
