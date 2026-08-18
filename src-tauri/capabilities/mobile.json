@@ -21,6 +21,7 @@
     "allow-diagnostics-capture",
     "allow-diagnostics-query",
     "allow-diagnostics-export",
+    "allow-diagnostics-export-android",
     "allow-diagnostics-clear",
     "notification:allow-notify",
     "notification:allow-request-permission",
