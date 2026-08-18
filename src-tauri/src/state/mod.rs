@@ -31,3 +31,16 @@ impl Default for AppState {
         Self::new()
     }
 }
+
+// 应用退出（关窗即退出）时兜底清理：删除所有仍在表里的在途半截文件。
+// 正常取消走 abort_file 已删；此处覆盖「直接关程序」未触发 abort 的残留。
+// 注意：任务管理器强杀进程无法触发 Drop，那种情况半截文件只能靠 .part 命名规则人工识别。
+impl Drop for AppState {
+    fn drop(&mut self) {
+        let files = self.files.get_mut().unwrap();
+        for (_h, entry) in files.drain() {
+            let _ = entry.file.lock().unwrap().sync_all();
+            let _ = std::fs::remove_file(&entry.path);
+        }
+    }
+}

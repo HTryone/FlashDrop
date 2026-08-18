@@ -143,7 +143,18 @@ export async function tauriPickSavePath(name: string): Promise<SaveTarget | null
       }
     }
   }
-  const dir = await getDefaultSaveDir();
+  // 桌面默认落「下载目录」，不再弹保存框（用户可在 App 内改默认位置）。
+  // 拿不到下载目录 / 该目录不可写时，才退回系统保存框兜底。
+  const dir = (await getDefaultSaveDir()) || (await downloadDir().catch(() => '' as string));
+  if (dir) {
+    try {
+      const finalPath = await invoke<string>('resolve_save_path', { dir, name });
+      setDefaultSaveDir(dir);
+      return { kind: 'fs', path: finalPath };
+    } catch {
+      // 落到下方对话框兜底
+    }
+  }
   const defaultPath = dir ? await join(dir, name).catch(() => name) : name;
   // 注：join 失败时用原名兜底（上一行已处理），此处无需再 catch
   const picked = await save({ title: '保存文件', defaultPath });
@@ -169,11 +180,23 @@ export async function tauriPickSaveDir(): Promise<string | null> {
       return null; // 交给 tauriBuildWriters 走 SAF 逐文件
     }
   }
-  const dir = await getDefaultSaveDir();
+  // 桌面默认落「下载目录」，不再弹选文件夹框（用户可在 App 内改默认位置）。
+  // 拿不到下载目录 / 该目录不可写时，才退回系统选文件夹框兜底。
+  const saved = await getDefaultSaveDir();
+  const dir = saved || (await downloadDir().catch(() => '' as string));
+  if (dir) {
+    try {
+      await invoke<string>('resolve_save_path', { dir, name: '.probe' });
+      setDefaultSaveDir(dir);
+      return dir;
+    } catch {
+      // 落到下方对话框兜底
+    }
+  }
   const picked = (await open({
     directory: true,
     title: '选择保存文件夹',
-    defaultPath: dir || undefined,
+    defaultPath: saved || undefined,
   })) as unknown as string | null;
   if (picked) setDefaultSaveDir(picked);
   return picked ?? null;

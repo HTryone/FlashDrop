@@ -3,6 +3,7 @@
   "description": "Default capability for ArkPulse remote frontend",
   "windows": ["main"],
   "permissions": [
+    "core:default",
     "allow-open-file",
     "allow-write-chunk",
     "allow-write-chunk-b64",
