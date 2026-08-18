@@ -1,0 +1,2 @@
+# 统一仓库文本文件行尾为 LF，消除 Windows core.autocrlf=true 在 Cargo.toml 等文件上产生的"假脏"
+* text=auto eol=lf
