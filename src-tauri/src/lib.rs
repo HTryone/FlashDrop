@@ -2,6 +2,7 @@
 // 业务逻辑全部下沉到 file_writer / path_resolver / state 等核心模块，本文件不写业务。
 mod boot;
 mod commands;
+mod diagnostics;
 mod files;
 mod splash;
 mod state;
@@ -33,6 +34,10 @@ pub fn run() {
             commands::close_file,
             commands::abort_file,
             commands::resolve_save_path,
+            diagnostics::commands::diagnostics_capture,
+            diagnostics::commands::diagnostics_query,
+            diagnostics::commands::diagnostics_export,
+            diagnostics::commands::diagnostics_clear,
         ]);
 
     // 注册 arkpulse-splash 自定义协议，提供启动页 HTML（双端统一，绕过 wry 对 data URI 的崩溃）。
@@ -81,6 +86,11 @@ pub fn run() {
             };
 
             let _main = builder.build()?;
+
+            // 诊断系统初始化（§3）：按端分支路径 + 装 panic 兜底（早初始化，先于业务，§3.2）。
+            let diag_platform = if CLIENT_KIND == "phone" { "android" } else { "windows" };
+            diagnostics::store::init(app.handle(), diag_platform);
+            diagnostics::panic_hook::install();
 
             Ok(())
         })

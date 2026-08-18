@@ -3,6 +3,7 @@ import { ref, provide, watch, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { isPhone } from './tauri/client';
 import { requestNotificationAtLaunch } from './tauri/notify';
+import DiagShell from './components/diagnostics/DiagShell.vue';
 
 type TabType = 'send' | 'receive' | 'manage';
 const activeTab = ref<TabType>('send');
@@ -59,6 +60,9 @@ onMounted(() => {
     <main class="main">
       <router-view />
     </main>
+
+    <!-- 诊断浮层：窗口级，底部圆形长条（主页/更多），不进 send/receive/manage 导航（§5） -->
+    <DiagShell />
   </div>
 </template>
 

@@ -25,3 +25,4 @@ uuid = { version = "1", features = ["v4"] }
 # 安卓 IPC 不支持二进制 Raw 载荷（Tauri 官方限制），大块数据以 base64 传输（膨胀 1.33x，
 # 远优于 JSON 数字数组的 3~4x）。桌面仍走 Raw 零膨胀，故此依赖仅服务安卓路径。
 base64 = "0.22"
+zip = "2"

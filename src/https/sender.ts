@@ -8,6 +8,7 @@ import { segRoom, SEGMENT_TIME_MS, SEGMENT_MIN_BYTES } from './segment';
 import { RelayControl } from './control';
 import { encryptChunkAsync } from '@/https/useLocalCrypto';
 import { deriveKey, LOCAL_SALT, LOCAL_CHUNK_SIZE, randomPassphrase } from '@/crypto/e2ee';
+import { info, error } from '@/diagnostics/logger';
 
 export interface SenderCallbacks {
   onStatus: (s: string) => void;
@@ -92,6 +93,7 @@ export class LocalSender {
     this.recvReady = false;
     this.segIndex = 0;
     this.link = `${location.origin}/?tab=local&room=${s}#k=${pass}`;
+    info('https', 'sender', `生成本地直传房间 ${s}`, { room: s });
     this.cb.onStatus('房间已生成，等待对方加入…');
     this.cb.onRoom(s, this.link, pass);
     this.armPresence(); // 提前开在场侦听 WS，接收端一加入即点亮「对方在线」灯
@@ -137,6 +139,7 @@ export class LocalSender {
   // ============ 取消 / 关闭 ============
   cancel() {
     if (!this.sending) return;
+    info('https', 'sender', `已取消本地直传`, { room: this.room });
     // 先通知接收端"我取消了"，再延迟中止，确保控制消息先经 WS 发出
     if (this.ctrl?.isOpen) { try { this.ctrl.send({ type: 'cancel' }); } catch { /* ignore */ } }
     setTimeout(() => {
@@ -211,6 +214,7 @@ export class LocalSender {
 
     const { list: chunkListAll, total } = this.buildChunkList(files);
     this.setSending(true);
+    info('https', 'sender', `开始本地直传: 文件数=${files.length}, 总字节=${total}`, { total });
     // 在场侦听 WS 已完成使命：接收端若已在 genRoom 阶段加入，灯已点亮；若尚未加入，
     // 后续由 transferSegment 的 this.ctrl 在收到 peer-joined 时点亮（handleCtrlMsg 已认 peer-joined）。
     // 此处关闭，把段房间 wsSender 单槽让给 this.ctrl，避免两 WS 争夺导致进度/recv-done 被误转。
@@ -249,7 +253,7 @@ export class LocalSender {
       if (this.remoteFailed) this.cb.onStatus('对方接收失败，请重新点「开始传输」重发');
       else if (this.remoteAborted) this.cb.onStatus('对方已取消接收');
       else if (this.abort?.signal.aborted) this.cb.onStatus('已取消发送');
-      else this.cb.onStatus(`传输出错: ${e?.message || e}`);
+      else { this.cb.onStatus(`传输出错: ${e?.message || e}`); error('https', 'sender', `本地直传异常: ${e?.message || e}`, { room: this.room }); }
       this.setSending(false);
       this.close();
       void this.closeStream();
@@ -271,6 +275,7 @@ export class LocalSender {
     const segStartTime = Date.now();
 
     this.cb.onStatus(`正在传输第 ${seg + 1} 段…`);
+    info('https', 'sender', `开始传输第 ${seg + 1} 段 (${room})`, { seg, room });
 
     // 每段独立滑动窗口 + 接收端就绪闸门（防上一段残留导致闸门误判）
     this.ackBytes = 0; this.sentBytes = 0; this.ackWaiters = [];

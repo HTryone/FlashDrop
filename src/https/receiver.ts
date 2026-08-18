@@ -10,6 +10,7 @@ import { makeSinks, pickSaveDir } from '@/composables/filesink';
 import type { FileMeta, Sink } from './types';
 import { decryptChunkAsync } from '@/https/useLocalCrypto';
 import { deriveKey, LOCAL_SALT, LOCAL_CHUNK_SIZE } from '@/crypto/e2ee';
+import { info, error, warn } from '@/diagnostics/logger';
 
 export interface ReceiverCallbacks {
   onStatus: (s: string) => void;
@@ -159,6 +160,7 @@ export class LocalReceiver {
 
     this.receiving = true;
     this.cb.onReceiving(true);
+    info('https', 'receiver', `开始本地直传接收: room=${this.room}`, { room: this.room });
     this.recvAbort = new AbortController();
     const base = resolveRelayBase();
     this.manifest0 = null;
@@ -209,6 +211,7 @@ export class LocalReceiver {
 
     this.cb.onSenderOnline(true);
     this.cb.onStatus(`第 ${seg + 1} 段：已连接，等待文件清单…`);
+    info('https', 'receiver', `第 ${seg + 1} 段已连接`, { seg, room });
     let reader = resp.body.getReader();
     this.fr.setReader(reader);
 
@@ -234,6 +237,7 @@ export class LocalReceiver {
     if (!offerPayload) { this.cb.onStatus('未收到文件清单，对方可能已断开'); this.failRecv('未收到文件清单，对方可能已断开'); return false; }
     const offer = JSON.parse(new TextDecoder().decode(offerPayload));
     if (!Array.isArray(offer.files) || offer.files.length === 0) { this.cb.onStatus('收到无效的文件清单'); this.failRecv('收到无效的文件清单'); return false; }
+    info('https', 'receiver', `收到文件清单: 段=${seg + 1}, 文件数=${offer.files.length}, 总字节=${this.recvTotal}`, { seg, count: offer.files.length });
     const segIndex = offer.segIndex || 0;
     const segCount = offer.segCount || 1;
     let segIsLast = typeof offer.isLast === 'boolean' ? offer.isLast : segIndex >= segCount - 1;
@@ -308,6 +312,7 @@ export class LocalReceiver {
   /** 接收失败：回初始状态，通知 UI 与发送端，房间码/口令保留可改 */
   private failRecv(msg: string) {
     if (this.finishing) return;
+    error('https', 'receiver', `本地直传接收失败: ${msg}`, { room: this.room });
     this.receiving = false;
     this.cb.onReceiving(false);
     this.cb.onFail?.(msg);
@@ -340,6 +345,7 @@ export class LocalReceiver {
     this.cb.onReceiving(false);
     this.cb.onDone?.();
     this.writers = [];
+    info('https', 'receiver', `本地直传接收完成(用户落盘): 文件数=${this.writers.length}`, { room: this.room });
   }
 
   /** (fi, ci) → 全局递增序号 */

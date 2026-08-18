@@ -10,6 +10,10 @@
     "allow-close-file",
     "allow-abort-file",
     "allow-resolve-save-path",
+    "allow-diagnostics-capture",
+    "allow-diagnostics-query",
+    "allow-diagnostics-export",
+    "allow-diagnostics-clear",
     "dialog:allow-save",
     "dialog:allow-open"
   ],

@@ -15,4 +15,8 @@ if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
   }
 }
 
-createApp(App).use(router).mount('#app');
+// 系统级日志：最早安装全局捕获（先于业务，初始化阶段闪退也有记录，§3.2）。
+import { installDiagnostics } from './diagnostics/install';
+const app = createApp(App);
+installDiagnostics(app);
+app.use(router).mount('#app');

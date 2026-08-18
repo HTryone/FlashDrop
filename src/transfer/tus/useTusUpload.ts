@@ -7,6 +7,7 @@ import { encryptFile, deriveKey } from '@/crypto/tus-crypto';
 import { resolveTusBase } from '@/transfer/room';
 import { encodeMetadata } from '@/transfer/tus/tus-protocol';
 import type { QueuedFile } from '@/types/transfer';
+import { info, warn, error } from '@/diagnostics/logger';
 
 interface Prefetched { off: number; len: number; url: string }
 
@@ -181,6 +182,7 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
     if (opts.e2ee.enabled) meta.e2ee = '1';
 
     fileId = await createUpload(tusBase, meta);
+    info('tus', 'upload', `中转上传: 创建记录 fileId=${fileId}, size=${size}`, { fileId, size });
 
     // 块大小策略（用户指定，2026-08-12 调整）：
     // 默认 32MB；看门狗 55s 到时未传完 → 后续块降 24MB；再触发看门狗 → 降 16MB（兜底）。
@@ -263,6 +265,7 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
         (sent) => { inflight = sent; report(); },
         () => {
           downgrade();
+          warn('tus', 'upload', `看门狗超时(55s) → 降档至 ${Math.round(pickSeg() / 1048576)}MB`, { tier });
           // 已在兜底档(16MB)还被看门狗掐断(极慢) → 计一次失败；达上限置位 fatalTriggered 让主循环中止
           if (tier >= topTierIdx) {
             bottomFails++;
@@ -358,9 +361,11 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
     // ╚══════════════════════════════════════════════════════════════════════════╝
     finished = true;
     report();
+    info('tus', 'upload', `中转上传完成(服务器落盘已确认) fileId=${fileId}, size=${size}`, { fileId, size });
     opts.onSuccess();
   } catch (e: any) {
     if ((e as any)?.name === 'AbortError') throw e;  // 取消/故障中止：不报错，交上层处理
+    error('tus', 'upload', `中转上传失败: ${e?.message || String(e)}`, { fileId });
     opts.onError(e?.message || String(e));
     throw e;
   }

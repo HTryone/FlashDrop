@@ -3,6 +3,7 @@
 // 失败重协商重连：connectionState='failed' 时保留信令 WS，仅重建 pc+dc 重新 offer/answer（房间码不变）。
 import type { P2PRole } from './types';
 import { RTC_LOW } from './types';
+import { info, warn } from '@/diagnostics/logger';
 
 type DcHandler = (dc: RTCDataChannel) => void;
 type MsgHandler = (data: string | ArrayBuffer) => void;
@@ -84,8 +85,10 @@ export class PeerLink {
       if (st === 'connected') {
         this.gotRemote = true;
         this.clearOfferTimer();
+        info('p2p', 'peer', `WebRTC 连接已建立 (connected)`);
         this.onStateCb?.(true);
       } else if (st === 'failed') {
+        warn('p2p', 'peer', `WebRTC 连接失败 (failed), 触发重连`);
         this.onStateCb?.(false);
         this.reconnect();
       }
@@ -102,6 +105,7 @@ export class PeerLink {
 
   async connect(iceServers: RTCIceServer[]) {
     this.iceServers = iceServers;
+    info('p2p', 'peer', `建立 WebRTC 连接 (role=${this.role}), ICE服务器=${iceServers.length}个`, { role: this.role, iceServers: iceServers.length });
     this.ensurePc();
     // 冲刷 connect 之前到达的缓冲信令（relay 回放可能早于 pc 就绪），按到达顺序处理
     const pend = this.pendingSignals;
@@ -121,6 +125,7 @@ export class PeerLink {
       const offer = await this.pc.createOffer();
       await this.pc.setLocalDescription(offer);
       console.log('[p2p] offer 已创建并发送');
+      info('p2p', 'peer', `发送 offer (role=${this.role})`);
       this.sendSignal({ type: 'offer', sdp: this.pc.localDescription?.sdp });
       // 重发 offer 直到收到对端响应（防 relay 未缓冲早期 offer 导致接收端永远收不到）
       this.clearOfferTimer();
@@ -163,6 +168,7 @@ export class PeerLink {
         if (this.role !== 'receiver') return; // sender 忽略自己的 offer 回声
         if (this.gotRemote) return; // 忽略重复 offer（relay 回放 + 发送端重发可能重复投递）
         console.log('[p2p] 收到 offer，开始创建 answer…');
+        info('p2p', 'peer', `收到 offer, 开始协商 answer`);
         await p.setRemoteDescription({ type: 'offer', sdp: data.sdp } as RTCSessionDescriptionInit);
         this.gotRemote = true;
         this.notifyPeerJoined();
@@ -178,6 +184,7 @@ export class PeerLink {
           return;
         }
         console.log('[p2p] 收到 answer，ICE 协商开始…');
+        info('p2p', 'peer', `收到 answer, ICE 协商开始`);
         this.gotRemote = true;
         this.notifyPeerJoined();
         this.clearOfferTimer();
@@ -211,6 +218,7 @@ export class PeerLink {
     // 保留 sendSignal（relay WS 不断），重建 pc 并重新协商
     this.ensurePc();
     this.onReconnectCb?.();
+    info('p2p', 'peer', `重连: 重建 pc 并重新协商 (role=${this.role})`);
     if (this.role === 'sender') {
       this.dc = this.pc!.createDataChannel('arkpulse');
       this.wireDc(this.dc);
