@@ -1,10 +1,21 @@
 // 全局捕获（§1.5/§2）：系统级兜底，任何未处理异常都进日志，不依赖业务主动埋点。
 // 须在 main.ts 最前调用（早于业务代码），保证初始化阶段闪退也有记录（§3.2 早初始化）。
+//
+// 平台门控（用户定）：PC 桌面 + 移动端（均为 Tauri 原生壳）统一启用日志；
+// Web 浏览器明确排除，不安装任何诊断/埋点逻辑。
 import { error, setNativeCapture } from './logger';
 import { isTauriEnv } from '../tauri/env';
+import { isPhone, isWindows } from '../tauri/client';
 import { installObservers } from './observe';
 
+// 原生侧（windows | phone）启用诊断；web 浏览器排除（用户定：Web 不需要日志）。
+function diagnosticsEnabled(): boolean {
+  return isWindows() || isPhone();
+}
+
 export function installGlobalCapture(): void {
+  if (!diagnosticsEnabled()) return;
+
   // 原生桥接：Tauri 壳内才接，Web 端 no-op（§3.3 应用层专属）。
   if (isTauriEnv()) {
     import('../tauri/diagnostics').then((m) => m.registerNativeCapture()).catch(() => {});
@@ -39,8 +50,9 @@ export function installVueErrorHandler(app: any): void {
   };
 }
 
-// Web 侧安装入口（main.ts 调用）。
+// 安装入口（main.ts 调用）。Web 端直接 no-op，不装任何诊断逻辑。
 export function installDiagnostics(app?: any): void {
+  if (!diagnosticsEnabled()) return;
   installGlobalCapture();
   if (app) installVueErrorHandler(app);
 }

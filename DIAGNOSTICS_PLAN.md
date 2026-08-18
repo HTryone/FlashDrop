@@ -14,7 +14,7 @@
 2. **监控软件所有问题**：`traceId` 把一次传输/任务的每一步串成时间线；同时全局捕获 UI/路由/生命周期、传输三链路、原生 IO/权限/SAF、IPC 桥接、崩溃与未捕获异常、性能异常——问题不漏网、全流程可追溯。
 3. **问题检测 / 健康总览**：按 severity 聚合，自动标红异常；首页/悬浮窗给出「X 错误 / Y 警告 / 各子系统状态灯」。
 4. 原生 app 内部实现：壳 = Tauri（Vue webview + Rust 核心）。
-5. UI：**窗口级悬浮玻璃**（浮于所有内容上方）+ 底部**圆形长条**导航（主页左 / 更多右，切换玻璃内容）；日志可打包 **ZIP** 导出、分发、分享。
+5. UI：底部**真实 Tab 导航**（主页 / 更多 两个平级完整页面，点击或滑动切换，旧页完全退出、新页完整呈现，非浮层/遮罩）；日志可打包 **ZIP** 导出、分发、分享。
 6. 关于 Flutter：见 §7（与 §1.1 死纪律冲突，需你拍板）。
 
 ## 1. 总体架构
@@ -40,7 +40,7 @@
 ┌─────────────────────────────────────────────┐
 │  UI 层 (Vue, 毛玻璃, 窗口级悬浮)                 │
 │  ① 窗口级悬浮玻璃 DiagShell (浮于所有内容正上方)   │
-│  ② 底部圆形长条 (主页左/更多右, 切换玻璃内容)       │
+│  ② 底部真实 Tab 导航 (主页/更多 平级切换, 点击+滑动, 非遮罩)  │
 └─────────────────────────────────────────────┘
 ```
 关键点：`traceId` 由 Web 生成，经 command 上下文带入 Rust，Rust 落盘也带同一 `traceId` → 双端同一 bug 全流程串联；`window.onerror`/`unhandledrejection`/Rust `panic_hook` 保证任何未捕获异常都进日志，做到「所有问题不漏网」。
@@ -346,7 +346,7 @@
 ### 3.3 只在应用层（不上网站）+ 手机/电脑逻辑区分（注入标签）
 
 **应用层专属，不进托管前端**
-- 诊断 UI 与采集**只在 Tauri 应用内**（Windows 桌面 + Android），**不进托管网站 `flashdrop.pages.dev` 的远程前端**。
+- 诊断 UI 与采集**只在 Tauri 原生应用内**（Windows 桌面 + Android 移动端**统一启用**，PC 与移动端日志结构一致）；**Web 浏览器明确排除**——普通浏览器打开时 `installDiagnostics` 直接 no-op，不安装任何诊断/埋点逻辑（用户定：Web 不需要日志）。结构化日志含**时间戳(ts)、事件类型(level+channel)、上下文(scope+msg+data)+traceId**；日志级别与输出方式**按环境配置**：开发环境降级到 debug 全量、生产环境 info+，原生端落盘文件+内存 RingBuffer，Web 无输出。
 - 因此不存在「远程前端白名单」问题：诊断命令跑在应用内嵌 webview，与壳同源，`capabilities` 无需增量加远程 URL；壳 `tauri.conf.json` 的 source URL 仍是 `flashdrop.pages.dev`，但诊断模块随壳打包、本地调用。
 - 远程前端若日后需要只读展示，另议；本期范围是应用内看板 + 导出 ZIP。
 
@@ -369,26 +369,26 @@
 - Rust → Web：原生关键节点（落盘字节、IO 错误）经事件流回传前端，悬浮窗实时显示。
 - 统一 `traceId`：Web 生成、command 上下文带入 Rust，Rust 落盘带同一 `traceId` → 双端同 bug 全流程一条线。
 
-## 5. UI 层（Vue，毛玻璃，窗口级悬浮，符合 §1.1）
+## 5. UI 层（Vue，深色毛玻璃，真实 Tab 平级页面，符合 §1.1）
 
-**形态（对应你的原话）**：诊断 UI 是**窗口级**的——浮在所有内容正上方，不挤进现有 `send|receive|manage` 三个 Tab。底部一条**圆形长条**（玻璃丸胶囊），左侧「主页」、右侧「更多」，点击任一侧，上方浮起一块**玻璃体**显示对应页面；主页/更多就是这两个玻璃页面的切换。
+**形态（用户定，已重构）**：诊断 UI 是**底部真实 Tab 导航**——「主页」与「更多」是两个**平级、完整的独立页面**，点击或滑动切换；切换时旧页面**完全退出**、新页面**完整呈现**，**不使用悬浮、遮罩或叠加**。仅原生端（Windows 桌面 + Android）显示该 Tab；Web 浏览器不渲染、不安装（见 §3.3）。
 
-- **窗口级悬浮外壳** `components/diagnostics/DiagShell.vue`：
-  - 挂在 `App.vue` 根（与 `router-view` 同级），`position: fixed` 全窗口覆盖，自身 `pointer-events: none`，内部玻璃体/长条 `pointer-events: auto` → 不挡主界面交互。
-  - 底部**圆形长条** `DiagDock.vue`：胶囊形（`border-radius: 999px`）+ 毛玻璃，左「主页」右「更多」，当前项高亮；点击切换。
-    - **主页** = 程序**真实主界面**（现有 `send|receive|manage`，诊断内容**不进主页**，只把底部长条挂在这里）。
-    - **更多** = 唤起上方诊断玻璃体（全部诊断内容只在此页）。
-  - 上方**诊断玻璃体** `DiagGlass.vue`：`backdrop-filter: blur(14px)` + 半透明 + 圆角（延续 `App.vue` 玻璃美学，低反差浅色），**仅在「更多」内显示**，可整体收起为长条（只留底部条）；**单页、无设置项**。
-- **视觉基调（你定的）**：整体**低反差、浅色通透**；主色用**青蓝（泰普蓝）**而非深紫；玻璃面板半透明白 + 细边；按钮为**透明玻璃质感**（`background: rgba(255,255,255,.5)` + 细边 + `backdrop-filter`），点击/悬停有**缩放动效**（`transform: scale(1.03)` / 按下 `scale(.97)`，配 `cubic-bezier` 过渡）。
-- **「更多」诊断玻璃页（诊断全貌，唯一页面）**：
-  - **顶部健康总览条** `DiagHealthBar.vue`：错误/警告计数 + 各子系统状态灯（异常 error 红 / 警告 warn 黄 / 正常 ok 绿），一眼看全软件健康；点状态灯下钻到对应日志。
-  - **实时日志流** `DiagLogStream.vue`：滚动、关键字过滤、按 level/channel 染色（error 红、warn 黄、info 灰、ok 绿）。
-  - **会话列表** `DiagSessionList.vue`：按 `traceId` 聚合每次传输（链路 / 起止时间 / 文件数·字节 / 结果 / 耗时 / 错误）；点开看单会话时间线 `DiagTimeline.vue`（连接 → 协商 → 分片 → 落盘 → 校验 → 完成/失败）。
-  - **「打包 ZIP 导出」按钮**（青蓝玻璃主操作，带缩放动效）：→ `diagnostics_export {share?:boolean}`，**不弹文件选择器**，**复用现有导出/下载逻辑**自动落系统下载目录，把按天日志（`安装目录/log/` 或 `Android/data/<包名>/files/log/`）+ `crash-*.json` 打包成 `arkpulse-diagnostics-时间戳.zip`，返回绝对路径。
-  - **保存位置提示条** `DiagToast.vue`（核心反馈，对齐你给的参考图）：导出成功后底部浮起玻璃质感提示条（半模糊 + 圆角 + 上滑动效），左侧应用图标 + 「已保存」+ **完整保存路径**（如 `下载/arkpulse-diagnostics-20260818-1932.zip`），自动消失也可手动关；一眼知道落在哪、能直接去取。
-  - **「分享」**（可选，非默认）：仅用户主动点才触发系统分享/分享开发者（脱敏后回执，§1.8）。
-  - **无设置项**：默认保留日志，详细级别 / 7 天覆盖 / 崩溃快照 / 清空等开关**一律移除**，保持「看板 + 看日志 + 导出 ZIP」三件事。
-- **always-on 但低调**：采集始终在底层跑（系统级）；玻璃 UI 默认收起为底部长条，异常时长条变红 + 健康条标红「检测到上次崩溃」并直链 `crash-*.json`，不打扰但随时可取。
+- **底部 Tab 导航** `components/diagnostics/TabBar.vue`：
+  - 挂在 `App.vue` 根（与页面内容同级，`position: fixed` 底部居中胶囊），**深色毛玻璃**（`backdrop-filter: blur(22px) saturate(160%)` + 半透明深底 + 细边），融入暗色主题。
+  - 左「主页」右「更多」，当前项高亮（accent 胶囊 + 内描边）；点击切换 `activePage`。
+  - 触屏支持**横向滑动切换**：右滑→主页、左滑→更多（仅明显横向滑动触发，避免与列表滚动冲突）。
+- **两个平级页面**（由 `activePage` 控制，`<transition mode="out-in">` 保证旧页彻底离开后再进新页，杜绝叠加）：
+  - **主页** = 程序**真实主界面**（现有 `send|receive|manage`，诊断内容**不进主页**）。
+  - **更多** = 诊断完整页 `components/diagnostics/DiagPage.vue`（全部诊断内容只在此页）。
+- **视觉基调（用户定）**：**深色毛玻璃**、融入暗色主页面（iOS 控制中心 / Telegram 风），**不刺眼、不反差**；玻璃面板半透明深底 + 细边 + 模糊；accent 用青蓝（`--accent`）；按钮/图标有轻微**缩放动效**（`scale(1.02)` / 按下 `scale(.98)`，配 `cubic-bezier` 过渡）。
+- **「更多」诊断页（诊断全貌，唯一页面）**：
+  - **顶部健康总览条** `DiagHealthBar.vue`：错误/警告计数 + 各子系统状态灯（error 红 / warn 黄 / ok 绿），一眼看全软件健康。
+  - **实时日志流** `DiagLogStream.vue`：滚动、关键字过滤、按 level/channel 染色（深色配色）。
+  - **会话列表** `DiagSessionList.vue`：按 `traceId` 聚合每次传输；点开看单会话时间线 `DiagTimeline.vue`（连接 → 协商 → 分片 → 落盘 → 校验 → 完成/失败）。
+  - **「打包 ZIP 导出」按钮**（accent 玻璃主操作，带缩放动效）：→ `diagnostics_export {share?:boolean}`，**不弹文件选择器**，**复用现有导出/下载逻辑**自动落系统下载目录，把按天日志 + `crash-*.json` 打包成 `arkpulse-diagnostics-时间戳.zip`，返回绝对路径。
+  - **保存位置提示条**（导出后底部浮起，显示完整路径 + 上滑动效）：圆点 + 「已保存」+ **完整保存路径**（如 `下载/arkpulse-diagnostics-20260818-1932.zip`），自动消失；一眼知道落在哪、能直接去取。
+  - **无设置项**：默认保留日志，保持「看板 + 看日志 + 导出 ZIP」三件事。
+- **always-on 但低调**：采集始终在底层跑（系统级）；异常时健康条标红「检测到上次崩溃」并直链 `crash-*.json`，不打扰但随时可取。
 
 ## 6. 与死纪律对齐
 
@@ -433,7 +433,7 @@
 
 ### 10.1 现状事实（已读实际代码）
 - Web 特性逻辑按功能建文件夹：`src/transfer/`、`src/p2p/`、`src/https/`、`src/composables/`；视图 `src/views/`；组件扁平 `src/components/`；Rust `lib.rs` 用 `mod xxx;` 登记 + `generate_handler!` 注册命令。
-- `App.vue` 实际 `TabType = 'send' | 'receive' | 'manage'`（**仅 3 个，无「主页/更多」**）——与你描述的导航不一致，见 §10.4。
+- `App.vue` 现有业务子导航 `TabType = 'send' | 'receive' | 'manage'`；**外层新增 `activePage: 'home' | 'more'`** 驱动主页/更多平级切换（原生端 Tab 显示），见 §10.4。
 - 现有无 `src/diagnostics`。
 
 ### 10.2 新增文件树
@@ -448,15 +448,13 @@ src/
 ├── tauri/
 │   └── diagnostics.ts          # 封装 invoke(diagnostics_capture/query/export/clear)
 └── components/
-    └── diagnostics/            # 窗口级悬浮玻璃 UI（挂在 App.vue 根，不进 send/receive/manage Tab；诊断只出现在「更多」）
-        ├── DiagShell.vue        # 窗口级外壳：fixed 覆盖、pointer-events 隔离、整体收起/展开
-        ├── DiagDock.vue         # 底部圆形长条：主页(左,真实程序主页)/更多(右,唤起诊断玻璃)
-        ├── DiagGlass.vue        # 上方诊断玻璃体（仅「更多」内，单页无设置）
-        ├── DiagToast.vue        # 保存位置提示条（导出后底部浮起，显示完整路径+上滑动效）
-        ├── DiagHealthBar.vue    # 健康总览条（错误/警告/子系统状态灯）
-        ├── DiagLogStream.vue    # 实时日志流（过滤+染色）
-        ├── DiagSessionList.vue  # 会话列表（traceId 聚合）
-        └── DiagTimeline.vue     # 单会话时间线（连接→协商→分片→落盘→校验→完成/失败）
+    └── diagnostics/            # 底部真实 Tab 导航 UI（挂在 App.vue 根，主页/更多平级切换，非浮层）
+        ├── TabBar.vue          # 底部 Tab 导航：主页(左,真实程序主页)/更多(右,诊断页)；深色玻璃
+        ├── DiagPage.vue        # 「更多」诊断完整页（健康总览+日志流+会话列表+ZIP导出）
+        ├── DiagHealthBar.vue   # 健康总览条（错误/警告/子系统状态灯）
+        ├── DiagLogStream.vue   # 实时日志流（过滤+染色）
+        ├── DiagSessionList.vue # 会话列表（traceId 聚合）
+        └── DiagTimeline.vue    # 单会话时间线（连接→协商→分片→落盘→校验→完成/失败）
 
 src-tauri/src/
 └── diagnostics/                # 新增 Rust 模块（对齐 lan_transfer/ 模范）
@@ -469,12 +467,12 @@ lib.rs: 加 `mod diagnostics;` + generate_handler! 内加 4 命令名
 ```
 
 ### 10.3 注册点（必改，否则不编译/不生效）
-- **Web**：Vite 无需注册，仅 `import`；`main.ts` 最前 `import './diagnostics/install'` 并调用初始化；`App.vue` 根加 `<DiagShell />`（与 `router-view` 同级，窗口级悬浮）。
+- **Web**：Vite 无需注册，仅 `import`；`main.ts` 最前 `import './diagnostics/install'` 并调用 `installDiagnostics`（Web 端内部 no-op）；`App.vue` 内 `activePage` 控制主页/更多平级切换，`TabBar`+`DiagPage` 仅原生端渲染。
 - **Rust**：`lib.rs` 加 `mod diagnostics;`（对齐 `mod boot/commands/files/splash/state`）+ `generate_handler!` 内追加 `diagnostics_capture, diagnostics_query, diagnostics_export, diagnostics_export_android, diagnostics_clear`。
 
 ### 10.4 已确认决策（按你最新 UI 描述）
-- **UI 形态**：**窗口级悬浮玻璃** + 底部**圆形长条**（主页左 = 程序真实主页 / 更多右 = 诊断玻璃）。诊断内容**只在「更多」单页**，不进主页、不新增 Tab；现有 `send|receive|manage` 导航零改动。
-- **挂载点**：`DiagShell.vue` 挂在 `App.vue` 根，浮于所有内容上方（`pointer-events` 隔离，不挡主界面）。
+- **UI 形态**：底部**真实 Tab 导航**（主页 / 更多 两个平级完整页面，点击或滑动切换，旧页完全退出、新页完整呈现，**非浮层/遮罩**）；诊断内容**只在「更多」页**，不进主页、不新增业务 Tab；现有 `send|receive|manage` 仅作「主页」内部子导航，零改动。
+- **挂载点**：`TabBar.vue` + `DiagPage.vue` 由 `App.vue` 的 `activePage` 控制，仅原生端（Windows+Android）渲染；Web 不渲染、不安装。
 - **ZIP 导出**：`diagnostics_export`（Windows 落 `Downloads/`）/ `diagnostics_export_android`（返回 base64，Web 经 `mediastore_insert` 落 `Download/ArkPulse/log/`）打包按天日志 + `crash-*.json` → 系统**下载目录** `arkpulse-diagnostics-时间戳.zip`，并触发系统分享/分发。
 - **UI 组件位置**：`src/components/diagnostics/` 子目录（9 组件），避免污染扁平 `components/`。
 
@@ -482,7 +480,7 @@ lib.rs: 加 `mod diagnostics;` + generate_handler! 内加 4 命令名
 
 **Phase 1 + 三链路插桩已全部落地，Web/Rust 双端构建通过。**
 
-- Web 采集层：`src/diagnostics/{types,logger,trace,store,install,observe}.ts` + `src/tauri/diagnostics.ts`，`main.ts` 最前 `installDiagnostics`，`App.vue` 挂 `DiagShell`。
+- Web 采集层：`src/diagnostics/{types,logger,trace,store,install,observe}.ts` + `src/tauri/diagnostics.ts`，`main.ts` 最前 `installDiagnostics`（Web 端 no-op），`App.vue` 以 `activePage` 驱动主页/更多平级 Tab 切换（`TabBar`+`DiagPage`，原生端）。
 - 全量请求埋点：`observe.ts` 全局包裹 `fetch`/`WebSocket`/`RTCPeerConnection`（脱敏 + 带 traceId），覆盖 tus 预签名/R2/relay、https 控制+GET、p2p 协商全链路。
 - 三链路 stage 日志：`useTusUpload.ts`(创建记录/看门狗降档/完成/失败)、`sender.ts`+`receiver.ts`(房间/段/连接/清单/落盘/取消/失败)、`peer.ts`(建连/offer/answer/connected/failed/重连)。
 - Rust：`src-tauri/src/diagnostics/{mod,logger,store,commands,panic_hook}.rs`（按天落盘 + 7天清理 + 同步 flush + panic 兜底 + ZIP 导出），`lib.rs` 挂载 + 4 命令 + `setup` 内 `store::init` 与 `panic_hook::install`。

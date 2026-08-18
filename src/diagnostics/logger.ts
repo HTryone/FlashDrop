@@ -19,8 +19,9 @@ export function setNativeCapture(fn: ((e: LogEntry) => void) | null) {
   nativeCapture = fn;
 }
 
-// 哪些级别需落盘原生（默认 info 及以上；debug 仅留内存，省 IO，符合 §1.8 开销预算）。
-const PERSIST_MIN: LogLevel = 'info';
+// 按环境配置日志级别（用户定）：开发环境降级到 debug 保留全量细节，生产环境仅 info+ 省 IO（§1.8 开销预算）。
+// 输出方式按平台分流（见 store.rs）：原生端（windows/phone）落盘文件 + 内存 RingBuffer；Web 不安装（无输出）。
+const PERSIST_MIN: LogLevel = import.meta.env.DEV ? 'debug' : 'info';
 
 export function log(
   level: LogLevel,

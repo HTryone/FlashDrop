@@ -29,13 +29,22 @@ const label: Record<string, string> = {
 </template>
 
 <style scoped>
-.bar { background: rgba(255, 255, 255, 0.7); border: 0.5px solid rgba(120, 140, 160, 0.18); border-radius: 12px; padding: 10px 12px; margin-bottom: 12px; }
-.counts { display: flex; gap: 14px; margin-bottom: 8px; }
-.c { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #485058; }
+.bar {
+  background: rgba(22, 28, 44, 0.6); border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 14px; padding: 12px 14px;
+  backdrop-filter: blur(12px) saturate(150%); -webkit-backdrop-filter: blur(12px) saturate(150%);
+}
+.counts { display: flex; gap: 14px; margin-bottom: 10px; }
+.c { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); }
 .c i { width: 7px; height: 7px; border-radius: 50%; }
-.c.err i { background: #E24B4A; } .c.warn i { background: #BA7517; }
+.c.err i { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+.c.warn i { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
 .lights { display: flex; flex-wrap: wrap; gap: 8px; }
-.light { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #5C656E; background: rgba(255, 255, 255, 0.6); border: 0.5px solid rgba(120, 140, 160, 0.2); border-radius: 999px; padding: 3px 9px; }
-.light i { width: 6px; height: 6px; border-radius: 50%; background: #639922; }
-.light.warn i { background: #BA7517; } .light.err i { background: #E24B4A; }
+.light {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 11px;
+  color: var(--text-dim); background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 999px; padding: 3px 9px;
+}
+.light i { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+.light.warn i { background: var(--warn); } .light.err i { background: var(--danger); }
 </style>

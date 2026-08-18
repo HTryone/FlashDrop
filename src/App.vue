@@ -1,16 +1,16 @@
 <script setup lang="ts">
-import { ref, provide, watch, computed, onMounted } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
-import { isPhone } from './tauri/client';
+import { ref, provide, watch, onMounted, onBeforeUnmount } from 'vue';
+import { useRoute } from 'vue-router';
+import { isPhone, isWindows } from './tauri/client';
 import { requestNotificationAtLaunch } from './tauri/notify';
-import DiagShell from './components/diagnostics/DiagShell.vue';
+import DiagPage from './components/diagnostics/DiagPage.vue';
+import TabBar from './components/diagnostics/TabBar.vue';
 
 type TabType = 'send' | 'receive' | 'manage';
 const activeTab = ref<TabType>('send');
 provide('homeTab', activeTab);
 
 const route = useRoute();
-const router = useRouter();
 watch(
   () => route.fullPath,
   () => {
@@ -23,62 +23,88 @@ watch(
   { immediate: true },
 );
 
-// 「更多」= 路由 /ext*；点击切换，刷新后停在对应模块
-const inExt = computed(() => route.path.startsWith('/ext'));
-function toggleExt() {
-  router.push(inExt.value ? '/' : '/ext');
+// 主页 / 更多：两个平级完整页面，点击或滑动切换，旧页完全退出、新页完整呈现（§5 重构，弃悬浮遮罩）。
+// 仅原生端（PC 桌面 + 安卓移动）显示「更多」；Web 浏览器不装诊断、不显示该 tab（用户定）。
+const showMore = isWindows() || isPhone();
+const activePage = ref<'home' | 'more'>('home');
+
+const toast = ref<{ path: string } | null>(null);
+let toastTimer: number | undefined;
+function showToast(path: string) {
+  toast.value = { path };
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => (toast.value = null), 4000);
 }
 
-// Vue 挂载后注入手机标识（同步检测），后续模块通过 provide('isMobile') 读取。
-// 启动遮罩已由 Rust 原生 splashscreen 窗口接管，前端不再处理。
+// 触屏滑动切换：右滑→主页，左滑→更多（仅横向明显滑动才触发，避免与列表滚动冲突）。
+let sx = 0, sy = 0, st = 0;
+function onTouchStart(e: TouchEvent) {
+  const t = e.touches[0];
+  sx = t.clientX; sy = t.clientY; st = Date.now();
+}
+function onTouchEnd(e: TouchEvent) {
+  if (!showMore) return;
+  const t = e.changedTouches[0];
+  const dx = t.clientX - sx, dy = t.clientY - sy;
+  if (Date.now() - st > 600) return;
+  if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx)) return;
+  activePage.value = dx < 0 ? 'more' : 'home';
+}
+
 onMounted(() => {
   const mobile = typeof navigator !== 'undefined' &&
     (navigator.maxTouchPoints > 0 || /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent));
   provide('isMobile', mobile);
-  // 安卓首次启动索要通知权限（被拒不再骚扰；与下载完成弹窗解耦，避免收文件中被打断）
   if (isPhone()) void requestNotificationAtLaunch();
 });
+onBeforeUnmount(() => window.clearTimeout(toastTimer));
 </script>
 
 <template>
-  <div class="app">
-    <header class="topbar">
-      <div class="brand">
-        <img class="brand-logo" src="/logo.svg" alt="ArkPulse" />
-        <span class="tag gradient-text">ArkPulse</span>
+  <div class="app" @touchstart.passive="onTouchStart" @touchend.passive="onTouchEnd">
+    <transition name="page" mode="out-in">
+      <div v-if="activePage === 'home'" key="home" class="page">
+        <header class="topbar">
+          <div class="brand">
+            <img class="brand-logo" src="/logo.svg" alt="ArkPulse" />
+            <span class="tag gradient-text">ArkPulse</span>
+          </div>
+          <nav v-if="route.path === '/'" class="tabs">
+            <button :class="{ on: activeTab === 'send' }" @click="activeTab = 'send'">发送</button>
+            <button :class="{ on: activeTab === 'receive' }" @click="activeTab = 'receive'">接收</button>
+            <button :class="{ on: activeTab === 'manage' }" @click="activeTab = 'manage'">我的传输</button>
+          </nav>
+        </header>
+        <main class="main">
+          <router-view />
+        </main>
       </div>
-      <nav v-if="route.path === '/'" class="tabs">
-        <button :class="{ on: activeTab === 'send' }" @click="activeTab = 'send'">发送</button>
-        <button :class="{ on: activeTab === 'receive' }" @click="activeTab = 'receive'">接收</button>
-        <button :class="{ on: activeTab === 'manage' }" @click="activeTab = 'manage'">我的传输</button>
-      </nav>
-      <button class="ext-btn" :class="{ on: inExt }" @click="toggleExt">
-        {{ inExt ? '✕ 关闭' : '⚙ 更多' }}
-      </button>
-    </header>
 
-    <main class="main">
-      <router-view />
-    </main>
+      <DiagPage v-else key="more" @exported="showToast" />
+    </transition>
 
-    <!-- 诊断浮层：窗口级，底部圆形长条（主页/更多），不进 send/receive/manage 导航（§5） -->
-    <DiagShell />
+    <TabBar v-if="showMore" :active="activePage" @switch="activePage = $event" />
+
+    <transition name="toast">
+      <div v-if="toast" class="diag-toast">
+        <span class="dot" />
+        <div class="txt">已保存<small>{{ toast.path }}</small></div>
+      </div>
+    </transition>
   </div>
 </template>
 
 <style scoped>
 .app { min-height: 100%; display: flex; flex-direction: column; }
+.stage { flex: 1; display: flex; min-height: 0; }
+.page { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .topbar {
   display: flex; align-items: center; gap: 12px;
   padding: max(14px, env(safe-area-inset-top)) 22px 14px; border-bottom: 1px solid var(--border);
   background: rgba(18, 23, 37, 0.7); backdrop-filter: blur(8px);
-  position: sticky; top: 0; z-index: 10;
   flex-wrap: nowrap;
 }
 .brand { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-/* 唯一品牌图形源：public/logo.svg，换 logo 只改那一个文件 */
-/* 品牌按视口宽度两态（纯 CSS 断点，不按客户端/UA 区分）：
-   宽 ≥900px → 图标 + ArkPulse；<900px → 只留图标，不展示中文名。 */
 .brand-logo { width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0; display: block; }
 .tag { font-size: 18px; font-weight: 800; letter-spacing: .5px; }
 .tabs {
@@ -91,21 +117,35 @@ onMounted(() => {
 .tabs::-webkit-scrollbar { display: none; }
 .tabs button { background: none; border: none; color: var(--text-dim); padding: 7px 16px; border-radius: 999px; font-size: 13px; font-weight: 600; white-space: nowrap; flex-shrink: 0; }
 .tabs button.on { background: var(--accent-grad); color: #07101f; }
-.ext-btn { flex-shrink: 0; margin-left: auto; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); padding: 8px 14px; border-radius: 999px; font-size: 13px; white-space: nowrap; }
-.ext-btn:hover { border-color: var(--accent); }
-.ext-btn.on { border-color: var(--accent); color: var(--accent); }
 .main { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 28px 18px 40px; }
 
-/* 窄视口（<900px）：文字隐藏、只留图标，横向空间让给 Tabs */
 @media (max-width: 899px) {
   .tag { display: none; }
 }
-
 @media (max-width: 640px) {
   .topbar { padding: max(12px, env(safe-area-inset-top)) 12px 12px; gap: 10px; }
   .tabs { margin-left: 4px; }
   .tabs button { padding: 7px 12px; font-size: 13px; }
-  .ext-btn { padding: 8px 12px; }
   .main { padding: 12px 6px 24px; }
 }
+
+/* 真实页面切换（out-in）：旧页完全退出后再呈现新页，杜绝叠加/浮层 */
+.page-enter-active, .page-leave-active { transition: opacity .22s ease, transform .22s ease; }
+.page-enter-from { opacity: 0; transform: translateX(20px); }
+.page-leave-to { opacity: 0; transform: translateX(-20px); }
+
+.diag-toast {
+  position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 9px;
+  background: rgba(18, 23, 37, 0.82); border: 0.5px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px; padding: 9px 13px; max-width: 90vw;
+  backdrop-filter: blur(14px) saturate(160%);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+}
+.diag-toast .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); flex: 0 0 auto; box-shadow: 0 0 8px var(--ok); }
+.diag-toast .txt { font-size: 12px; color: var(--text); }
+.diag-toast .txt small { display: block; color: var(--text-dim); font-size: 10.5px; margin-top: 1px; word-break: break-all; }
+.toast-enter-active, .toast-leave-active { transition: all .4s cubic-bezier(.2, .8, .3, 1); }
+.toast-enter-from, .toast-leave-to { opacity: 0; transform: translate(-50%, 12px); }
 </style>

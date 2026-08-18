@@ -20,12 +20,12 @@ function ts(t: number): string {
 </template>
 
 <style scoped>
-.tl { list-style: none; margin: 0; padding: 8px 12px 10px; display: flex; flex-direction: column; gap: 4px; border-top: 0.5px solid rgba(120, 140, 160, 0.15); }
+.tl { list-style: none; margin: 0; padding: 8px 12px 10px; display: flex; flex-direction: column; gap: 4px; border-top: 1px solid rgba(255, 255, 255, 0.07); }
 .tl li { display: flex; gap: 8px; align-items: baseline; font-size: 10.5px; line-height: 1.5; font-family: ui-monospace, monospace; }
-.tl li.error { color: #A8473C; }
-.tl li.warn { color: #9A6E1E; }
-.tl li.info, .tl li.debug { color: #5C656E; }
-.ts { color: #9AA3AC; flex: 0 0 auto; }
-.ch { color: #6E97C0; flex: 0 0 auto; }
+.tl li.error { color: #ff9aa9; }
+.tl li.warn { color: #ffd98a; }
+.tl li.info, .tl li.debug { color: var(--text-dim); }
+.ts { color: var(--text-faint); flex: 0 0 auto; }
+.ch { color: var(--accent); flex: 0 0 auto; }
 .msg { word-break: break-all; }
 </style>
