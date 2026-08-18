@@ -40,6 +40,7 @@ const MAX_BOTTOM_RETRIES = 2;
 async function createUpload(tusBase: string, meta: Record<string, string>): Promise<string> {
   const res = await fetch(`${tusBase}/files`, {
     method: 'POST',
+    cache: 'no-store',
     headers: {
       'Tus-Resumable': '1.0.0',
       'Upload-Length': meta.size,
@@ -62,6 +63,7 @@ async function presign(
 ): Promise<string> {
   const res = await fetch(`${tusBase}/api/presign`, {
     method: 'POST',
+    cache: 'no-store',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ fileId, offset, length }),
   });
@@ -79,10 +81,19 @@ async function commit(
 ): Promise<void> {
   const res = await fetch(`${tusBase}/api/commit`, {
     method: 'POST',
+    cache: 'no-store',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ fileId, offset, length }),
   });
   if (!res.ok) throw new Error(`commit 失败 ${res.status}`);
+}
+
+/** 收尾权威复核：HEAD /files/:fileId 取服务端已落盘偏移，必须等于声明 size 才放行完成。 */
+async function headOffset(tusBase: string, fileId: string): Promise<number> {
+  const res = await fetch(`${tusBase}/files/${fileId}`, { method: 'HEAD', cache: 'no-store' });
+  if (!res.ok) throw new Error(`落盘复核失败 ${res.status}`);
+  const off = Number(res.headers.get('Upload-Offset'));
+  return Number.isFinite(off) ? off : -1;
 }
 
 /** 单块 PUT（XHR）：带上传进度；成功返回 'done'，真实网络错误返回 'neterr'，外部 abort 返回 'aborted'。
@@ -141,6 +152,7 @@ function uploadSliceXHR(
 
 /** 上传单个文件（E2EE 开启时先加密为密文 Blob 再直传 R2）。 */
 export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<void> {
+  let fileId = '';
   try {
     const checkAbort = () => {
       if (opts.signal?.aborted) {
@@ -168,7 +180,7 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
     };
     if (opts.e2ee.enabled) meta.e2ee = '1';
 
-    const fileId = await createUpload(tusBase, meta);
+    fileId = await createUpload(tusBase, meta);
 
     // 块大小策略（用户指定，2026-08-12 调整）：
     // 默认 32MB；看门狗 55s 到时未传完 → 后续块降 24MB；再触发看门狗 → 降 16MB（兜底）。
@@ -315,18 +327,32 @@ export async function uploadOne(qf: QueuedFile, opts: UploadOptions): Promise<vo
     // 收尾：确保所有 commit 完成（失败的异步 commit 重试 3 次）
     // 注意：commitJobs 不再 .catch 吞错，故 allSettled 能真实反映拒绝，下面重试才会触发。
     const settled = await Promise.allSettled(commitJobs);
+    let commitLost = false;
     for (let i = 0; i < settled.length; i++) {
       if (settled[i].status === 'rejected') {
+        let ok = false;
         for (let k = 0; k < 3; k++) {
-          try { await commitRetries[i](); break; } catch { /* 继续重试 */ }
+          try { await commitRetries[i](); ok = true; break; } catch { /* 继续重试 */ }
         }
+        if (!ok) commitLost = true;   // 重试 3 次仍失败：该 part 服务端未确认落盘
       }
+    }
+    // BUG A 根因：此前失败 commit 被静默吞掉后仍无条件 onSuccess → 假完成。
+    // 任意 part 服务端未确认落盘，绝不可宣告成功；抛错交上层置 error 态。
+    if (commitLost) {
+      throw new Error('部分分块服务端未确认落盘（commit 失败），上传未完成');
+    }
+    // 权威复核：服务端记录的 offset 必须等于声明 size，否则中段缺块也判失败（杜绝假完成）。
+    const finalOffset = await headOffset(tusBase, fileId);
+    if (finalOffset !== size) {
+      throw new Error(`服务端落盘不完整：offset=${finalOffset}/${size}`);
     }
 
     // ╔══════════════════════════════════════════════════════════════════════════╗
     // ║ 【铁律·不可删改】此刻才允许进度补到 100% 并 onSuccess：                 ║
     // ║ 所有块 PUT 均已回 200，且 commit 已异步全部完成（Worker head 确认        ║
-    // ║ R2 上每一个 part 真正落盘）。此前（finished=false）进度硬封顶 99%。      ║
+    // ║ R2 上每一个 part 真正落盘），且 HEAD 复核服务端 offset === size。         ║
+    // ║ 此前（finished=false）进度硬封顶 99%。                                   ║
     // ║ 严禁在「最后一块 PUT 发出 / 回 200」时即置 finished —— 那等于提前宣告     ║
     // ║ 成功，用户一关发送端，末块可能尚未入 R2，整文件残缺（接收端下到坏文件）。 ║
     // ╚══════════════════════════════════════════════════════════════════════════╝
