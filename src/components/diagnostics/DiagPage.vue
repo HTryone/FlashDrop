@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 诊断完整页（真实「更多」页面，非浮层）：健康总览 + 实时日志流 + 会话列表 + 打包 ZIP 导出。
 // 深色毛玻璃，融入暗色主题（§5 / 用户定：iOS/Telegram 风，不刺眼）。
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted, inject } from 'vue';
 import { diagStore } from '../../diagnostics/store';
 import type { LogEntry } from '../../diagnostics/types';
 import { diagnosticsExport } from '../../tauri/diagnostics';
@@ -10,6 +10,8 @@ import DiagLogStream from './DiagLogStream.vue';
 import DiagSessionList from './DiagSessionList.vue';
 
 const emit = defineEmits<{ exported: [path: string] }>();
+// 保存提示由 App 通过 provide 注入（本页嵌在扩展页内，事件传不到 App 根）。
+const diagToast = inject<(path: string) => void>('diagToast');
 
 const entries = ref<LogEntry[]>(diagStore.all());
 let unsub: (() => void) | undefined;
@@ -39,9 +41,12 @@ async function onExport() {
   exporting.value = true;
   try {
     const path = await diagnosticsExport(false);
+    diagToast?.(path);
     emit('exported', path);
   } catch (e) {
-    emit('exported', `导出失败: ${String(e)}`);
+    const msg = `导出失败: ${String(e)}`;
+    diagToast?.(msg);
+    emit('exported', msg);
   } finally {
     exporting.value = false;
   }

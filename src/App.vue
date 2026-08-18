@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, provide, watch, onMounted, onBeforeUnmount } from 'vue';
-import { useRoute } from 'vue-router';
-import { isPhone, isWindows } from './tauri/client';
+import { ref, provide, computed, watch, onMounted, onBeforeUnmount } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
+import { isPhone } from './tauri/client';
 import { requestNotificationAtLaunch } from './tauri/notify';
-import DiagPage from './components/diagnostics/DiagPage.vue';
+import ExtensionPanel from './views/ExtensionPanel.vue';
 import TabBar from './components/diagnostics/TabBar.vue';
 
 type TabType = 'send' | 'receive' | 'manage';
@@ -11,6 +11,13 @@ const activeTab = ref<TabType>('send');
 provide('homeTab', activeTab);
 
 const route = useRoute();
+const router = useRouter();
+
+// 扩展页（更多）= 路由 /ext*；其余 = 首页。两者为平级完整页面，out-in 切换旧页完全退出。
+const isExt = computed(() => route.path.startsWith('/ext'));
+// 底部玻璃 tab 栏（主页/更多）全平台保留：窄屏底部胶囊，宽屏右下便签。
+const showTabBar = true;
+
 watch(
   () => route.fullPath,
   () => {
@@ -23,17 +30,18 @@ watch(
   { immediate: true },
 );
 
-// 主页 / 更多：两个平级完整页面，点击或滑动切换，旧页完全退出、新页完整呈现（§5 重构，弃悬浮遮罩）。
-// 仅原生端（PC 桌面 + 安卓移动）显示「更多」；Web 浏览器不装诊断、不显示该 tab（用户定）。
-const showMore = isWindows() || isPhone();
-const activePage = ref<'home' | 'more'>('home');
-
+// 导出保存提示（诊断页嵌在扩展页内，通过 provide/inject 触发，无需事件冒泡）。
 const toast = ref<{ path: string } | null>(null);
 let toastTimer: number | undefined;
 function showToast(path: string) {
   toast.value = { path };
   window.clearTimeout(toastTimer);
   toastTimer = window.setTimeout(() => (toast.value = null), 4000);
+}
+provide('diagToast', showToast);
+
+function onSwitch(to: 'home' | 'more') {
+  router.push(to === 'more' ? '/ext' : '/');
 }
 
 // 触屏滑动切换：右滑→主页，左滑→更多（仅横向明显滑动才触发，避免与列表滚动冲突）。
@@ -43,12 +51,12 @@ function onTouchStart(e: TouchEvent) {
   sx = t.clientX; sy = t.clientY; st = Date.now();
 }
 function onTouchEnd(e: TouchEvent) {
-  if (!showMore) return;
+  if (!showTabBar) return;
   const t = e.changedTouches[0];
   const dx = t.clientX - sx, dy = t.clientY - sy;
   if (Date.now() - st > 600) return;
   if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx)) return;
-  activePage.value = dx < 0 ? 'more' : 'home';
+  router.push(dx < 0 ? '/ext' : '/');
 }
 
 onMounted(() => {
@@ -63,7 +71,11 @@ onBeforeUnmount(() => window.clearTimeout(toastTimer));
 <template>
   <div class="app" @touchstart.passive="onTouchStart" @touchend.passive="onTouchEnd">
     <transition name="page" mode="out-in">
-      <div v-if="activePage === 'home'" key="home" class="page">
+      <!-- 扩展页（更多）：完整页面，含「日志」等模块 -->
+      <ExtensionPanel v-if="isExt" key="ext" />
+
+      <!-- 首页：顶栏 + 发送/接收/我的传输 -->
+      <div v-else key="home" class="page">
         <header class="topbar">
           <div class="brand">
             <img class="brand-logo" src="/logo.svg" alt="ArkPulse" />
@@ -79,11 +91,10 @@ onBeforeUnmount(() => window.clearTimeout(toastTimer));
           <router-view />
         </main>
       </div>
-
-      <DiagPage v-else key="more" @exported="showToast" />
     </transition>
 
-    <TabBar v-if="showMore" :active="activePage" @switch="activePage = $event" />
+    <!-- 原生端底部玻璃 tab：主页 / 更多（更多 = 扩展页） -->
+    <TabBar v-if="showTabBar" :active="isExt ? 'more' : 'home'" @switch="onSwitch" />
 
     <transition name="toast">
       <div v-if="toast" class="diag-toast">
@@ -96,7 +107,6 @@ onBeforeUnmount(() => window.clearTimeout(toastTimer));
 
 <style scoped>
 .app { min-height: 100%; display: flex; flex-direction: column; }
-.stage { flex: 1; display: flex; min-height: 0; }
 .page { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .topbar {
   display: flex; align-items: center; gap: 12px;
@@ -126,6 +136,7 @@ onBeforeUnmount(() => window.clearTimeout(toastTimer));
   .topbar { padding: max(12px, env(safe-area-inset-top)) 12px 12px; gap: 10px; }
   .tabs { margin-left: 4px; }
   .tabs button { padding: 7px 12px; font-size: 13px; }
+  .more-entry { padding: 7px 12px; }
   .main { padding: 12px 6px 24px; }
 }
 

@@ -8,8 +8,9 @@ const props = defineProps<{ id?: string }>();
 const route = useRoute();
 const router = useRouter();
 
-// 路由 /ext 无 id → 模块选择页；/ext/:id → 选中该模块整页（刷新保活）
-const active = computed(() => props.id ?? null);
+// 路由 /ext 无 id → 模块选择页；/ext/:id → 选中该模块整页（刷新保活）。
+// 兼容两种渲染方式：作为路由组件（props.id）或直接挂载（读 route.params.id）。
+const active = computed(() => props.id ?? (route.params.id as string | undefined) ?? null);
 
 const current = computed(() => extensions.find((e) => e.id === active.value) ?? null);
 const docModuleId = computed(() =>

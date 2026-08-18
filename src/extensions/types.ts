@@ -12,6 +12,7 @@ export interface Extension {
   order?: number; // 选择页展示顺序，越小越靠前（缺省排最后）
   component?: Component; // kind==='panel'|'action' 时必填：点该模块渲染的页面组件
   moduleId?: string; // kind==='doc' 时必填：文档模块标识（本地 data.ts 或后端 /api/<moduleId>/docs.json）
+  platforms?: Array<'windows' | 'phone' | 'web'>; // 可选：限定出现的平台；缺省 = 全平台都显示
 }
 
 // 文档项（doc 类模块的单篇）。数据由本地 data.ts 或后端提供；前端只读渲染。
