@@ -8,7 +8,9 @@
     "allow-write-chunk-b64",
     "allow-close-file",
     "allow-abort-file",
-    "allow-resolve-save-path"
+    "allow-resolve-save-path",
+    "dialog:allow-save",
+    "dialog:allow-open"
   ],
   "remote": {
     "urls": ["https://flashdrop.pages.dev"]
