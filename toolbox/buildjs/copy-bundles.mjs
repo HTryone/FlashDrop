@@ -1,25 +1,22 @@
-// 打包后把 exe/apk 等安装包从 Tauri 默认输出目录复制到仓库根 releases/
-// 原因：Tauri v2 配置无 bundle 自定义输出目录字段，bundle 固定落在
-//       src-tauri/target/<profile>/bundle/；Android 产物在 src-tauri/gen/android/**/outputs。
-// 这里用 post-build 复制把它们归集到根目录 releases/，releases/ 已在 .gitignore 忽略。
-//
-// NSIS 回退说明（tauri:build 在 package.json）：
-//   默认走网络下载 NSIS（tauri build 会自动从 GitHub 拉）。
-//   若网络下不动（卡在 Downloading nsis-3.11.zip），把 tauri:build 改回：
-//     set "NSIS_PATH=toolbox\nsis" && tauri build && node toolbox/copy-bundles.mjs
-//   即用本地 toolbox/nsis/（含 makensis.exe + 插件）跳过联网。
+// 打包后把 Tauri 默认输出目录的安装包归集到仓库根 releases/（releases/ 已被 .gitignore 忽略）。
+// Tauri v2 无 bundle 自定义输出目录字段，PC 产物固定落 src-tauri/target/<profile>/bundle/，安卓在 src-tauri/gen/android/**/outputs。
+// NSIS 回退（默认走网络下载，卡在 Downloading nsis-3.11.zip 时）：把 package.json 的 tauri:build 改为
+//   set "NSIS_PATH=toolbox\nsis" && tauri build && node toolbox/buildjs/copy-bundles.mjs
+// 即用本地 toolbox/nsis/（含 makensis.exe + 插件）跳过联网。
 import { existsSync, mkdirSync, rmdirSync, unlinkSync, copyFileSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
-const projectRoot = dirname(scriptDir);
+// copy-bundles.mjs 现在位于 toolbox/buildjs/，项目根是 toolbox/ 的父目录
+const projectRoot = dirname(dirname(scriptDir));
 const outDir = join(projectRoot, 'releases');
 
 // Tauri 默认产物位置（Windows/Linux/macOS + Android）
+// Android 只扫最终 outputs 目录，避免把 intermediates/ 里的中间 aab 抓出来
 const sources = [
   join(projectRoot, 'src-tauri', 'target', 'release', 'bundle'),
-  join(projectRoot, 'src-tauri', 'gen', 'android'),
+  join(projectRoot, 'src-tauri', 'gen', 'android', 'app', 'build', 'outputs'),
 ];
 
 // 要收集的安装包后缀

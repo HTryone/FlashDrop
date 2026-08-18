@@ -411,7 +411,7 @@ export class Relay {
           }
         },
       },
-      new ByteLengthQueuingStrategy({ highWaterMark: 8 * 1024 * 1024 }),
+      new ByteLengthQueuingStrategy({ highWaterMark: 16 * 1024 * 1024 }),
     );
     entry.pullWaiters = [];        // 背压等待者数组（pull 时全部唤醒）
     entry.writeChain = Promise.resolve();  // 串行化各 POST 的 enqueue，保证帧连续不交叉
