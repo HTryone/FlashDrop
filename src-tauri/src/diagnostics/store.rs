@@ -1,5 +1,6 @@
-// 原生持久化（§3.1/§3.2）：按天落盘到 安装目录/log/（Android: files/log/），7 天滚动覆盖，
-// 每条同步 flush（崩溃可恢复），导出 ZIP 复用现有路径逻辑落系统下载。
+// 原生持久化（§3.1/§3.2）：按天落盘到 安装目录/log/（Android: files/logs/ 包名私有目录），7 天滚动覆盖，
+// 每条同步 flush（崩溃可恢复）。导出 ZIP：Windows 落系统下载；Android 经 mediastore_insert 复用现有权限落 Download/ArkPulse/log。
+use base64::Engine;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -35,8 +36,8 @@ pub fn init(app: &AppHandle, platform: &str) {
 
 fn resolve_log_dir(app: &AppHandle, platform: &str) -> Option<PathBuf> {
     if platform == "android" {
-        // Android 应用私有存储：Android/data/<包名>/files/log（免权限、文件管理器可访问）
-        app.path().app_data_dir().ok().map(|p| p.join("log"))
+        // Android 应用私有存储：Android/data/<包名>/files/logs（免权限；崩溃恢复 + 经 App 内导出取回）
+        app.path().app_data_dir().ok().map(|p| p.join("logs"))
     } else {
         // Windows：安装目录/log（按 current_exe 推导安装根，复用现有路径思路）
         std::env::current_exe()
@@ -117,19 +118,52 @@ pub fn read_recent() -> Vec<LogEntry> {
     out
 }
 
-// 导出 ZIP：把按天日志 + crash-*.json 打包到系统下载目录（复用现有路径逻辑），返回绝对路径。
-// Android 分区存储下裸写公共下载目录会失败，回退到应用私有 log/（与日志同目录，照样可经文件管理器取出）。
+// 把按天日志 + crash-*.json 打包成 ZIP 字节（内存构建，不落盘）。
+// Windows 写系统下载目录；Android 返回字节经 mediastore_insert 落 Download/ArkPulse/log（复用现有权限）。
+fn build_zip() -> Result<(String, Vec<u8>), String> {
+    let dir = { state().lock().unwrap().log_dir.clone() }
+        .ok_or_else(|| "日志目录未初始化".to_string())?;
+    let stamp = utc_stamp(now_ms());
+    let zip_name = format!("arkpulse-diagnostics-{stamp}.zip");
+
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for e in entries.flatten() {
+                let p = e.path();
+                let name = p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                if name.starts_with("arkpulse-")
+                    && (name.ends_with(".log") || name.starts_with("crash-"))
+                {
+                    if let Ok(bytes) = std::fs::read(&p) {
+                        let _ = zip.start_file(name, opts);
+                        let _ = zip.write_all(&bytes);
+                    }
+                }
+            }
+        }
+        zip.finish().map_err(|e| e.to_string())?;
+    }
+    Ok((zip_name, buf))
+}
+
+// 导出 ZIP：Windows 落系统下载目录（复用现有路径逻辑），返回绝对路径。
 pub fn export_zip(_share: bool) -> Result<String, String> {
+    let (zip_name, buf) = build_zip()?;
     let (dir, app) = {
         let s = state().lock().unwrap();
         (s.log_dir.clone(), s.app.clone())
     };
     let dir = dir.ok_or_else(|| "日志目录未初始化".to_string())?;
 
-    let stamp = utc_stamp(now_ms());
-    let zip_name = format!("arkpulse-diagnostics-{stamp}.zip");
-
-    // 候选落盘目录：优先系统下载目录，失败回退到应用私有 log/。
+    // 候选落盘目录：优先系统下载目录，失败回退到应用私有 log 目录。
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(a) = app.as_ref() {
         if let Ok(d) = a.path().download_dir() {
@@ -138,44 +172,20 @@ pub fn export_zip(_share: bool) -> Result<String, String> {
     }
     candidates.push(dir.clone());
 
-    let mut zip_file: Option<std::fs::File> = None;
-    let mut zip_path: Option<PathBuf> = None;
     for c in &candidates {
         let p = c.join(&zip_name);
-        if let Ok(f) = std::fs::File::create(&p) {
-            zip_file = Some(f);
-            zip_path = Some(p);
-            break;
+        if std::fs::write(&p, &buf).is_ok() {
+            return Ok(p.to_string_lossy().to_string());
         }
     }
-    let file =
-        zip_file.ok_or_else(|| "无法创建导出文件（下载目录与应用目录均不可写）".to_string())?;
-    let zip_path = zip_path.unwrap();
-    let mut zip = zip::ZipWriter::new(file);
-    let opts = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
+    Err("无法创建导出文件（下载目录与应用目录均不可写）".to_string())
+}
 
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for e in entries.flatten() {
-            let p = e.path();
-            let name = p
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_string();
-            if name.starts_with("arkpulse-")
-                && (name.ends_with(".log") || name.starts_with("crash-"))
-            {
-                if let Ok(bytes) = std::fs::read(&p) {
-                    let _ = zip.start_file(name, opts);
-                    let _ = zip.write_all(&bytes);
-                }
-            }
-        }
-    }
-    zip.finish().map_err(|e| e.to_string())?;
-
-    Ok(zip_path.to_string_lossy().to_string())
+// 导出 ZIP（Android）：返回 (文件名, base64 字节)，由 Web 经 mediastore_insert 落 Download/ArkPulse/log。
+pub fn export_zip_android(_share: bool) -> Result<(String, String), String> {
+    let (zip_name, buf) = build_zip()?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
+    Ok((zip_name, b64))
 }
 
 pub fn clear() -> Result<(), String> {

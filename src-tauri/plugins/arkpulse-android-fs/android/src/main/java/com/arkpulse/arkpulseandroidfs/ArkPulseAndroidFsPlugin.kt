@@ -21,10 +21,13 @@ import app.tauri.plugin.Plugin
 @TauriPlugin
 class ArkPulseAndroidFsPlugin(private val activity: Activity) : Plugin(activity) {
 
-    // L1：向 MediaStore.Downloads 插入文件，固定落到 Download/ArkPulse。零权限零弹框。
+    // L1：向 MediaStore.Downloads 插入文件，默认落到 Download/ArkPulse。零权限零弹框。
+    // 支持可选 relativePath（子目录，如 "Download/ArkPulse/log"）与 bytes（base64，直接写入内容）。
     @Command
     fun mediastore_insert(invoke: Invoke) {
-        val name = invoke.getArgs().getString("name")
+        val args = invoke.getArgs()
+        val name = args.getString("name")
+        val relativePath = args.getString("relativePath") ?: "Download/ArkPulse"
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             invoke.reject("需要 Android 10 及以上")
             return
@@ -32,13 +35,23 @@ class ArkPulseAndroidFsPlugin(private val activity: Activity) : Plugin(activity)
         val resolver = activity.contentResolver
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, name)
-            put(MediaStore.Downloads.RELATIVE_PATH, "Download/ArkPulse")
+            put(MediaStore.Downloads.RELATIVE_PATH, relativePath)
             put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
         }
         val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
         if (uri == null) {
             invoke.reject("MediaStore 插入失败：存储不可用或被拒绝")
             return
+        }
+        val b64 = args.getString("bytes")
+        if (!b64.isNullOrEmpty()) {
+            try {
+                val data = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+                resolver.openOutputStream(uri)?.use { it.write(data) }
+            } catch (e: Exception) {
+                invoke.reject("写入文件失败：${e.message}")
+                return
+            }
         }
         val ret = JSObject()
         ret.put("uri", uri.toString())

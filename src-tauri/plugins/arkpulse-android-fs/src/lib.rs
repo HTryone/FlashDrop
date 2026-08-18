@@ -10,8 +10,14 @@ use tauri::{
     Runtime,
 };
 
+// 签名与 Kotlin @Command 对齐：name 必填；relative_path（子目录）/ bytes（base64 直写）可选。
+// 桌面板为 stub，PC 永不触发（前端 isPhone() 守卫）。
 #[tauri::command]
-fn mediastore_insert(_name: String) -> Result<String, String> {
+fn mediastore_insert(
+    _name: String,
+    _relative_path: Option<String>,
+    _bytes: Option<String>,
+) -> Result<String, String> {
     Err("仅支持 Android".into())
 }
 

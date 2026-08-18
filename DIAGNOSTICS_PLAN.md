@@ -288,7 +288,7 @@
 - 新建文件夹模块 `src-tauri/src/diagnostics/`（模范 `lan_transfer/`）：
   - `mod.rs`：只 `pub mod` 登记 + 必要 `pub use`，**禁写业务**。
   - `logger.rs`：结构化日志 + 分级 + `traceId` 关联；`init()` 内 `std::panic::set_hook` 捕获 panic 全量落盘（系统级崩溃可见）。
-  - `store.rs`：内存 RingBuffer + 文件持久化。落盘到**日志目录** `log/`（Windows 安装根目录 / Android `app_data_dir/files/log`），按天滚动 `arkpulse-YYYY-MM-DD.log`，**仅保留最近 7 天，超期自动覆盖（删除最旧）**。
+  - `store.rs`：内存 RingBuffer + 文件持久化。落盘到**日志目录** `log/`（Windows 安装根目录 / Android `app_data_dir/files/logs`），按天滚动 `arkpulse-YYYY-MM-DD.log`，**仅保留最近 7 天，超期自动覆盖（删除最旧）**。
   - `commands.rs`：`#[tauri::command]` 薄胶水。
 - 捕获 web 层看不到的事件：`write_chunk`/`close_file`/`abort_file`/`resolve_save_path` 成败、字节数、耗时、目录解析、权限、Android SAF、native 网络/TLS 错误。
 
@@ -296,7 +296,7 @@
 
 **专属软件文件夹（安装时创建，安装根目录下）**
 - **Windows 桌面**：在**安装目录新建文件夹 `log`**（如 `安装路径/log/`），日志落 `安装路径/log/arkpulse-YYYY-MM-DD.log` 与 `crash-*.json`。运行时若目录缺失自动创建（按 `current_exe` 推导安装根，复用现有路径解析逻辑，不另起一套）。
-- **Android**：应用私有外部存储 `Android/data/<包名>/files/log/`（免权限、可被系统文件管理器访问），首启动确保目录存在（同样复用现有 `path_resolver` 逻辑）。
+- **Android**：应用私有外部存储 `Android/data/<包名>/files/logs/`（免权限、零新权限，崩溃可经 App 内导出取回；系统文件管理器在 Android 11+ 对 `Android/data` 受限，故分享走下方导出 ZIP），首启动确保目录存在（复用现有 `path_resolver` 逻辑）。
 - 不塞进 `AppData`/系统缓存深处——保证用户「找得到、导得出」。
 
 **7 天滚动覆盖**
@@ -305,7 +305,9 @@
 - 单文件不强制大小上限（诊断日志量可控），但若单日异常暴涨可叠加「单文件 ≥ 10MB 截断新开」兜底，避免单文件过大。
 
 **导出位置（复用已有逻辑，自动落到下载，不弹选择器）**
-- 导出**不弹文件选择器**：直接**复用现有导出/下载逻辑**，把 ZIP 落到系统**下载目录**（Windows `Downloads/`、Android 公共下载或 `files/log/` 后系统分享），文件名 `arkpulse-diagnostics-时间戳.zip`。
+- 导出**不弹文件选择器**：直接**复用现有导出/下载逻辑**与**现有 `mediastore_insert` 权限**，把 ZIP 落到系统**下载目录**；文件名 `arkpulse-diagnostics-时间戳.zip`。
+  - **Windows**：系统 `Downloads/`（经 Rust `download_dir`）。
+  - **Android**：经 `mediastore_insert` 落 `Download/ArkPulse/log/`（复用用户文件保存的同一条 MediaStore 链路与权限，零新权限；相对路径显式传 `Download/ArkPulse/log`）。
 - 导出命令 `diagnostics_export {share?:boolean}` 返回**绝对路径**；UI 用 `DiagToast` 在底部浮起玻璃提示条，显示完整保存路径（见 §5），让用户明确知道文件落在哪、能从下载取到。
 - 仅当用户主动点「分享」时，才触发系统分享/SAF（Android）或桌面 `share`，不作为导出默认动作。
 
@@ -354,7 +356,7 @@
   - 复用现有 `isTauri()` 判定（桌面壳），再叠加 `platform` 标签区分 Windows / Android——`isTauri()` 只回答「是不是桌面壳」，平台标签回答「哪个端」。
 - **按标签分流的逻辑点**：
   - **采集器**：两端采集器实现不同，必须各自照顾到——`platform='windows'` 走**电脑采集器**、`platform='android'` 走**手机采集器**，各自抓本端独有事件（Windows: WER/minidump 关联、壳 IO；Android: Doze/后台杀 `tag=bg`、SAF/前台保活），保证两端日志都完整，不漏一端。
-  - **存储路径**：Windows → 安装目录 `log/`（如 `安装路径/log/arkpulse-YYYY-MM-DD.log`）；Android → `Android/data/<包名>/files/log/`（免权限、文件管理器可访问）。落盘前用标签选根，**复用现有 `path_resolver` 逻辑**。
+  - **存储路径**：Windows → 安装目录 `log/`（如 `安装路径/log/arkpulse-YYYY-MM-DD.log`）；Android → `Android/data/<包名>/files/logs/`（私有、免权限）。落盘前用标签选根，**复用现有 `path_resolver` 逻辑**。
   - **导出/分享**：**复用现有导出/下载逻辑**，自动落系统下载目录（Windows `Downloads/`、Android 公共下载/分享）；不弹文件夹选择器。
   - **崩溃兜底**：Android 独有 → Doze/后台被杀 (`tag=bg`)、前台服务保活心跳；Windows 独有 → WER/minidump 指引。
   - **常开开销**：Android 走「常开轻量 + 按需详记」双模（省电）；Windows 常开详记代价低，默认全量。
@@ -460,7 +462,7 @@ src-tauri/src/
 └── diagnostics/                # 新增 Rust 模块（对齐 lan_transfer/ 模范）
     ├── mod.rs                  # 只登记 pub mod，禁写业务
     ├── logger.rs               # 结构化日志 + 分级 + traceId + panic_hook
-    ├── store.rs                # RingBuffer + 文件持久化(安装根/log/ 或 Android files/log/，7天滚动)
+    ├── store.rs                # RingBuffer + 文件持久化(安装根/log/ 或 Android files/logs/，7天滚动)
     ├── commands.rs             # #[tauri::command] 薄胶水 ×4
     └── panic_hook.rs           # set_hook 同步写回溯（或并入 logger.rs）
 lib.rs: 加 `mod diagnostics;` + generate_handler! 内加 4 命令名
@@ -468,12 +470,12 @@ lib.rs: 加 `mod diagnostics;` + generate_handler! 内加 4 命令名
 
 ### 10.3 注册点（必改，否则不编译/不生效）
 - **Web**：Vite 无需注册，仅 `import`；`main.ts` 最前 `import './diagnostics/install'` 并调用初始化；`App.vue` 根加 `<DiagShell />`（与 `router-view` 同级，窗口级悬浮）。
-- **Rust**：`lib.rs` 加 `mod diagnostics;`（对齐 `mod boot/commands/files/splash/state`）+ `generate_handler!` 内追加 `diagnostics_capture, diagnostics_query, diagnostics_export, diagnostics_clear`。
+- **Rust**：`lib.rs` 加 `mod diagnostics;`（对齐 `mod boot/commands/files/splash/state`）+ `generate_handler!` 内追加 `diagnostics_capture, diagnostics_query, diagnostics_export, diagnostics_export_android, diagnostics_clear`。
 
 ### 10.4 已确认决策（按你最新 UI 描述）
 - **UI 形态**：**窗口级悬浮玻璃** + 底部**圆形长条**（主页左 = 程序真实主页 / 更多右 = 诊断玻璃）。诊断内容**只在「更多」单页**，不进主页、不新增 Tab；现有 `send|receive|manage` 导航零改动。
 - **挂载点**：`DiagShell.vue` 挂在 `App.vue` 根，浮于所有内容上方（`pointer-events` 隔离，不挡主界面）。
-- **ZIP 导出**：`diagnostics_export` 打包按天日志 + `crash-*.json` → 系统**下载目录** `arkpulse-diagnostics-时间戳.zip`，并触发系统分享/分发（Android 分享面板 / 桌面文件选择器）。
+- **ZIP 导出**：`diagnostics_export`（Windows 落 `Downloads/`）/ `diagnostics_export_android`（返回 base64，Web 经 `mediastore_insert` 落 `Download/ArkPulse/log/`）打包按天日志 + `crash-*.json` → 系统**下载目录** `arkpulse-diagnostics-时间戳.zip`，并触发系统分享/分发。
 - **UI 组件位置**：`src/components/diagnostics/` 子目录（9 组件），避免污染扁平 `components/`。
 
 ## 11. 实施进度（2026-08-18）
@@ -484,6 +486,6 @@ lib.rs: 加 `mod diagnostics;` + generate_handler! 内加 4 命令名
 - 全量请求埋点：`observe.ts` 全局包裹 `fetch`/`WebSocket`/`RTCPeerConnection`（脱敏 + 带 traceId），覆盖 tus 预签名/R2/relay、https 控制+GET、p2p 协商全链路。
 - 三链路 stage 日志：`useTusUpload.ts`(创建记录/看门狗降档/完成/失败)、`sender.ts`+`receiver.ts`(房间/段/连接/清单/落盘/取消/失败)、`peer.ts`(建连/offer/answer/connected/failed/重连)。
 - Rust：`src-tauri/src/diagnostics/{mod,logger,store,commands,panic_hook}.rs`（按天落盘 + 7天清理 + 同步 flush + panic 兜底 + ZIP 导出），`lib.rs` 挂载 + 4 命令 + `setup` 内 `store::init` 与 `panic_hook::install`。
-- 路径：`windows` → 安装目录 `log/`；`android` → `app_data_dir/files/log/`；导出 → 系统下载目录（`download_dir`）。
+- 路径：`windows` → 安装目录 `log/`；`android` → `app_data_dir/files/logs/`（7 天日志私有存放）；导出 → Windows `download_dir`、Android 复用 `mediastore_insert` 落 `Download/ArkPulse/log/`（零新权限）。
 - UI：`src/components/diagnostics/` 8 组件（DiagShell/DiagDock/DiagGlass/DiagHealthBar/DiagLogStream/DiagSessionList/DiagTimeline/DiagToast），青蓝玻璃低反差 + 按钮缩放动效。
 - 待办（未做，属后续轮）：①故障注入 E2E 门禁（§8 Phase 4）逐环节回放验证；②`__e2eeSalt` 等个别非空断言按实参；③动态/静态 import 警告清理（无功能影响）。

@@ -37,6 +37,7 @@ pub fn run() {
             diagnostics::commands::diagnostics_capture,
             diagnostics::commands::diagnostics_query,
             diagnostics::commands::diagnostics_export,
+            diagnostics::commands::diagnostics_export_android,
             diagnostics::commands::diagnostics_clear,
         ]);
 

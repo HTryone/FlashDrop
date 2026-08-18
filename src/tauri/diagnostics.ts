@@ -2,6 +2,7 @@
 // 仅 Tauri 壳内加载（install.ts 动态 import）。普通浏览器不会走到这里。
 import { invoke } from '@tauri-apps/api/core';
 import { setNativeCapture } from '../diagnostics/logger';
+import { isPhone } from '../tauri/client';
 import type { LogEntry } from '../diagnostics/types';
 
 // 把 Web 侧过滤后的日志查回来（UI 需要时调用，日常靠内存 RingBuffer）。
@@ -9,8 +10,17 @@ export async function diagnosticsQuery(filter: Record<string, unknown> = {}): Pr
   return invoke<LogEntry[]>('diagnostics_query', { filter });
 }
 
-// 导出当前日志为 ZIP，自动落系统下载目录（复用 Rust 侧路径逻辑），返回绝对路径。
+// 导出当前日志为 ZIP。Windows 落系统下载目录；Android 复用 mediastore_insert 权限落 Download/ArkPulse/log，返回该路径串。
 export async function diagnosticsExport(share = false): Promise<string> {
+  if (isPhone()) {
+    const res = await invoke<{ name: string; bytes: string }>('diagnostics_export_android', { share });
+    await invoke('mediastore_insert', {
+      name: res.name,
+      relative_path: 'Download/ArkPulse/log',
+      bytes: res.bytes,
+    });
+    return `Download/ArkPulse/log/${res.name}`;
+  }
   return invoke<string>('diagnostics_export', { share });
 }
 
