@@ -24,6 +24,9 @@ const activeHeadingId = ref<string>('');
 const loading = ref(true);
 const navOpen = ref(false);
 
+// 真正的滚动容器是外层 .ext-panel（窗口不是滚动体），目录跳转/滚动高亮都要滚它。
+const scrollEl = ref<HTMLElement | null>(null);
+
 function parseHeadings(src: string): Heading[] {
   const used = new Set<string>();
   const out: Heading[] = [];
@@ -72,13 +75,20 @@ const next = computed(() =>
 function go(id: string) {
   activeId.value = id;
   navOpen.value = false;
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  const ctr = scrollEl.value;
+  if (ctr) ctr.scrollTo({ top: 0, behavior: 'smooth' });
+  else window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 function goHeading(id: string) {
   activeHeadingId.value = id;
   navOpen.value = false;
   const el = document.getElementById(id);
-  if (el) {
+  if (!el) return;
+  const ctr = scrollEl.value;
+  if (ctr) {
+    const top = el.getBoundingClientRect().top + ctr.scrollTop - 84;
+    ctr.scrollTo({ top, behavior: 'smooth' });
+  } else {
     const top = el.getBoundingClientRect().top + window.scrollY - 84;
     window.scrollTo({ top, behavior: 'smooth' });
   }
@@ -129,8 +139,15 @@ function onScroll() {
     activeHeadingId.value = current.id;
   });
 }
-onMounted(() => window.addEventListener('scroll', onScroll, { passive: true }));
-onUnmounted(() => window.removeEventListener('scroll', onScroll));
+onMounted(() => {
+  scrollEl.value = document.querySelector<HTMLElement>('.ext-panel');
+  const target = scrollEl.value ?? window;
+  target.addEventListener('scroll', onScroll, { passive: true } as AddEventListenerOptions);
+});
+onUnmounted(() => {
+  const target = scrollEl.value ?? window;
+  target.removeEventListener('scroll', onScroll);
+});
 </script>
 
 <template>

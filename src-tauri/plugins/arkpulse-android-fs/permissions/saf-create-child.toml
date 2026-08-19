@@ -1,4 +1,0 @@
-[[permission]]
-identifier = "allow-saf-create-child"
-description = "允许调用 saf_create_child（L3 在已授权目录创建子文件）"
-commands.allow = ["saf_create_child"]

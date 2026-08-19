@@ -14,7 +14,7 @@ export async function diagnosticsQuery(filter: Record<string, unknown> = {}): Pr
 export async function diagnosticsExport(share = false): Promise<string> {
   if (isPhone()) {
     const res = await invoke<{ name: string; bytes: string }>('diagnostics_export_android', { share });
-    await invoke('mediastore_insert', {
+    await invoke('plugin:arkpulse-android-fs|mediastore_insert', {
       name: res.name,
       relative_path: 'Download/ArkPulse/log',
       bytes: res.bytes,

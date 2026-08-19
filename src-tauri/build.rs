@@ -7,6 +7,11 @@ fn main() {
             "close_file",
             "abort_file",
             "resolve_save_path",
+            "diagnostics_capture",
+            "diagnostics_query",
+            "diagnostics_export",
+            "diagnostics_export_android",
+            "diagnostics_clear",
         ]),
     ))
     .expect("failed to run tauri-build");

@@ -28,7 +28,7 @@ export async function requestNotificationAtLaunch(): Promise<void> {
   if (!isPhone()) return;
   if (localStorage.getItem(NOTIF_ASKED_KEY)) return;
   try {
-    await invoke('show_save_dialog', {
+    await invoke('plugin:arkpulse-android-fs|show_save_dialog', {
       title: '开启通知',
       message: 'ArkPulse 需要通知权限，以便文件下载完成时在通知栏提醒你保存位置。',
     });
@@ -59,7 +59,7 @@ export async function finishDownload(
 
     // 1) 原生确认弹窗（点「确定」才关，不自动消失）
     try {
-      await invoke('show_save_dialog', { title, message: locText });
+      await invoke('plugin:arkpulse-android-fs|show_save_dialog', { title, message: locText });
     } catch {
       /* 弹窗不可用：继续发系统通知 */
     }

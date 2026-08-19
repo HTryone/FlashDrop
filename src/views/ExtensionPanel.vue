@@ -54,8 +54,8 @@ function back() {
 </template>
 
 <style scoped>
-.ext-panel { width: 100%; padding: 16px 18px; }
-.picker-title { font-size: 18px; margin: 2px 0 16px; color: var(--text); }
+.ext-panel { width: 100%; flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: max(16px, env(safe-area-inset-top)) 18px max(90px, env(safe-area-inset-bottom) + 74px); }
+.picker-title { font-size: 18px; margin: 0 0 16px; color: var(--text); }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
 .card {
   display: flex; flex-direction: column; gap: 6px; align-items: flex-start; text-align: left;
@@ -67,9 +67,12 @@ function back() {
 .c-title { font-size: 15px; font-weight: 600; }
 .c-desc { font-size: 12px; color: var(--text-dim); }
 
-.module-page { display: flex; flex-direction: column; }
+/* 通用兜底：模块整页退化为普通块级流，不向子组件强加 flex 布局。
+   这样任何扩展组件根上写的 flex:1 / height:100% 都会失效（父级高度不定 → 解析为 auto），
+   内容自然向下增长，唯一滚动容器由外层 .ext-panel 负责。注册新扩展无需再单独处理滚动。 */
+.module-page { display: block; min-height: 0; }
 .back {
-  align-self: flex-start; background: var(--panel-2); border: 1px solid var(--border);
+  display: inline-block; background: var(--panel-2); border: 1px solid var(--border);
   color: var(--text); padding: 6px 12px; border-radius: 8px; font-size: 13px; margin-bottom: 8px;
 }
 

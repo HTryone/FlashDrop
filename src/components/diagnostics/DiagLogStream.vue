@@ -1,15 +1,14 @@
 <script setup lang="ts">
-// 实时日志流：滚动 + 关键字过滤 + level 染色（§5）。
-import { ref, computed } from 'vue';
+// 实时日志流：按 channel 过滤 + level 染色（§5）。
+import { computed } from 'vue';
 import type { LogEntry } from '../../diagnostics/types';
 
-const props = defineProps<{ entries: LogEntry[] }>();
-const kw = ref('');
+const props = defineProps<{ entries: LogEntry[]; channel?: string | null }>();
+defineEmits<{ clear: [] }>();
 
 const filtered = computed(() => {
-  const k = kw.value.trim().toLowerCase();
-  const list = k
-    ? props.entries.filter((e) => `${e.channel} ${e.scope} ${e.msg}`.toLowerCase().includes(k))
+  const list = props.channel
+    ? props.entries.filter((e) => e.channel === props.channel)
     : props.entries;
   return list.slice(-200); // 仅展示最近 200 条，避免 DOM 爆炸
 });
@@ -24,7 +23,7 @@ function ts(t: number): string {
   <div class="stream">
     <div class="top">
       <span class="t">实时日志流</span>
-      <input v-model="kw" class="kw" placeholder="过滤关键字" />
+      <span v-if="channel" class="filter">{{ channel }} <i @click="$emit('clear')">✕</i></span>
     </div>
     <div class="rows">
       <div v-for="(e, i) in filtered" :key="i" class="row" :class="e.level">
@@ -40,14 +39,24 @@ function ts(t: number): string {
 
 <style scoped>
 .stream { margin-bottom: 12px; }
-.top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; padding: 0 2px; }
 .t { font-size: 12px; color: var(--text-dim); }
-.kw {
-  width: 160px; font-size: 12px; padding: 5px 10px; border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.1); background: rgba(255, 255, 255, 0.05); color: var(--text);
+.filter {
+  font-size: 12px; color: var(--accent); background: rgba(109, 139, 255, 0.12);
+  border: 1px solid rgba(109, 139, 255, 0.35); border-radius: 999px;
+  padding: 4px 10px; display: inline-flex; align-items: center; gap: 6px;
 }
-.kw::placeholder { color: var(--text-faint); }
-.rows { max-height: 220px; overflow: auto; display: flex; flex-direction: column; gap: 3px; }
+.filter i { font-style: normal; cursor: pointer; padding: 0 2px; }
+.rows {
+  display: flex; flex-direction: column; gap: 3px;
+  max-height: 38vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--border); border-radius: 10px; padding: 4px 6px;
+  background: rgba(255, 255, 255, 0.02);
+  scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+}
+.rows::-webkit-scrollbar { width: 6px; }
+.rows::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.rows::-webkit-scrollbar-track { background: transparent; }
 .row { display: flex; gap: 7px; align-items: baseline; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 10.5px; line-height: 1.55; padding: 4px 8px; border-radius: 7px; }
 .row.error { background: rgba(255, 107, 129, 0.12); color: #ff9aa9; }
 .row.warn { background: rgba(255, 205, 107, 0.12); color: #ffd98a; }

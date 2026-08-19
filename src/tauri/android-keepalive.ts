@@ -5,5 +5,5 @@ import { invoke } from '@tauri-apps/api/core';
 
 export function setKeepScreenOn(on: boolean): void {
   if (!isPhone()) return;
-  invoke('set_keep_screen_on', { enabled: on }).catch(() => {});
+  invoke('plugin:arkpulse-android-fs|set_keep_screen_on', { enabled: on }).catch(() => {});
 }

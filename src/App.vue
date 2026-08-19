@@ -71,8 +71,8 @@ onBeforeUnmount(() => window.clearTimeout(toastTimer));
 <template>
   <div class="app" @touchstart.passive="onTouchStart" @touchend.passive="onTouchEnd">
     <transition name="page" mode="out-in">
-      <!-- 扩展页（更多）：完整页面，含「日志」等模块 -->
-      <ExtensionPanel v-if="isExt" key="ext" />
+    <!-- 扩展页（更多）：完整页面，含「日志」等模块 -->
+    <ExtensionPanel v-if="isExt" key="ext" class="ext-page" />
 
       <!-- 首页：顶栏 + 发送/接收/我的传输 -->
       <div v-else key="home" class="page">
@@ -106,8 +106,9 @@ onBeforeUnmount(() => window.clearTimeout(toastTimer));
 </template>
 
 <style scoped>
-.app { min-height: 100%; display: flex; flex-direction: column; }
-.page { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.app { height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
+.page { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; position: relative; }
+.ext-page { flex: 1; min-height: 0; overflow-y: auto; position: relative; }
 .topbar {
   display: flex; align-items: center; gap: 12px;
   padding: max(14px, env(safe-area-inset-top)) 22px 14px; border-bottom: 1px solid var(--border);
@@ -127,7 +128,7 @@ onBeforeUnmount(() => window.clearTimeout(toastTimer));
 .tabs::-webkit-scrollbar { display: none; }
 .tabs button { background: none; border: none; color: var(--text-dim); padding: 7px 16px; border-radius: 999px; font-size: 13px; font-weight: 600; white-space: nowrap; flex-shrink: 0; }
 .tabs button.on { background: var(--accent-grad); color: #07101f; }
-.main { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 28px 18px 40px; }
+.main { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 28px 18px max(40px, env(safe-area-inset-bottom) + 74px); }
 
 @media (max-width: 899px) {
   .tag { display: none; }
@@ -137,7 +138,7 @@ onBeforeUnmount(() => window.clearTimeout(toastTimer));
   .tabs { margin-left: 4px; }
   .tabs button { padding: 7px 12px; font-size: 13px; }
   .more-entry { padding: 7px 12px; }
-  .main { padding: 12px 6px 24px; }
+  .main { padding: 12px 6px max(24px, env(safe-area-inset-bottom) + 74px); }
 }
 
 /* 真实页面切换（out-in）：旧页完全退出后再呈现新页，杜绝叠加/浮层 */

@@ -1,17 +1,23 @@
 <script setup lang="ts">
-// 健康总览条：错误/警告计数 + 各子系统状态灯（§5）。
-defineProps<{
+// 健康总览条：错误/警告计数 + 各子系统状态灯；点击状态灯过滤日志流（§5）。
+const props = defineProps<{
   errors: number;
   warns: number;
   status: Record<string, 'ok' | 'warn' | 'err'>;
   channels: readonly string[];
+  active?: string | null;
 }>();
+const emit = defineEmits<{ select: [c: string] }>();
 
 const label: Record<string, string> = {
   tus: 'tus', https: 'https', p2p: 'p2p', ui: 'UI', global: '全局',
   ipc: '桥接', crash: '崩溃', perf: '性能', crypto: '加密',
   net: '网络', perm: '权限', worker: 'Worker', bg: '后台',
 };
+
+function onClick(c: string) {
+  emit('select', props.active === c ? '' : c);
+}
 </script>
 
 <template>
@@ -21,9 +27,15 @@ const label: Record<string, string> = {
       <span class="c warn"><i />警告 {{ warns }}</span>
     </div>
     <div class="lights">
-      <span v-for="c in channels" :key="c" class="light" :class="status[c]">
+      <button
+        v-for="c in channels"
+        :key="c"
+        class="light"
+        :class="[status[c], { on: active === c }]"
+        @click="onClick(c)"
+      >
         <i />{{ label[c] ?? c }}
-      </span>
+      </button>
     </div>
   </div>
 </template>
@@ -41,10 +53,19 @@ const label: Record<string, string> = {
 .c.warn i { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
 .lights { display: flex; flex-wrap: wrap; gap: 8px; }
 .light {
-  display: inline-flex; align-items: center; gap: 5px; font-size: 11px;
-  color: var(--text-dim); background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 999px; padding: 3px 9px;
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500;
+  color: var(--text-dim); background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 999px; padding: 7px 13px;
+  cursor: pointer; transition: background .15s, color .15s, transform .1s;
 }
-.light i { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+.light:active { transform: scale(0.96); }
+.light.on { background: rgba(109, 139, 255, 0.18); border-color: rgba(109, 139, 255, 0.5); color: var(--text); }
+.light i { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
 .light.warn i { background: var(--warn); } .light.err i { background: var(--danger); }
+
+@media (max-width: 640px) {
+  .lights { gap: 10px; }
+  .light { font-size: 13px; padding: 9px 15px; }
+  .light i { width: 8px; height: 8px; }
+}
 </style>

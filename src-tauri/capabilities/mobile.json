@@ -26,11 +26,7 @@
     "notification:allow-notify",
     "notification:allow-request-permission",
     "notification:allow-is-permission-granted",
-    "arkpulse-android-fs:allow-mediastore-insert",
-    "arkpulse-android-fs:allow-saf-create-child",
-    "arkpulse-android-fs:allow-saf-take-permission",
-    "arkpulse-android-fs:allow-show-save-dialog",
-    "arkpulse-android-fs:allow-set-keep-screen-on"
+    "arkpulse-android-fs:default"
   ],
   "remote": {
     "urls": ["https://flashdrop.pages.dev"]

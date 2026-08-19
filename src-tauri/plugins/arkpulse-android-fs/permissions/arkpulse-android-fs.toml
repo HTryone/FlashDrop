@@ -1,6 +1,10 @@
-[[permission]]
-identifier = "arkpulse-android-fs:default"
-description = "ArkPulse 安卓落盘桥默认权限集合"
+"$schema" = "schemas/schema.json"
+
+[default]
+description = """
+ArkPulse 安卓落盘桥默认权限集合：允许 L1 MediaStore 落盘、SAF 持久授权、
+完成确认弹窗与亮屏保活。
+"""
 permissions = [
   "allow-mediastore-insert",
   "allow-saf-create-child",

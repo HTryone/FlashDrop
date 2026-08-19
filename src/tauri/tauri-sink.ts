@@ -121,7 +121,7 @@ export async function tauriPickSavePath(name: string): Promise<SaveTarget | null
   if (isAndroid()) {
     // L1 MediaStore：固定 Download/ArkPulse，零权限零弹框（现代设备一锤定音）。
     try {
-      const uri = await invoke<string>('mediastore_insert', { name });
+      const uri = await invoke<string>('plugin:arkpulse-android-fs|mediastore_insert', { name });
       beginDownload();
       return { kind: 'mediastore', uri };
     } catch {
@@ -234,7 +234,7 @@ export async function tauriBuildWriters(
   try {
     const targets = await Promise.all(
       files.map(async (f) => {
-        const uri = await invoke<string>('mediastore_insert', { name: sanitize(f.name) });
+        const uri = await invoke<string>('plugin:arkpulse-android-fs|mediastore_insert', { name: sanitize(f.name) });
         return { kind: 'mediastore', uri } as SaveTarget;
       }),
     );
@@ -271,7 +271,7 @@ export async function tauriBuildWriters(
       if (treeUri) {
         const targets = await Promise.all(
           files.map(async (f) => {
-            const uri = await invoke<string>('saf_create_child', { tree_uri: treeUri, name: sanitize(f.name) });
+            const uri = await invoke<string>('plugin:arkpulse-android-fs|saf_create_child', { tree_uri: treeUri, name: sanitize(f.name) });
             return { kind: 'saf', uri } as SaveTarget;
           }),
         );
@@ -303,7 +303,7 @@ async function tauriResolveSafDir(): Promise<string | null> {
   const saved = localStorage.getItem(SAF_TREE_KEY);
   if (saved) {
     try {
-      await invoke('saf_take_permission', { tree_uri: saved }); // 复权（重启后仍有效，失败即失效）
+      await invoke('plugin:arkpulse-android-fs|saf_take_permission', { tree_uri: saved }); // 复权（重启后仍有效，失败即失效）
       return saved;
     } catch {
       localStorage.removeItem(SAF_TREE_KEY);
@@ -315,7 +315,7 @@ async function tauriResolveSafDir(): Promise<string | null> {
   })) as unknown as string | null;
   if (!picked) return null;
   try {
-    await invoke('saf_take_permission', { tree_uri: picked });
+    await invoke('plugin:arkpulse-android-fs|saf_take_permission', { tree_uri: picked });
     localStorage.setItem(SAF_TREE_KEY, picked);
     return picked;
   } catch {

@@ -3,6 +3,7 @@
 // 深色毛玻璃，融入暗色主题（§5 / 用户定：iOS/Telegram 风，不刺眼）。
 import { ref, computed, onMounted, onUnmounted, inject } from 'vue';
 import { diagStore } from '../../diagnostics/store';
+import { log } from '../../diagnostics/logger';
 import type { LogEntry } from '../../diagnostics/types';
 import { diagnosticsExport } from '../../tauri/diagnostics';
 import DiagHealthBar from './DiagHealthBar.vue';
@@ -22,6 +23,12 @@ onUnmounted(() => unsub?.());
 
 const errorCount = computed(() => entries.value.filter((e) => e.level === 'error').length);
 const warnCount = computed(() => entries.value.filter((e) => e.level === 'warn').length);
+
+// 当前选中的 channel 过滤：点击健康栏状态灯切换。
+const activeChannel = ref<string | null>(null);
+function onSelectChannel(c: string) {
+  activeChannel.value = c || null;
+}
 
 // 各子系统状态灯：取该 channel 最近一条的严重度。
 const channels = ['tus', 'https', 'p2p', 'ui', 'global', 'ipc', 'crash', 'perf', 'crypto', 'net', 'perm', 'worker', 'bg'] as const;
@@ -45,6 +52,7 @@ async function onExport() {
     emit('exported', path);
   } catch (e) {
     const msg = `导出失败: ${String(e)}`;
+    log('error', 'ui', 'DiagPage.onExport', msg, String(e));
     diagToast?.(msg);
     emit('exported', msg);
   } finally {
@@ -62,8 +70,8 @@ async function onExport() {
       </div>
     </header>
     <div class="body">
-      <DiagHealthBar :errors="errorCount" :warns="warnCount" :status="status" :channels="channels" />
-      <DiagLogStream :entries="entries" />
+      <DiagHealthBar :errors="errorCount" :warns="warnCount" :status="status" :channels="channels" :active="activeChannel" @select="onSelectChannel" />
+      <DiagLogStream :entries="entries" :channel="activeChannel" @clear="activeChannel = null" />
       <DiagSessionList :entries="entries" />
       <button class="exp" :disabled="exporting" @click="onExport">
         {{ exporting ? '导出中…' : '打包 ZIP 导出' }}
@@ -76,13 +84,12 @@ async function onExport() {
 .page { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .head {
   display: flex; align-items: center; justify-content: space-between;
-  padding: max(16px, env(safe-area-inset-top)) 20px 12px;
+  padding: max(16px, env(safe-area-inset-top)) 12px 12px;
 }
 .title h2 { margin: 0; font-size: 20px; font-weight: 700; color: var(--text); letter-spacing: .3px; }
 .title .sub { margin: 3px 0 0; font-size: 12px; color: var(--text-dim); }
 .body {
-  flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
-  padding: 4px 16px calc(96px + env(safe-area-inset-bottom)); /* 底部留白给 tab 栏 */
+  padding: 4px 12px max(16px, env(safe-area-inset-bottom)); /* tab 栏让位由外层 .ext-panel 的 90px 留白负责，这里只留一点呼吸空间 */
   display: flex; flex-direction: column; gap: 12px;
 }
 .exp {
@@ -96,4 +103,10 @@ async function onExport() {
 .exp:hover:not(:disabled) { transform: scale(1.02); filter: brightness(1.08); }
 .exp:active:not(:disabled) { transform: scale(0.98); }
 .exp:disabled { opacity: 0.6; cursor: default; }
+
+/* 移动端贴边框：横内边距收到 6px，与首页 .main 移动端惯例一致（外壳 ext-panel 的 18px 之外不再额外缩进） */
+@media (max-width: 640px) {
+  .head { padding-left: 6px; padding-right: 6px; }
+  .body { padding-left: 6px; padding-right: 6px; }
+}
 </style>

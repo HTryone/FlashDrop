@@ -1,4 +1,0 @@
-[[permission]]
-identifier = "allow-set-keep-screen-on"
-description = "允许调用 set_keep_screen_on（下载期间亮屏保活）"
-commands.allow = ["set_keep_screen_on"]

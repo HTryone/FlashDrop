@@ -295,10 +295,10 @@
       "type": "string",
       "oneOf": [
         {
-          "description": "ArkPulse 安卓落盘桥默认权限集合",
+          "description": "ArkPulse 安卓落盘桥默认权限集合：允许 L1 MediaStore 落盘、SAF 持久授权、\n完成确认弹窗与亮屏保活。\n\n#### This default permission set includes:\n\n- `allow-mediastore-insert`\n- `allow-saf-create-child`\n- `allow-saf-take-permission`\n- `allow-show-save-dialog`\n- `allow-set-keep-screen-on`",
           "type": "string",
-          "const": "arkpulse-android-fs:default",
-          "markdownDescription": "ArkPulse 安卓落盘桥默认权限集合"
+          "const": "default",
+          "markdownDescription": "ArkPulse 安卓落盘桥默认权限集合：允许 L1 MediaStore 落盘、SAF 持久授权、\n完成确认弹窗与亮屏保活。\n\n#### This default permission set includes:\n\n- `allow-mediastore-insert`\n- `allow-saf-create-child`\n- `allow-saf-take-permission`\n- `allow-show-save-dialog`\n- `allow-set-keep-screen-on`"
         },
         {
           "description": "Enables the mediastore_insert command without any pre-configured scope.",
@@ -359,36 +359,6 @@
           "type": "string",
           "const": "deny-show-save-dialog",
           "markdownDescription": "Denies the show_save_dialog command without any pre-configured scope."
-        },
-        {
-          "description": "允许调用 mediastore_insert（L1 落盘到 Download/ArkPulse）",
-          "type": "string",
-          "const": "allow-mediastore-insert",
-          "markdownDescription": "允许调用 mediastore_insert（L1 落盘到 Download/ArkPulse）"
-        },
-        {
-          "description": "允许调用 saf_create_child（L3 在已授权目录创建子文件）",
-          "type": "string",
-          "const": "allow-saf-create-child",
-          "markdownDescription": "允许调用 saf_create_child（L3 在已授权目录创建子文件）"
-        },
-        {
-          "description": "允许调用 saf_take_permission（L3 持久化 SAF 目录授权）",
-          "type": "string",
-          "const": "allow-saf-take-permission",
-          "markdownDescription": "允许调用 saf_take_permission（L3 持久化 SAF 目录授权）"
-        },
-        {
-          "description": "允许调用 set_keep_screen_on（下载期间亮屏保活）",
-          "type": "string",
-          "const": "allow-set-keep-screen-on",
-          "markdownDescription": "允许调用 set_keep_screen_on（下载期间亮屏保活）"
-        },
-        {
-          "description": "允许调用 show_save_dialog（下载完成确认弹窗）",
-          "type": "string",
-          "const": "allow-show-save-dialog",
-          "markdownDescription": "允许调用 show_save_dialog（下载完成确认弹窗）"
         }
       ]
     }
