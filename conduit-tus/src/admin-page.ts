@@ -29,6 +29,7 @@ const PAGE_CSS = `
   h1{font-size:22px;margin:0 0 20px;font-weight:600}
   .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px 24px;margin-bottom:16px}
   @media (max-width: 768px){
+    .wrap{max-width:100%;padding:12px}
     .card{background:transparent;border:0;padding:0;margin-bottom:0}
   }
   .row{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
@@ -45,6 +46,11 @@ const PAGE_CSS = `
   .bucket{display:flex;gap:28px;padding:22px 26px;background:var(--card);border:1px solid var(--line);border-radius:10px;margin-bottom:12px;align-items:center}
   .bucket-info{flex:1;min-width:0}
   .bucket-actions{flex-shrink:0;display:flex;flex-direction:column;gap:8px;min-width:160px}
+  @media (max-width: 768px){
+    .bucket{flex-direction:column;align-items:stretch}
+    .bucket-actions{flex-direction:column;gap:8px;min-width:0;width:100%}
+    .bucket-actions button{width:100%}
+  }
   .bucket-title{display:flex;align-items:center;gap:12px;margin-bottom:6px}
   .bucket-title strong{font-size:17px;font-weight:600}
   .bucket-sub{color:var(--muted);font-size:13px;margin-bottom:14px}
