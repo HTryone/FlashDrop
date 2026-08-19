@@ -184,9 +184,10 @@ export class QuotaGuard {
   }
 
   // ---- 控制页状态：每桶占用/健康度 ----
+  // 纯 KV：清单为空则面板空（不再硬编码 default），桶名一律读 bucket_cfg。
   async status(): Promise<BucketStatus[]> {
     const listRaw = this.kv ? await this.kv.get('quota:buckets') : null;
-    const buckets: string[] = listRaw ? (JSON.parse(listRaw) as string[]) : ['default'];
+    const buckets: string[] = listRaw ? (JSON.parse(listRaw) as string[]) : [];
     const out: BucketStatus[] = [];
     for (const acc of buckets) {
       const enabledRaw = this.kv ? (await this.kv.get(`quota:${acc}:enabled`)) ?? 'true' : 'true';
@@ -210,6 +211,15 @@ export class QuotaGuard {
         .prepare(`SELECT used_bytes FROM quota_account WHERE account_id = ?`)
         .bind(acc)
         .first<{ used_bytes: number }>();
+      let bucketName = '未配置';
+      if (cfgRaw) {
+        try {
+          const cfg = JSON.parse(cfgRaw) as { bucketName?: string };
+          if (cfg.bucketName) bucketName = cfg.bucketName;
+        } catch {
+          /* 忽略坏 JSON */
+        }
+      }
       out.push({
         account_id: acc,
         enabled,
@@ -217,10 +227,7 @@ export class QuotaGuard {
         used_bytes: used,
         remaining: Math.max(0, limit - used),
         file_count: cnt?.c ?? 0,
-        bucket_name:
-          acc === 'default'
-            ? 'flashdrop-transfers'
-            : (cfgRaw ? '（KV 配置）' : 'flashdrop-transfers-b'),
+        bucket_name: bucketName,
         health: {
           status: h?.status ?? (row ? 'normal' : 'unconfigured'),
           last_write_ts: lastWriteRaw ? Number(lastWriteRaw) : 0,

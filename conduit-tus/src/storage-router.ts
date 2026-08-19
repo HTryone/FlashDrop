@@ -69,10 +69,11 @@ export class BucketSelector {
   }
 
   private async pickBucket(): Promise<string> {
+    // 纯 KV：清单为空 / 无可用桶时直接抛错，绝不回退 default
     try {
       const listRaw = this.kv ? await this.kv.get('quota:buckets') : null;
-      const buckets: string[] = listRaw ? (JSON.parse(listRaw) as string[]) : ['default'];
-      let best = 'default';
+      const buckets: string[] = listRaw ? (JSON.parse(listRaw) as string[]) : [];
+      let best = '';
       let bestRemain = -1;
       for (const acc of buckets) {
         const enabled = this.kv ? (await this.kv.get(`quota:${acc}:enabled`)) ?? 'true' : 'true';
@@ -91,9 +92,10 @@ export class BucketSelector {
           best = acc;
         }
       }
+      if (!best) throw new Error('未配置存储桶：请先在管理后台接入桶');
       return best;
     } catch {
-      return 'default';
+      throw new Error('未配置存储桶：请先在管理后台接入桶');
     }
   }
 }

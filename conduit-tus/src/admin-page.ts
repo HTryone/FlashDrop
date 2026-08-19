@@ -199,10 +199,8 @@ function adminHtml(): string {
           +'<button onclick="toggle(\\x27'+id+'\\x27,'+!b.enabled+')">'+btnToggle+'</button>'
           +'<button onclick="setLimit(\\x27'+id+'\\x27,'+limitGB+')">改上限</button>'
           +'<button onclick="check(\\x27'+id+'\\x27)">检查健康</button>'
-          +(id!=='default'
-            ?'<button onclick="editBucket(\\x27'+id+'\\x27)">编辑</button>'
-              +'<button class="danger" onclick="deleteBucket(\\x27'+id+'\\x27)">删除</button>'
-            :'')
+          +'<button onclick="editBucket(\\x27'+id+'\\x27)">编辑</button>'
+          +'<button class="danger" onclick="deleteBucket(\\x27'+id+'\\x27)">删除</button>'
         +'</div></div>';
       el.innerHTML+=html;
     }
@@ -287,7 +285,7 @@ async function setBucket(
   await ctx.kv.put(`quota:${body.account_id}:enabled`, 'true');
   await ctx.kv.put(`quota:${body.account_id}:limit_bytes`, String(body.limit_bytes ?? 10737418240));
   const listRaw = await ctx.kv.get('quota:buckets');
-  const list: string[] = listRaw ? (JSON.parse(listRaw) as string[]) : ['default'];
+  const list: string[] = listRaw ? (JSON.parse(listRaw) as string[]) : [];
   if (!list.includes(body.account_id)) list.push(body.account_id);
   await ctx.kv.put('quota:buckets', JSON.stringify(list));
   return { ok: true };
@@ -313,12 +311,11 @@ async function updateBucket(
   return { ok: true };
 }
 
-// 删除桶：从列表移除 + 清 KV 配置（default 保护；D1 账本保留防误删数据）。
+// 删除桶：从列表移除 + 清 KV 配置（D1 账本保留防误删数据）。
 async function removeBucket(ctx: AdminCtx, accountId: string): Promise<unknown> {
   if (!ctx.kv) return { ok: false, error: 'KV 未配置' };
-  if (accountId === 'default') return { ok: false, error: '默认桶不可删除' };
   const listRaw = await ctx.kv.get('quota:buckets');
-  const list: string[] = listRaw ? (JSON.parse(listRaw) as string[]) : ['default'];
+  const list: string[] = listRaw ? (JSON.parse(listRaw) as string[]) : [];
   const next = list.filter((x) => x !== accountId);
   if (next.length === list.length) return { ok: false, error: '桶不存在' };
   await ctx.kv.put('quota:buckets', JSON.stringify(next));
