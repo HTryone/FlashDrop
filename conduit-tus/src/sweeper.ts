@@ -73,6 +73,20 @@ export class CloudSweeper implements Sweeper {
     for (const tid of transferIds) {
       await this.index.deleteTransfer(tid);
     }
+
+    // 配额账本清理（否则 quota_file / transfer_account 无限增长）：
+    // - quota_file：清掉已释放（released=1）的明细行；释放逻辑只标记不删除。
+    // - transfer_account：清掉已不存在传输的归属行（传输已被上方 deleteTransfer 移除）。
+    // - quota_account 按桶一条、数量有限，保留作账本。
+    try {
+      await db.prepare(`DELETE FROM quota_file WHERE released = 1`).run();
+      await db
+        .prepare(`DELETE FROM transfer_account WHERE transfer_id NOT IN (SELECT id FROM transfers)`)
+        .run();
+    } catch (e) {
+      console.error('[arkpulse-tus] quota table cleanup failed', e);
+    }
+
     return { removedFiles, removedTransfers: transferIds.size };
   }
 }
