@@ -5,6 +5,7 @@
 // 注意：R2 生命周期规则需在 wrangler.toml 或 R2 控制台配置（见 deploy 说明），不在代码内。
 
 import { Sweeper, IndexBackend, StorageBackend, TransferError } from '../../src/transfer/tus/types';
+import { QuotaGuard } from './quota';
 
 export class CloudSweeper implements Sweeper {
   readonly kind = 'cloud' as const;
@@ -13,6 +14,7 @@ export class CloudSweeper implements Sweeper {
     private readonly index: IndexBackend,
     private readonly storage: StorageBackend,
     private readonly now: () => number = Date.now,
+    private readonly quota?: QuotaGuard,
   ) {}
 
   async sweep(): Promise<{ removedFiles: number; removedTransfers: number }> {
@@ -46,6 +48,14 @@ export class CloudSweeper implements Sweeper {
         } catch {
           // 文件体可能已被 R2 生命周期规则先行删掉，忽略
         }
+      }
+    }
+
+    if (this.quota) {
+      try {
+        await this.quota.releaseByTransfers([...transferIds]);
+      } catch (e) {
+        console.error('[arkpulse-tus] quota release failed', e);
       }
     }
 

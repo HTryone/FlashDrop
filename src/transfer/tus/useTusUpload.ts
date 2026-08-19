@@ -11,6 +11,17 @@ import { info, warn, error } from '@/diagnostics/logger';
 
 interface Prefetched { off: number; len: number; url: string }
 
+/** 提取 Worker 返回的中文错误文案（如配额 429），失败回退状态码。 */
+async function errText(res: Response): Promise<string> {
+  try {
+    const j = (await res.json()) as { error?: string };
+    if (j && typeof j.error === 'string' && j.error) return j.error;
+  } catch {
+    /* 非 JSON 响应 */
+  }
+  return `失败 ${res.status}`;
+}
+
 export interface UploadOptions {
   transferId: string;
   e2ee: { enabled: boolean; passphrase: string };
@@ -48,7 +59,7 @@ async function createUpload(tusBase: string, meta: Record<string, string>): Prom
       'Upload-Metadata': encodeMetadata(meta),
     },
   });
-  if (!res.ok) throw new Error(`创建上传失败 ${res.status}`);
+  if (!res.ok) throw new Error(`创建上传 ${await errText(res)}`);
   const loc = res.headers.get('Location') || '';
   const m = /\/files\/([^/]+)$/.exec(loc);
   if (!m) throw new Error('创建上传响应缺少 Location');
@@ -68,7 +79,7 @@ async function presign(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ fileId, offset, length }),
   });
-  if (!res.ok) throw new Error(`presign 失败 ${res.status}`);
+  if (!res.ok) throw new Error(`presign ${await errText(res)}`);
   const j = (await res.json()) as { url: string };
   return j.url;
 }
@@ -86,13 +97,13 @@ async function commit(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ fileId, offset, length }),
   });
-  if (!res.ok) throw new Error(`commit 失败 ${res.status}`);
+  if (!res.ok) throw new Error(`commit ${await errText(res)}`);
 }
 
 /** 收尾权威复核：HEAD /files/:fileId 取服务端已落盘偏移，必须等于声明 size 才放行完成。 */
 async function headOffset(tusBase: string, fileId: string): Promise<number> {
   const res = await fetch(`${tusBase}/files/${fileId}`, { method: 'HEAD', cache: 'no-store' });
-  if (!res.ok) throw new Error(`落盘复核失败 ${res.status}`);
+  if (!res.ok) throw new Error(`落盘复核 ${await errText(res)}`);
   const off = Number(res.headers.get('Upload-Offset'));
   return Number.isFinite(off) ? off : -1;
 }

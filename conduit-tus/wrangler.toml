@@ -10,6 +10,12 @@ compatibility_date = "2025-01-01"
 binding = "R2_TRANSFERS"
 bucket_name = "flashdrop-transfers"
 
+# 配额控制 KV：规则卡(limit/enabled) / 桶注册表 / 控制页密码哈希 / 可选 bucket_cfg 覆盖层。
+# 部署前先执行：wrangler kv namespace create QUOTA_KV，把返回的 id 填到下面的 id 字段。
+[[kv_namespaces]]
+binding = "QUOTA_KV"
+id = "0bd6012810474adab71452ba35e9e994"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "flashdrop-tus"
@@ -23,6 +29,15 @@ DEFAULT_TTL_HOURS = "24"
 R2_ACCOUNT_ID = "da94b5e41f7c56ff2df7043718a53616"
 R2_ACCESS_KEY_ID = "39305e4d3cbf6f41477be63a9aa479e6"
 R2_SECRET_ACCESS_KEY = "aaaa2c322081e2f3e0b314dddc288b51b0b0b5d960df7838aa405863d31d3cad"
+
+# ===== 接入第二个 Cloudflare 账户 / R2 桶（仓库写法，用户 2026-08-19 决定）=====
+# 在另一个 Cloudflare 账户建 R2 桶 + 生命周期规则后，取消下面注释并填值：
+# [[r2_buckets]]
+# binding = "R2_TRANSFERS_B"
+# bucket_name = "flashdrop-transfers-b"
+# R2_ACCOUNT_ID_B = ""
+# R2_ACCESS_KEY_ID_B = ""
+# R2_SECRET_ACCESS_KEY_B = ""
 
 # 每小时跑一次 sweeper，清理 D1 中过期 24h 的 transfer/files/codes 记录。
 # R2 文件体由 bucket 生命周期规则自动过期（已在 CF 控制台配置）。

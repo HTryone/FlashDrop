@@ -5,6 +5,8 @@
 // 直传 R2 后，数据不经 Worker 字节处理，R2 原生按 content-length 接收，损坏消失。
 
 import { StorageBackend, IndexBackend } from '../../src/transfer/tus/types';
+import { QuotaGuard } from './quota';
+import { StorageResolver } from './storage-router';
 
 interface PresignBody {
   fileId: string;
@@ -16,6 +18,8 @@ export class PresignHandler {
   constructor(
     private readonly storage: StorageBackend,
     private readonly index: IndexBackend,
+    private readonly quota: QuotaGuard,
+    private readonly resolver: StorageResolver,
   ) {}
 
   private cors(origin: string | null): Record<string, string> {
@@ -69,8 +73,24 @@ export class PresignHandler {
       return this.json({ error: 'offset/length 越界' }, 400, origin);
     }
 
+    const accountId = await this.quota.accountOfTransfer(file.transferId);
+    if (!(await this.quota.checkAllowed(accountId))) {
+      return this.json({ error: '当前存储桶上传额度已用完（含未过期文件占用），请等待文件过期释放或联系站长' }, 429, origin);
+    }
+    const transfer = await this.index.getTransfer(file.transferId);
+    const reserved = await this.quota.reserve({
+      fileId: body.fileId,
+      transferId: file.transferId,
+      size: file.size,
+      expiresAt: transfer?.expiresAt ?? 0,
+    });
+    if (!reserved) {
+      return this.json({ error: '当前存储桶上传额度已用完（含未过期文件占用），请等待文件过期释放或联系站长' }, 429, origin);
+    }
+
+    const storage = await this.resolver.resolve(accountId);
     const key = `${body.fileId}/part-${body.offset}`;
-    const url = await this.storage.createPresignedUrl(key, { method: 'PUT', expiresIn: 1200 });
+    const url = await storage.createPresignedUrl(key, { method: 'PUT', expiresIn: 1200 });
     return this.json({ url, key }, 200, origin);
   }
 
@@ -96,9 +116,11 @@ export class PresignHandler {
     const startOffset = body.offset - body.length;
     if (startOffset < 0) return this.json({ error: 'offset 非法' }, 400, origin);
 
+    const accountId = await this.quota.accountOfTransfer(file.transferId);
+    const storage = await this.resolver.resolve(accountId);
     const partKey = `${body.fileId}/part-${startOffset}`;
     // 二次保险：确认该 part 已落入 R2（presigned PUT 已校验 content-length，这里再确认存在）。
-    if (!(await this.storage.exists(partKey))) {
+    if (!(await storage.exists(partKey))) {
       return this.json({ error: 'part 未确认落盘' }, 409, origin);
     }
 
