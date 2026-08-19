@@ -47,6 +47,12 @@ export class QuotaGuard {
     return (await this.selector.accountOfTransfer(transferId)) ?? 'default';
   }
 
+  /** 桶是否启用（KV quota:<id>:enabled，缺省视为启用）。 */
+  async isEnabled(accountId: string): Promise<boolean> {
+    if (!this.kv) return true;
+    return (await this.kv.get(`quota:${accountId}:enabled`)) !== 'false';
+  }
+
   // ---- 门卫①预检：POST /files 即时判断（此时无 fileId，只比较，不扣账）----
   async precheck(transferId: string, size: number): Promise<boolean> {
     try {
@@ -59,12 +65,12 @@ export class QuotaGuard {
     }
   }
 
-  // ---- 门卫①+②原子预扣：首个 presign 调用，幂等；false = 超限拒绝 ----
+  // ---- 门卫①+②原子预扣：首个 presign 调用，幂等；false = 拒绝（超限或桶已停用）----
   async reserve(input: ReserveInput): Promise<boolean> {
     const { fileId, transferId, size, expiresAt } = input;
     const accountId = await this.selector.select(transferId);
-    const enabled = this.kv ? (await this.kv.get(`quota:${accountId}:enabled`)) ?? 'true' : 'true';
-    if (enabled === 'false') return true; // 紧急放行：不记账、不扣额
+    // 停用桶拒绝一切上传（含存量传输的后续分片），保证「停用 = 完全停」
+    if (!(await this.isEnabled(accountId))) return false;
 
     const limit = await this.limitOf(accountId);
 

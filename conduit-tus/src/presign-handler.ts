@@ -73,6 +73,9 @@ export class PresignHandler {
     }
 
     const accountId = await this.quota.accountOfTransfer(file.transferId);
+    if (!(await this.quota.isEnabled(accountId))) {
+      return this.json({ error: '存储桶已停用，上传已停止' }, 429, origin);
+    }
     if (!(await this.quota.checkAllowed(accountId))) {
       return this.json({ error: '当前存储桶上传额度已用完（含未过期文件占用），请等待文件过期释放或联系站长' }, 429, origin);
     }
