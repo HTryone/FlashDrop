@@ -79,7 +79,8 @@ function adminHtml(setup: boolean): string {
 
   const body = `<div class="card"><div class="row" style="justify-content:space-between">
        <input id="pw" type="password" placeholder="控制页密码" oninput="load()"/>
-       <button onclick="load()">刷新</button></div>
+       <button onclick="load()">刷新</button>
+       <button onclick="logout()">退出</button></div>
        <p id="msg" class="muted"></p></div>
      <div class="card"><h2>存储桶看板</h2><div id="buckets" class="grid"></div></div>
      <div class="card"><h2>新增 / 接入后端存储桶（自服务）</h2>
@@ -95,6 +96,7 @@ function adminHtml(setup: boolean): string {
        </div></div>
      <script>
      function authH(){var pw=document.getElementById('pw').value;return pw?{'X-Admin-Password':pw}:{};}
+     function logout(){document.getElementById('pw').value='';document.getElementById('buckets').innerHTML='';document.getElementById('msg').textContent='已退出登录';}
      function api(p,b){return fetch('/api/admin/'+p,{method:b?'POST':'GET',headers:Object.assign({'Content-Type':'application/json'},authH()),body:b?JSON.stringify(b):undefined});}
      async function load(){var r=await api('status',null);if(r.status===401){document.getElementById('msg').textContent='密码错误';return;}
        var list=await r.json();render(list);}
