@@ -199,6 +199,13 @@ export class QuotaGuard {
         .first<{ c: number }>();
       const cfgRaw = this.kv ? await this.kv.get(`quota:${acc}:bucket_cfg`) : null;
       const lastWriteRaw = this.kv ? await this.kv.get(`quota:${acc}:last_write_ts`) : null;
+      const healthRaw = this.kv ? await this.kv.get(`quota:${acc}:health`) : null;
+      const h: {
+        status?: 'normal' | 'unconfigured' | 'error';
+        last_check_ts?: number;
+        creds_valid?: boolean;
+        lifecycle_ok?: boolean;
+      } | null = healthRaw ? JSON.parse(healthRaw) : null;
       const row = await this.db
         .prepare(`SELECT used_bytes FROM quota_account WHERE account_id = ?`)
         .bind(acc)
@@ -215,11 +222,11 @@ export class QuotaGuard {
             ? 'flashdrop-transfers'
             : (cfgRaw ? '（KV 配置）' : 'flashdrop-transfers-b'),
         health: {
-          status: row ? 'normal' : 'unconfigured',
+          status: h?.status ?? (row ? 'normal' : 'unconfigured'),
           last_write_ts: lastWriteRaw ? Number(lastWriteRaw) : 0,
-          last_check_ts: 0,
-          creds_valid: enabled,
-          lifecycle_ok: true,
+          last_check_ts: h?.last_check_ts ?? 0,
+          creds_valid: h?.creds_valid ?? enabled,
+          lifecycle_ok: h?.lifecycle_ok ?? true,
         },
       });
     }
