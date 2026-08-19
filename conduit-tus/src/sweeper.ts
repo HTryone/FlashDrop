@@ -75,7 +75,7 @@ export class CloudSweeper implements Sweeper {
     }
 
     // 配额账本清理（否则 quota_file / transfer_account 无限增长）：
-    // - quota_file：清掉已释放（released=1）的明细行；释放逻辑只标记不删除。
+    // - quota_file：清掉已释放（released=1）的滞留行；释放逻辑只标记不删除，sweeper 定期收尾。
     // - transfer_account：清掉已不存在传输的归属行（传输已被上方 deleteTransfer 移除）。
     // - quota_account 按桶一条、数量有限，保留作账本。
     try {

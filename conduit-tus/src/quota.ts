@@ -116,7 +116,7 @@ export class QuotaGuard {
     }
   }
 
-  // ---- 主动终止/清空：释放某传输全部文件的额度 ----
+  // ---- 主动终止/清空：释放某传输全部文件的额度（标 released=1，行滞留待 sweeper 清理）----
   async releaseByTransfer(transferId: string): Promise<void> {
     const accountId = await this.selector.accountOfTransfer(transferId);
     if (!accountId) return;
