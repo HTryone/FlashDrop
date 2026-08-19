@@ -23,8 +23,14 @@ const PAGE_CSS = `
   :root{--bg:#0d1117;--card:#161b22;--line:#30363d;--fg:#e6edf3;--muted:#8b949e;--red:#f85149;--green:#3fb950;--blue:#58a6ff;}
   *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.6 system-ui,'Microsoft YaHei',sans-serif}
   .wrap{max-width:1080px;margin:0 auto;padding:28px 24px}
+  @media (max-width: 768px){
+    .wrap{max-width:100%;padding:16px}
+  }
   h1{font-size:22px;margin:0 0 20px;font-weight:600}
   .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px 24px;margin-bottom:16px}
+  @media (max-width: 768px){
+    .card{background:transparent;border:0;padding:0;margin-bottom:0}
+  }
   .row{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
   .muted{color:var(--muted)}
   .pill{padding:3px 12px;border-radius:999px;font-size:12px;border:1px solid var(--line);font-weight:500}
