@@ -6,6 +6,7 @@
 
 import { Sweeper, IndexBackend, StorageBackend, TransferError } from '../../src/transfer/tus/types';
 import { QuotaGuard } from './quota';
+import type { StorageResolver } from './storage-router';
 
 export class CloudSweeper implements Sweeper {
   readonly kind = 'cloud' as const;
@@ -15,6 +16,7 @@ export class CloudSweeper implements Sweeper {
     private readonly storage: StorageBackend,
     private readonly now: () => number = Date.now,
     private readonly quota?: QuotaGuard,
+    private readonly resolver?: StorageResolver,
   ) {}
 
   async sweep(): Promise<{ removedFiles: number; removedTransfers: number }> {
@@ -43,7 +45,13 @@ export class CloudSweeper implements Sweeper {
       transferIds.add(row.id);
       if (row.file_id) {
         try {
-          await this.storage.delete(row.file_id);
+          // 全 KV 化：按传输归属桶解析后端再删（多桶正确删除，不再固定默认桶）
+          let st = this.storage;
+          if (this.resolver && this.quota) {
+            const acc = await this.quota.accountOfTransfer(row.id);
+            if (acc) st = await this.resolver.resolve(acc);
+          }
+          await st.delete(row.file_id);
           removedFiles++;
         } catch {
           // 文件体可能已被 R2 生命周期规则先行删掉，忽略

@@ -71,7 +71,7 @@ export default {
       const storage = createStorage(env);
       const index = createIndex(env);
       const kv = env.QUOTA_KV;
-      const resolver = createStorageResolver(env, kv);
+      const resolver = createStorageResolver(kv);
       const selector = new BucketSelector(env.DB!, kv);
       const quota = new QuotaGuard(kv, env.DB!, selector);
 
@@ -125,7 +125,15 @@ export default {
       if (mFiles && (request.method === 'DELETE' || request.method === 'OPTIONS')) {
         const tid = decodeURIComponent(mFiles[1]);
         if (request.method === 'DELETE') await quota.releaseByTransfer(tid); // 主动清空即释放配额
-        return await new TransferHandler(index, storage, ttl).deleteTransferFiles(tid, origin, request.method);
+        // 全 KV 化：按传输归属桶解析出对应后端再删（不再用默认桶）
+        let delStorage = storage;
+        try {
+          const acc = await quota.accountOfTransfer(tid);
+          if (acc) delStorage = await resolver.resolve(acc);
+        } catch {
+          /* 归属解析失败仍用默认桶兜底删 D1 记录 */
+        }
+        return await new TransferHandler(index, delStorage, ttl).deleteTransferFiles(tid, origin, request.method);
       }
 
       if (pathname === '/api/transfers' || pathname.startsWith('/api/transfer/')) {
@@ -165,7 +173,8 @@ export default {
           const kv = env.QUOTA_KV;
           const selector = new BucketSelector(env.DB!, kv);
           const quota = new QuotaGuard(kv, env.DB!, selector);
-          const sweeper = new CloudSweeper(index, createStorage(env), () => Date.now(), quota);
+          const resolver = createStorageResolver(kv);
+          const sweeper = new CloudSweeper(index, createStorage(env), () => Date.now(), quota, resolver);
           const result = await sweeper.sweep();
           // sweeper 已回收 terminated/过期传输的额度；再补一次过期回收（覆盖边界）
           await quota.releaseExpired(Date.now());

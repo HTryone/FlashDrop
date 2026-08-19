@@ -2,23 +2,14 @@
 // 设计：共享的 tus-handler / download-handler / transfer-handler 不在内部感知桶，
 // 而是在 index.ts 按 传输→account_id 解析出对应 R2StorageBackend 再构造，从而零改动共享代码。
 //
-// 凭据策略（用户 2026-08-19 决定）：默认走仓库写法——桶绑定 + 凭证写在 wrangler.toml
-// （R2_TRANSFERS 为默认桶；接第二桶加 R2_TRANSFERS_B 绑定与 *_B 变量）。KV 仅作
-// 规则卡(limit/enabled)与可选 bucket_cfg 覆盖层（保留自服务接口，纯跨账户无绑定场景待后续 S3 后端）。
+// 全 KV 化（用户 2026-08-20 决定，无过渡期）：不再有仓库硬编码绑定。
+// 每桶配置存 KV `quota:<account_id>:bucket_cfg`（accountId/accessKeyId/secretAccessKey/bucketName），
+// R2StorageBackend 凭该配置 S3 直连任意跨账户桶；无配置直接报错，不静默回退。
+// 选桶规则（BucketSelector）：遍历 KV 桶清单（接入顺序）→ 跳过停用 → 剩余=上限-已用 →
+// 选剩余最多；严格大于才替换 → 平局保留先遍历（配置靠前）的桶。
 
 import { R2StorageBackend } from './r2-storage';
 import type { StorageBackend } from '../../src/transfer/tus/types';
-
-export interface ResolverEnv {
-  R2_TRANSFERS?: R2Bucket;
-  R2_TRANSFERS_B?: R2Bucket;
-  R2_ACCOUNT_ID?: string;
-  R2_ACCESS_KEY_ID?: string;
-  R2_SECRET_ACCESS_KEY?: string;
-  R2_ACCOUNT_ID_B?: string;
-  R2_ACCESS_KEY_ID_B?: string;
-  R2_SECRET_ACCESS_KEY_B?: string;
-}
 
 export interface StorageResolver {
   resolve(accountId: string): Promise<StorageBackend>;
@@ -29,62 +20,23 @@ interface BucketCfg {
   accessKeyId: string;
   secretAccessKey: string;
   bucketName: string;
-  binding?: string;
 }
 
-/** 仓库绑定解析：default 始终可用；secondary 在配置了 R2_TRANSFERS_B + 凭证时可用。 */
-export class RepoStorageResolver implements StorageResolver {
-  private readonly repo = new Map<string, () => R2StorageBackend>();
-
-  constructor(env: ResolverEnv) {
-    if (env.R2_TRANSFERS && env.R2_ACCOUNT_ID && env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY) {
-      const e = env;
-      this.repo.set('default', () =>
-        new R2StorageBackend(e.R2_TRANSFERS!, {
-          accountId: e.R2_ACCOUNT_ID!,
-          accessKeyId: e.R2_ACCESS_KEY_ID!,
-          secretAccessKey: e.R2_SECRET_ACCESS_KEY!,
-          bucketName: 'flashdrop-transfers',
-        }),
-      );
-    }
-    if (env.R2_TRANSFERS_B && env.R2_ACCOUNT_ID_B && env.R2_ACCESS_KEY_ID_B && env.R2_SECRET_ACCESS_KEY_B) {
-      const e = env;
-      this.repo.set('secondary', () =>
-        new R2StorageBackend(e.R2_TRANSFERS_B!, {
-          accountId: e.R2_ACCOUNT_ID_B!,
-          accessKeyId: e.R2_ACCESS_KEY_ID_B!,
-          secretAccessKey: e.R2_SECRET_ACCESS_KEY_B!,
-          bucketName: 'flashdrop-transfers-b',
-        }),
-      );
-    }
-  }
-
-  async resolve(accountId: string): Promise<StorageBackend> {
-    const factory = this.repo.get(accountId);
-    if (factory) return factory();
-    const def = this.repo.get('default');
-    if (def) return def();
-    throw new Error(`未配置存储桶: ${accountId}`);
-  }
-}
-
-/** 组合解析：优先 KV bucket_cfg 覆盖（保留自服务接口），否则回退仓库绑定。 */
-export function createStorageResolver(env: ResolverEnv, kv?: KVNamespace): StorageResolver {
-  const repo = new RepoStorageResolver(env);
+/** 全 KV 解析：凭 quota:<account_id>:bucket_cfg S3 直连；缺配置抛错。 */
+export function createStorageResolver(kv: KVNamespace | undefined): StorageResolver {
   return {
     async resolve(accountId: string): Promise<StorageBackend> {
-      if (kv) {
-        const cfg = (await kv.get(`quota:${accountId}:bucket_cfg`, 'json')) as BucketCfg | null;
-        if (cfg?.bucketName && cfg?.accountId && cfg?.accessKeyId && cfg?.secretAccessKey) {
-          const bucket = (
-            cfg.binding ? (env as Record<string, unknown>)[cfg.binding] : env.R2_TRANSFERS
-          ) as R2Bucket | undefined;
-          if (bucket) return new R2StorageBackend(bucket, cfg);
-        }
+      if (!kv) throw new Error(`KV 未配置，无法解析存储桶: ${accountId}`);
+      const cfg = (await kv.get(`quota:${accountId}:bucket_cfg`, 'json')) as BucketCfg | null;
+      if (!cfg?.bucketName || !cfg?.accountId || !cfg?.accessKeyId || !cfg?.secretAccessKey) {
+        throw new Error(`存储桶未配置（KV 无 bucket_cfg）: ${accountId}`);
       }
-      return repo.resolve(accountId);
+      return new R2StorageBackend(undefined, {
+        accountId: cfg.accountId,
+        accessKeyId: cfg.accessKeyId,
+        secretAccessKey: cfg.secretAccessKey,
+        bucketName: cfg.bucketName,
+      });
     },
   };
 }
