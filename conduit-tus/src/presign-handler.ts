@@ -4,7 +4,7 @@
 // 字节损坏（长度对、内容错），且错误被 .catch 吞掉 → 坏块静默入库 → 下载时 HMAC 才暴露。
 // 直传 R2 后，数据不经 Worker 字节处理，R2 原生按 content-length 接收，损坏消失。
 
-import { StorageBackend, IndexBackend } from '../../src/transfer/tus/types';
+import { IndexBackend } from '../../src/transfer/tus/types';
 import { QuotaGuard } from './quota';
 import { StorageResolver } from './storage-router';
 
@@ -16,7 +16,6 @@ interface PresignBody {
 
 export class PresignHandler {
   constructor(
-    private readonly storage: StorageBackend,
     private readonly index: IndexBackend,
     private readonly quota: QuotaGuard,
     private readonly resolver: StorageResolver,

@@ -13,7 +13,7 @@ export class CloudSweeper implements Sweeper {
 
   constructor(
     private readonly index: IndexBackend,
-    private readonly storage: StorageBackend,
+    private readonly storage?: StorageBackend,
     private readonly now: () => number = Date.now,
     private readonly quota?: QuotaGuard,
     private readonly resolver?: StorageResolver,
@@ -46,13 +46,16 @@ export class CloudSweeper implements Sweeper {
       if (row.file_id) {
         try {
           // 全 KV 化：按传输归属桶解析后端再删（多桶正确删除，不再固定默认桶）
-          let st = this.storage;
+          let st: StorageBackend | undefined;
           if (this.resolver && this.quota) {
             const acc = await this.quota.accountOfTransfer(row.id);
             if (acc) st = await this.resolver.resolve(acc);
           }
-          await st.delete(row.file_id);
-          removedFiles++;
+          st = st ?? this.storage;
+          if (st) {
+            await st.delete(row.file_id);
+            removedFiles++;
+          }
         } catch {
           // 文件体可能已被 R2 生命周期规则先行删掉，忽略
         }

@@ -1,5 +1,5 @@
 /// <reference types="@cloudflare/workers-types" />
-import { createStorage, createIndex } from './factory';
+import { createIndex } from './factory';
 import type { TusEnv } from './factory';
 import { CloudSweeper } from './sweeper';
 import { TusHandler } from '../../src/transfer/tus/tus-handler';
@@ -15,11 +15,6 @@ import type { IndexBackend, StorageBackend } from '../../src/transfer/tus/types'
 export interface Env extends TusEnv {
   DEFAULT_TTL_HOURS?: string;
   QUOTA_KV?: KVNamespace;
-  // 第二个 Cloudflare 账户 / R2 桶（仓库写法，接第二桶时取消 wrangler.toml 注释并填值）
-  R2_TRANSFERS_B?: R2Bucket;
-  R2_ACCOUNT_ID_B?: string;
-  R2_ACCESS_KEY_ID_B?: string;
-  R2_SECRET_ACCESS_KEY_B?: string;
 }
 
 /** 门卫①预检：POST /files 时即时判断（此时尚无 fileId，只比较，不扣账）。 */
@@ -42,18 +37,13 @@ async function resolveStorageForFile(
   resolver: StorageResolver,
   quota: QuotaGuard,
   fileId: string,
-  fallback: StorageBackend,
 ): Promise<StorageBackend> {
-  try {
-    const file = await index.getFile(fileId);
-    if (file?.transferId) {
-      const acc = await quota.accountOfTransfer(file.transferId);
-      return await resolver.resolve(acc);
-    }
-  } catch {
-    /* 解析失败回退默认桶 */
+  const file = await index.getFile(fileId);
+  if (file?.transferId) {
+    const acc = await quota.accountOfTransfer(file.transferId);
+    if (acc) return await resolver.resolve(acc);
   }
-  return fallback;
+  throw new Error('文件无归属桶');
 }
 
 function quotaRejected(origin: string | null): Response {
@@ -68,7 +58,6 @@ export default {
     const origin = request.headers.get('Origin');
 
     try {
-      const storage = createStorage(env);
       const index = createIndex(env);
       const kv = env.QUOTA_KV;
       const resolver = createStorageResolver(kv);
@@ -105,17 +94,27 @@ export default {
           const ok = await gatePrecheck(request, index, quota);
           if (!ok) return quotaRejected(origin);
         }
-        return await new TusHandler(storage, index).handle(request);
+        // POST /files：创建传输，桶由 selector.select 现场选（无桶会抛错，符合纯 KV 无兜底）
+        const meta = parseMetadata(request.headers.get('Upload-Metadata'));
+        const tid = meta.transferId?.trim();
+        let st: StorageBackend;
+        try {
+          const acc = tid ? await quota.accountOfTransfer(tid) : null;
+          st = acc ? await resolver.resolve(acc) : await resolver.resolve('default');
+        } catch {
+          st = await resolver.resolve('default');
+        }
+        return await new TusHandler(st, index).handle(request);
       }
 
       if (pathname.startsWith('/files/')) {
         const fileId = pathname.slice('/files/'.length);
-        const fileStorage = await resolveStorageForFile(index, resolver, quota, fileId, storage);
+        const fileStorage = await resolveStorageForFile(index, resolver, quota, fileId);
         return await new TusHandler(fileStorage, index).handle(request);
       }
 
       if (pathname === '/api/presign' || pathname === '/api/commit') {
-        const handler = new PresignHandler(storage, index, quota, resolver);
+        const handler = new PresignHandler(index, quota, resolver);
         return pathname === '/api/presign'
           ? await handler.handlePresign(request, origin)
           : await handler.handleCommit(request, origin);
@@ -125,32 +124,28 @@ export default {
       if (mFiles && (request.method === 'DELETE' || request.method === 'OPTIONS')) {
         const tid = decodeURIComponent(mFiles[1]);
         if (request.method === 'DELETE') await quota.releaseByTransfer(tid); // 主动清空即释放配额
-        // 全 KV 化：按传输归属桶解析出对应后端再删（不再用默认桶）
-        let delStorage = storage;
-        try {
-          const acc = await quota.accountOfTransfer(tid);
-          if (acc) delStorage = await resolver.resolve(acc);
-        } catch {
-          /* 归属解析失败仍用默认桶兜底删 D1 记录 */
-        }
+        // 全 KV 化：按传输归属桶解析出对应后端再删（无归属直接报错）
+        const acc = await quota.accountOfTransfer(tid);
+        const delStorage = acc ? await resolver.resolve(acc) : await resolver.resolve('default');
         return await new TransferHandler(index, delStorage, ttl).deleteTransferFiles(tid, origin, request.method);
       }
 
       if (pathname === '/api/transfers' || pathname.startsWith('/api/transfer/')) {
-        return await new TransferHandler(index, storage, ttl).handle(request);
+        // 传输元数据操作不落文件体，storage 传 undefined（内部删除路径已按桶解析）
+        return await new TransferHandler(index, undefined, ttl).handle(request);
       }
 
       if (pathname.startsWith('/download/')) {
         const m = /^\/download\/([^/]+)\/([^/]+)$/.exec(pathname);
-        let dlStorage = storage;
         if (m) {
           const transferId = await index.resolveCode(decodeURIComponent(m[1]));
           if (transferId) {
             const acc = await quota.accountOfTransfer(transferId);
-            dlStorage = await resolver.resolve(acc);
+            const dlStorage = acc ? await resolver.resolve(acc) : await resolver.resolve('default');
+            return await new DownloadHandler(dlStorage, index).handle(request);
           }
         }
-        return await new DownloadHandler(dlStorage, index).handle(request);
+        return new Response('Not Found', { status: 404, headers: corsHeaders(origin) });
       }
 
       return new Response('Not Found', { status: 404, headers: corsHeaders(origin) });
@@ -174,7 +169,7 @@ export default {
           const selector = new BucketSelector(env.DB!, kv);
           const quota = new QuotaGuard(kv, env.DB!, selector);
           const resolver = createStorageResolver(kv);
-          const sweeper = new CloudSweeper(index, createStorage(env), () => Date.now(), quota, resolver);
+          const sweeper = new CloudSweeper(index, undefined, () => Date.now(), quota, resolver);
           const result = await sweeper.sweep();
           // sweeper 已回收 terminated/过期传输的额度；再补一次过期回收（覆盖边界）
           await quota.releaseExpired(Date.now());

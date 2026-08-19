@@ -131,7 +131,7 @@ function adminHtml(): string {
      </div><p id="msg" class="muted"></p>
      <div id="buckets"></div></div>
   <div class="card"><h2>接入新桶（自服务）</h2>
-    <p class="muted">填入另一个 Cloudflare 账户的 R2 桶信息。仓库写法下请同时在该 Worker 的 wrangler.toml 加 <code>R2_TRANSFERS_B</code> 绑定与 <code>*_B</code> 变量。</p>
+    <p class="muted">填入另一个 Cloudflare 账户的 R2 桶信息（R2 → 管理 R2 API 令牌 页创建令牌获取密钥）。保存后写入 KV 桶配置，无需 wrangler.toml 绑定。</p>
     <div class="form-grid">
       <div class="field"><label for="a_id">内部标识</label><input id="a_id" placeholder="自命名，如 secondary / client-acme"/></div>
       <div class="field"><label for="cf_code">R2 账户 ID</label><input id="cf_code" placeholder="控制台 URL 里的十六进制串"/></div>
@@ -250,7 +250,11 @@ function adminHtml(): string {
     var body={account_id:document.getElementById('a_id').value,cf_code:document.getElementById('cf_code').value,bucket_name:document.getElementById('b_name').value,r2_access_key_id:document.getElementById('ak').value,r2_secret_access_key:document.getElementById('sk').value};
     var lim=document.getElementById('lim').value;var gb=parseFloat(lim);if(gb>0)body.limit_bytes=Math.round(gb*1073741824);
     var r=await api('buckets',body);
-    if(r.ok){load();}else{var e=await r.json();alert('接入失败：'+(e.error||r.status));}
+    if(r.ok){
+      // 接入成功后清空表单，方便连续接入多个桶
+      ['a_id','cf_code','b_name','ak','sk','lim'].forEach(function(id){document.getElementById(id).value=''});
+      load();
+    }else{var e=await r.json();alert('接入失败：'+(e.error||r.status));}
   }
   load();
   autoCheckAll();
