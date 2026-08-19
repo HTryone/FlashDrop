@@ -80,11 +80,11 @@ function adminHtml(): string {
         +'<div>已用 '+(b.used_bytes/1073741824).toFixed(2)+' GB / 上限 '+(b.limit_bytes/1073741824).toFixed(0)+' GB · 剩余 '+(b.remaining/1073741824).toFixed(2)+' GB</div>'
         +'<div class="muted">文件数 '+b.file_count+' · 健康 '+b.health.status+' · 凭证 '+(b.health.creds_valid?'有效':'无效')+'</div>'
         +'<div class="row" style="margin-top:8px">'
-        +'<button onclick="toggle(\''+b.account_id+'\','+!b.enabled+')">'+(b.enabled?'停用':'启用')+'</button>'
-        +'<button onclick="recompute(\''+b.account_id+'\')">重算</button>'
-        +'<button onclick="reset(\''+b.account_id+'\')">清零</button>'
-        +'<button onclick="setLimit(\''+b.account_id+'\')">改上限</button>'
-        +'<button onclick="check(\''+b.account_id+'\')">检查健康</button>'
+        +'<button onclick="toggle(\\x27'+b.account_id+'\\x27,'+!b.enabled+')">'+(b.enabled?'停用':'启用')+'</button>'
+        +'<button onclick="recompute(\\x27'+b.account_id+'\\x27)">重算</button>'
+        +'<button onclick="reset(\\x27'+b.account_id+'\\x27)">清零</button>'
+        +'<button onclick="setLimit(\\x27'+b.account_id+'\\x27)">改上限</button>'
+        +'<button onclick="check(\\x27'+b.account_id+'\\x27)">检查健康</button>'
         +'</div></div>';
       el.innerHTML+=html;}}
   async function toggle(id,en){await api('config',{account_id:id,enabled:en});load();}
