@@ -48,8 +48,8 @@ const PAGE_CSS = `
   .bucket-actions{flex-shrink:0;display:flex;flex-direction:column;gap:8px;min-width:160px}
   @media (max-width: 768px){
     .bucket{flex-direction:column;align-items:stretch}
-    .bucket-actions{flex-direction:column;gap:8px;min-width:0;width:100%}
-    .bucket-actions button{width:100%}
+    .bucket-actions{flex-direction:row;gap:8px;min-width:0;width:100%}
+    .bucket-actions button{flex:1;min-width:0}
   }
   .bucket-title{display:flex;align-items:center;gap:12px;margin-bottom:6px}
   .bucket-title strong{font-size:17px;font-weight:600}
