@@ -203,7 +203,7 @@ export async function handleAdmin(request: Request, ctx: AdminCtx): Promise<Resp
     const ok = !!pwHash && (await sha256Hex(pw)) === pwHash;
     if (!ok) return json({ error: 'unauthorized' }, origin, 401);
 
-    if (api === 'status' && request.method === 'POST') return json(await ctx.quota.status(), origin);
+    if (api === 'status' && (request.method === 'POST' || request.method === 'GET')) return json(await ctx.quota.status(), origin);
     if (api === 'buckets' && request.method === 'GET') return json(await listBuckets(ctx), origin);
 
     if (api === 'config' && request.method === 'POST') {
