@@ -8,10 +8,10 @@
 //   - 上限胶囊 = 「已启用」同款 pill，颜色随使用率 绿→琥珀→红（JS 线性插值），纯色背景无进度填充。
 //   - default 桶只有 停用/改上限/检查健康；手动插入桶额外有 编辑/删除（删除需后端 remove 接口）。
 
-import type { IndexBackend } from '../../src/transfer/tus/types';
-import { corsHeaders } from '../../src/transfer/tus/tus-protocol';
-import type { QuotaGuard } from './quota';
-import type { BucketSelector, StorageResolver } from './storage-router';
+import type { IndexBackend } from '../../../src/transfer/tus/types';
+import { corsHeaders } from '../../../src/transfer/tus/tus-protocol';
+import type { QuotaGuard } from '../quota';
+import type { BucketSelector, StorageResolver } from '../storage-router';
 import { adminHtml, authHtml } from './admin-ui';
 import {
   hasPassword,

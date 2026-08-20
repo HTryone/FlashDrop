@@ -8,7 +8,7 @@ import { DownloadHandler } from '../../src/transfer/tus/download-handler';
 import { PresignHandler } from './presign-handler';
 import { QuotaGuard } from './quota';
 import { BucketSelector, createStorageResolver, type StorageResolver } from './storage-router';
-import { handleAdmin, type AdminCtx } from './admin-page';
+import { handleAdmin, type AdminCtx } from './admin/admin-page';
 import { corsHeaders, parseMetadata } from '../../src/transfer/tus/tus-protocol';
 import type { IndexBackend, StorageBackend } from '../../src/transfer/tus/types';
 

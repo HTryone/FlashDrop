@@ -14,6 +14,10 @@ compatibility_date = "2025-01-01"
 #   quota:<id>:limit_bytes / quota:<id>:enabled
 # 选桶规则：剩余最多优先；平局取配置靠前（接入顺序）。
 
+# 不生成/不上传 sourcemap（默认即 false，显式声明防止误开）：
+# 生产部署不需要 .map（体积大且无调试价值）；排错用控制台堆栈即可。
+upload_source_maps = false
+
 [[kv_namespaces]]
 binding = "QUOTA_KV"
 id = "0bd6012810474adab71452ba35e9e994"
