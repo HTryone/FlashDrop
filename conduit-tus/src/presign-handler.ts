@@ -5,7 +5,7 @@
 // 直传 R2 后，数据不经 Worker 字节处理，R2 原生按 content-length 接收，损坏消失。
 
 import { IndexBackend } from '../../src/transfer/tus/types';
-import { QuotaGuard } from './quota';
+import { QuotaGuard, QuotaUnavailableError } from './quota';
 import { StorageResolver } from './storage-router';
 
 interface PresignBody {
@@ -72,7 +72,15 @@ export class PresignHandler {
       return this.json({ error: 'offset/length 越界' }, 400, origin);
     }
 
-    const accountId = await this.quota.accountOfTransfer(file.transferId);
+    let accountId: string;
+    try {
+      accountId = await this.quota.accountOfTransfer(file.transferId);
+    } catch (err) {
+      if (err instanceof QuotaUnavailableError) {
+        return this.json({ error: '系统初始化中，暂时无法上传，请稍后重试或联系站长' }, 503, origin);
+      }
+      throw err;
+    }
     if (!(await this.quota.isEnabled(accountId))) {
       return this.json({ error: '存储桶已停用，上传已停止' }, 429, origin);
     }
@@ -80,12 +88,20 @@ export class PresignHandler {
       return this.json({ error: '当前存储桶上传额度已用完（含未过期文件占用），请等待文件过期释放或联系站长' }, 429, origin);
     }
     const transfer = await this.index.getTransfer(file.transferId);
-    const reserved = await this.quota.reserve({
-      fileId: body.fileId,
-      transferId: file.transferId,
-      size: file.size,
-      expiresAt: transfer?.expiresAt ?? 0,
-    });
+    let reserved: boolean;
+    try {
+      reserved = await this.quota.reserve({
+        fileId: body.fileId,
+        transferId: file.transferId,
+        size: file.size,
+        expiresAt: transfer?.expiresAt ?? 0,
+      });
+    } catch (err) {
+      if (err instanceof QuotaUnavailableError) {
+        return this.json({ error: '系统初始化中，暂时无法上传，请稍后重试或联系站长' }, 503, origin);
+      }
+      throw err;
+    }
     if (!reserved) {
       return this.json({ error: '当前存储桶上传额度已用完（含未过期文件占用），请等待文件过期释放或联系站长' }, 429, origin);
     }
@@ -118,7 +134,15 @@ export class PresignHandler {
     const startOffset = body.offset - body.length;
     if (startOffset < 0) return this.json({ error: 'offset 非法' }, 400, origin);
 
-    const accountId = await this.quota.accountOfTransfer(file.transferId);
+    let accountId: string;
+    try {
+      accountId = await this.quota.accountOfTransfer(file.transferId);
+    } catch (err) {
+      if (err instanceof QuotaUnavailableError) {
+        return this.json({ error: '系统初始化中，服务暂不可用，请稍后重试或联系站长' }, 503, origin);
+      }
+      throw err;
+    }
     const storage = await this.resolver.resolve(accountId);
     const partKey = `${body.fileId}/part-${startOffset}`;
     // 二次保险：确认该 part 已落入 R2（presigned PUT 已校验 content-length，这里再确认存在）。

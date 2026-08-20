@@ -9,6 +9,14 @@ import { BucketSelector } from './storage-router';
 
 const DEFAULT_LIMIT = 10 * 1024 * 1024 * 1024; // 10GB
 
+/** 配额系统未初始化（表缺失等），调用方应转 503 并提示用户。 */
+export class QuotaUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'QuotaUnavailableError';
+  }
+}
+
 export interface ReserveInput {
   fileId: string;
   transferId: string;
@@ -42,9 +50,17 @@ export class QuotaGuard {
     private readonly selector: BucketSelector,
   ) {}
 
-  /** 传输已记录的归属桶；无记录返回 default。 */
+  /** 传输已记录的归属桶；无记录返回 default。表缺失时抛 QuotaUnavailableError。 */
   async accountOfTransfer(transferId: string): Promise<string> {
-    return (await this.selector.accountOfTransfer(transferId)) ?? 'default';
+    try {
+      return (await this.selector.accountOfTransfer(transferId)) ?? 'default';
+    } catch (err) {
+      console.error(
+        '[quota] accountOfTransfer 失败：transfer_account 表可能未初始化，请部署时执行 schema.sql 建表。err=' +
+          (err instanceof Error ? err.message : String(err)),
+      );
+      throw new QuotaUnavailableError('配额系统未初始化');
+    }
   }
 
   /** 桶是否启用（KV quota:<id>:enabled，缺省视为启用）。 */
@@ -67,48 +83,56 @@ export class QuotaGuard {
 
   // ---- 门卫①+②原子预扣：首个 presign 调用，幂等；false = 拒绝（超限或桶已停用）----
   async reserve(input: ReserveInput): Promise<boolean> {
-    const { fileId, transferId, size, expiresAt } = input;
-    const accountId = await this.selector.select(transferId);
-    // 停用桶拒绝一切上传（含存量传输的后续分片），保证「停用 = 完全停」
-    if (!(await this.isEnabled(accountId))) return false;
+    try {
+      const { fileId, transferId, size, expiresAt } = input;
+      const accountId = await this.selector.select(transferId);
+      // 停用桶拒绝一切上传（含存量传输的后续分片），保证「停用 = 完全停」
+      if (!(await this.isEnabled(accountId))) return false;
 
-    const limit = await this.limitOf(accountId);
+      const limit = await this.limitOf(accountId);
 
-    // 幂等锚点：同 fileId 只插一次（并发同文件：一插一忽略，恰好一次扣账）
-    const ins = await this.db
-      .prepare(
-        `INSERT OR IGNORE INTO quota_file (file_id, account_id, transfer_id, size, expires_at, released)
-         VALUES (?, ?, ?, ?, ?, 0)`,
-      )
-      .bind(fileId, accountId, transferId, size, expiresAt)
-      .run();
-    if (((ins.meta as { changes?: number } | undefined)?.changes ?? 0) === 0) return true;
+      // 幂等锚点：同 fileId 只插一次（并发同文件：一插一忽略，恰好一次扣账）
+      const ins = await this.db
+        .prepare(
+          `INSERT OR IGNORE INTO quota_file (file_id, account_id, transfer_id, size, expires_at, released)
+           VALUES (?, ?, ?, ?, ?, 0)`,
+        )
+        .bind(fileId, accountId, transferId, size, expiresAt)
+        .run();
+      if (((ins.meta as { changes?: number } | undefined)?.changes ?? 0) === 0) return true;
 
-    // 确保计数器行存在
-    await this.db
-      .prepare(`INSERT OR IGNORE INTO quota_account (account_id, used_bytes, updated_at) VALUES (?, 0, ?)`)
-      .bind(accountId, Date.now())
-      .run();
+      // 确保计数器行存在
+      await this.db
+        .prepare(`INSERT OR IGNORE INTO quota_account (account_id, used_bytes, updated_at) VALUES (?, 0, ?)`)
+        .bind(accountId, Date.now())
+        .run();
 
-    // 原子预扣：超则返回空行
-    const upd = await this.db
-      .prepare(
-        `UPDATE quota_account SET used_bytes = used_bytes + ?, updated_at = ?
-         WHERE account_id = ? AND used_bytes + ? <= ? RETURNING used_bytes`,
-      )
-      .bind(size, Date.now(), accountId, size, limit)
-      .first<{ used_bytes: number }>();
+      // 原子预扣：超则返回空行
+      const upd = await this.db
+        .prepare(
+          `UPDATE quota_account SET used_bytes = used_bytes + ?, updated_at = ?
+           WHERE account_id = ? AND used_bytes + ? <= ? RETURNING used_bytes`,
+        )
+        .bind(size, Date.now(), accountId, size, limit)
+        .first<{ used_bytes: number }>();
 
-    if (!upd) {
-      // 超限：撤回刚插入的锚点（避免悬空 released=0 行干扰回收）
-      await this.db.prepare(`DELETE FROM quota_file WHERE file_id = ? AND released = 0`).bind(fileId).run();
-      return false;
+      if (!upd) {
+        // 超限：撤回刚插入的锚点（避免悬空 released=0 行干扰回收）
+        await this.db.prepare(`DELETE FROM quota_file WHERE file_id = ? AND released = 0`).bind(fileId).run();
+        return false;
+      }
+
+      if (this.kv) {
+        await this.kv.put(`quota:${accountId}:last_write_ts`, String(Date.now())).catch(() => {});
+      }
+      return true;
+    } catch (err) {
+      console.error(
+        '[quota] reserve 失败：配额表可能未初始化（quota_file / quota_account / transfer_account 缺失），请部署时执行 schema.sql 建表。err=' +
+          (err instanceof Error ? err.message : String(err)),
+      );
+      throw new QuotaUnavailableError('配额系统未初始化');
     }
-
-    if (this.kv) {
-      await this.kv.put(`quota:${accountId}:last_write_ts`, String(Date.now())).catch(() => {});
-    }
-    return true;
   }
 
   // ---- 门卫②复查：签名前比较（不扣账）----
