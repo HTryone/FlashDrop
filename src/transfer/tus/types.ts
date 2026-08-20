@@ -23,8 +23,6 @@ export interface StorageBackend {
     key: string,
     opts?: { method?: string; expiresIn?: number },
   ): Promise<string>;
-  /** 生命周期规则检测（仅 R2 后端实现）：桶是否配置了自动过期删除规则，缺失返回 false。 */
-  checkLifecycle?(): Promise<boolean>;
 }
 
 /** 单文件记录（挂在某个 transfer 下）。 */
