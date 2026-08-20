@@ -256,7 +256,7 @@ function adminHtml(): string {
     if(r.ok){
       // 接入成功后清空表单，方便连续接入多个桶
       ['a_id','cf_code','b_name','ak','sk','lim'].forEach(function(id){document.getElementById(id).value=''});
-      alert('✅ 接入成功！\n\n⚠️ 记得去 R2 控制台给桶「'+body.account_id+'」配置生命周期规则（文件过期 1 天自动删除），否则文件体会永久累积、存储费持续增长。');
+      alert('✅ 接入成功！\\n\\n⚠️ 记得去 R2 控制台给桶「'+body.account_id+'」配置生命周期规则（文件过期 1 天自动删除），否则文件体会永久累积、存储费持续增长。');
       load();
     }else{var e=await r.json();alert('接入失败：'+(e.error||r.status));}
   }
