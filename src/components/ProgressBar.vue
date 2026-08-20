@@ -48,15 +48,14 @@ const isBlock = computed(() => !!props.name);
     class="row"
     :class="{ done, error: !!error, active, 'accent-left': accentLeft }"
   >
-    <slot name="leading" />
-    <div class="info">
+    <div class="lead"><slot name="leading" /></div>
+    <div class="body">
       <div class="name" :title="name">{{ name }}</div>
-      <div class="sub muted">
-        <span class="sub-l">
+      <div class="meta">
+        <span class="meta-l">
           <template v-if="sizeText">{{ sizeText }}</template><template v-if="statusText"> · {{ statusText }}</template><template v-if="error"> · <span class="err">{{ error }}</span></template>
         </span>
-        <!-- 速度位于百分比左侧，整组略向内收（不贴右缘） -->
-        <span class="sub-r">
+        <span class="meta-r">
           <span v-if="speed != null" class="speed">{{ speed.toFixed(1) }} MB/s</span>
           <span v-if="showPercent" class="pct">{{ Math.round(pct) }}%</span>
         </span>
@@ -72,7 +71,7 @@ const isBlock = computed(() => !!props.name);
         <div class="fill" :style="{ width: pct + '%' }"></div>
       </div>
     </div>
-    <slot name="actions" />
+    <div class="acts"><slot name="actions" /></div>
   </div>
 </template>
 
@@ -99,6 +98,8 @@ const isBlock = computed(() => !!props.name);
   flex: none; min-width: 42px; text-align: right;
   font-size: 13px; color: var(--accent-2); font-variant-numeric: tabular-nums;
 }
+
+/* 桌面端默认布局：标签左 · 中间块(名/数据/条) · 按钮右（与旧版一致，不动） */
 .row {
   display: flex; align-items: center; gap: 12px;
   background: var(--panel); border: 1px solid rgba(255, 255, 255, 0.12);
@@ -111,12 +112,28 @@ const isBlock = computed(() => !!props.name);
   box-shadow: 0 0 0 1px rgba(56, 225, 200, 0.25);
 }
 .row.accent-left { border-left: 3px solid var(--accent-2); }
-.info { flex: 1; min-width: 0; }
+.lead { flex: none; display: flex; align-items: center; }
+.acts { flex: none; display: flex; align-items: center; }
+.body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .name { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sub { font-size: 12px; margin: 3px 0 6px; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.sub-l { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sub-r { display: flex; align-items: baseline; gap: 8px; flex: none; margin-right: 2px; }
+.body .bar { flex: none; width: 100%; }
+.meta { font-size: 12px; color: var(--text-dim); display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.meta-l { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meta-r { display: flex; align-items: baseline; gap: 8px; flex: none; }
 .err { color: var(--danger); }
 .pct { font-size: 13px; color: var(--accent-2); font-variant-numeric: tabular-nums; }
 .speed { font-size: 12px; color: var(--accent-2); font-variant-numeric: tabular-nums; }
+
+/* 手机端（≤767px，仅接收端 accent-left）：头部行(标签+名+按钮) · 数据行 · 进度条 banner；失败报错折行 */
+@media (max-width: 767px) {
+  .row.accent-left { flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+  .row.accent-left .body { display: contents; }
+  .row.accent-left .lead { order: 0; }
+  .row.accent-left .name { order: 1; flex: 1; min-width: 0; }
+  .row.accent-left .acts { order: 2; }
+  .row.accent-left .meta { order: 3; flex-basis: 100%; margin: 3px 0 2px; }
+  .row.accent-left .bar { order: 4; flex: 0 0 100%; margin-top: 0; }
+  .row.accent-left .meta-l { white-space: normal; word-break: break-word; }
+  .row.accent-left .meta-r { padding-right: 6px; }
+}
 </style>
