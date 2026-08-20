@@ -80,7 +80,10 @@ export async function decryptFrame(aesKey: CryptoKey, iv: Uint8Array<ArrayBuffer
   return new Uint8Array(plainAll).slice(0, plainLen);
 }
 
-/** 加密一个文件为密文 Blob（WebCrypto，逐 8MiB 分块；帧格式与 e2ee.ts 一致） */
+/** 加密一个文件为密文 Blob（WebCrypto，逐 8MiB 分块；帧格式与 e2ee.ts 一致）
+ * 【安卓 WebView 修复】部分安卓 WebView 的 File.size 返回错误值（偏小），
+ * 直接用 file.size 控制循环会截断文件末尾。先 readArrayBuffer 拿到真实长度，
+ * 再按真实长度分块加密，确保任何平台都完整。 */
 export async function encryptFile(
   file: File,
   keyHex: string,
@@ -88,11 +91,13 @@ export async function encryptFile(
 ): Promise<Blob> {
   const { aesKey, hmacKey } = await importRelayKeys(keyHex);
   const parts: Blob[] = [];
-  const total = file.size;
+  // 权威读取：以实际内容为准，不信任 file.size（安卓 WebView 可能返回错误小值）
+  const rawBuf = await file.arrayBuffer();
+  const total = rawBuf.byteLength;
   let offset = 0;
   while (offset < total) {
     const end = Math.min(offset + E2EE_CHUNK_SIZE, total);
-    const plainBuf = await file.slice(offset, end).arrayBuffer();
+    const plainBuf = rawBuf.slice(offset, end);
 
     const iv = crypto.getRandomValues(new Uint8Array(IV_LEN));
     const ctBuf = await crypto.subtle.encrypt({ name: 'AES-CBC', iv }, aesKey, plainBuf);

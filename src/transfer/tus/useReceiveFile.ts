@@ -42,11 +42,11 @@ export function useReceiveFile(props: {
   const phase = ref('');
   let activeAbort: AbortController | null = null; // 当前下载的 AbortController，供“取消”按钮中断后台请求
 
-  // 网络类错误（超时/失败）才提示网络原因；取消、授权失败不算网络问题
+  // 网络类错误（超时/失败）才提示网络原因；取消、授权失败、权限拒绝不算网络问题
   const isNetworkError = computed(() => {
     const m = err.value;
     if (!m) return false;
-    if (m.includes('取消') || m.includes('授权')) return false;
+    if (m.includes('取消') || m.includes('授权') || m.includes('ACL') || m.includes('not allowed')) return false;
     return true;
   });
 
@@ -88,10 +88,13 @@ export function useReceiveFile(props: {
     } catch (e: any) {
       const wasCancelled = abortCtrl.signal.aborted; // 用户主动取消时，catch 触发前信号已置位
       abortCtrl.abort(); // 出错/取消时立即终止所有后台 fetch，避免继续拉取浪费流量
-      if (e?.message === 'SAVE_DIR_DENIED') {
+      const errMsg = e?.message ?? String(e); // 兼容 .message 缺失的情况（如 Tauri ACL 拒绝返回纯字符串 reject）
+      // 权限/授权类错误（如 ACL 拒绝、保存目录未授权）不显示网络错误提示
+      const isPermError = errMsg.includes('授权') || errMsg.includes('ACL') || errMsg.includes('not allowed') || errMsg === 'SAVE_DIR_DENIED';
+      if (isPermError) {
         err.value = '保存目录授权失败，请重试';
       } else {
-        err.value = wasCancelled ? '已取消下载' : (e?.message || '下载失败');
+        err.value = wasCancelled ? '已取消下载' : (errMsg || '下载失败');
       }
     } finally {
       busy.value = false;

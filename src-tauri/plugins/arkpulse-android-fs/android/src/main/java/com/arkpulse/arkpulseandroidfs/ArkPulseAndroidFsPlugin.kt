@@ -23,7 +23,7 @@ import app.tauri.plugin.Plugin
 class ArkPulseAndroidFsPlugin(private val activity: Activity) : Plugin(activity) {
 
     // L1：向 MediaStore.Downloads 插入文件，默认落到 Download/ArkPulse。零权限零弹框。
-    // 支持可选 relativePath（子目录，如 "Download/ArkPulse/log"）与 bytes（base64，直接写入内容）。
+    // 同名记录先删后插，避免 MediaStore 数据库残留导致 EEXIST（os error 17）。
     @Command
     fun mediastoreInsert(invoke: Invoke) {
         val args = invoke.getArgs()
@@ -34,6 +34,28 @@ class ArkPulseAndroidFsPlugin(private val activity: Activity) : Plugin(activity)
             return
         }
         val resolver = activity.contentResolver
+        // 先查同名旧记录，有就删掉（MediaStore 残留孤儿会导致 insert 报 EEXIST）
+        try {
+            val cursor = resolver.query(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.Downloads._ID),
+                "${MediaStore.Downloads.DISPLAY_NAME} = ? AND ${MediaStore.Downloads.RELATIVE_PATH} = ?",
+                arrayOf(name, relativePath),
+                null
+            )
+            cursor?.use {
+                while (it.moveToNext()) {
+                    val id = it.getLong(it.getColumnIndexOrThrow(MediaStore.Downloads._ID))
+                    resolver.delete(
+                        MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                        "${MediaStore.Downloads._ID} = ?",
+                        arrayOf(id.toString())
+                    )
+                }
+            }
+        } catch (_: Exception) {
+            // 查询失败不影响主流程，继续插入
+        }
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, name)
             put(MediaStore.Downloads.RELATIVE_PATH, relativePath)
