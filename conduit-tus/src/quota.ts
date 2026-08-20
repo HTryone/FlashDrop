@@ -206,13 +206,13 @@ export class QuotaGuard {
         .first<{ c: number }>();
       const cfgRaw = this.kv ? await this.kv.get(`quota:${acc}:bucket_cfg`) : null;
       const lastWriteRaw = this.kv ? await this.kv.get(`quota:${acc}:last_write_ts`) : null;
+      // health JSON 防御性解析：KV 误写坏 JSON 时不抛错影响整个 status
+      let healthParsed: { status?: 'normal' | 'unconfigured' | 'error'; last_check_ts?: number; creds_valid?: boolean; lifecycle_ok?: boolean } | null = null;
       const healthRaw = this.kv ? await this.kv.get(`quota:${acc}:health`) : null;
-      const h: {
-        status?: 'normal' | 'unconfigured' | 'error';
-        last_check_ts?: number;
-        creds_valid?: boolean;
-        lifecycle_ok?: boolean;
-      } | null = healthRaw ? JSON.parse(healthRaw) : null;
+      if (healthRaw) {
+        try { healthParsed = JSON.parse(healthRaw); } catch { /* 坏 JSON 视为无 health */ }
+      }
+      const h = healthParsed;
       const row = await this.db
         .prepare(`SELECT used_bytes FROM quota_account WHERE account_id = ?`)
         .bind(acc)

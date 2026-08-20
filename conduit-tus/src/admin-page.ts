@@ -153,9 +153,12 @@ function adminHtml(): string {
     return Math.floor(d/86400000)+' 天前';
   }
   async function load(){
-    var r=await api('status',null);
+    var r;
+    try { r = await api('status',null); } catch (e) { document.getElementById('msg').textContent='网络错误：'+(e.message||e); return; }
     if(!r.ok){document.getElementById('msg').textContent='加载失败：'+r.status;return;}
-    var list=await r.json();
+    var list;
+    try { list = await r.json(); }
+    catch (e) { document.getElementById('msg').textContent='解析响应失败：'+(e.message||e); return; }
     if(!Array.isArray(list)||!list.length){document.getElementById('msg').textContent='暂无存储桶数据';return;}
     render(list);
   }
