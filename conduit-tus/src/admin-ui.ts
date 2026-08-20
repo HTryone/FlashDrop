@@ -10,7 +10,6 @@ export function adminHtml(): string {
 <h1>中转站配额管理 · 站长后台</h1>`;
 
   const body = `
-  <div class="card banner"><strong>调试模式：</strong>已关闭密码鉴权。上线前需重新加回。</div>
   <div class="card"><div class="row" style="justify-content:space-between;margin-bottom:14px">
        <strong style="font-size:16px">存储桶看板</strong>
        <span class="muted" id="autocheckTip">打开时自动检查</span>
@@ -51,7 +50,10 @@ export function adminHtml(): string {
   </div>
 
   <script>
-  function api(p,b){return fetch('/api/admin/'+p,{method:b?'POST':'GET',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});}
+  function api(p,b){return fetch('/api/admin/'+p,{method:b?'POST':'GET',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined}).then(function(r){
+    if(r.status===401){ location.href='/admin'; throw new Error('未登录'); }
+    return r;
+  });}
   function fmtTime(ts){
     var d=Date.now()-ts;
     if(d<60000) return '刚刚';
@@ -183,6 +185,7 @@ export function adminHtml(): string {
   async function autoCheckAll(){
     try{
       var r=await fetch('/api/admin/buckets',{method:'GET'});
+      if(r.status===401){ location.href='/admin'; return; }
       if(!r.ok) return;
       var list=await r.json();
       if(!Array.isArray(list)) return;
@@ -206,4 +209,51 @@ export function adminHtml(): string {
   autoCheckAll();
   </script></body></html>`;
   return head + body;
+}
+
+/** 登录 / 首次设置密码页（同玻璃主题；mode: 'login' | 'setup'）。 */
+export function authHtml(mode: 'login' | 'setup'): string {
+  const isSetup = mode === 'setup';
+  const title = isSetup ? '设置管理密码' : '站长登录';
+  const sub = isSetup
+    ? '首次使用，请设置一个管理密码。设置成功后自动进入后台。'
+    : '请输入管理密码进入后台。';
+  const btn = isSetup ? '设置并进入' : '登录';
+  const api = isSetup ? 'setup' : 'login';
+  return `<!doctype html><html lang="zh"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<title>${title} · 中转站</title><style>${PAGE_CSS}
+.auth-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+.auth-card{width:100%;max-width:420px;padding:34px 30px}
+.auth-card h1{font-size:21px;margin:0 0 6px;text-align:center}
+.auth-card p.sub{text-align:center;color:var(--muted,#8d96b8);margin:0 0 22px;line-height:1.6}
+.auth-card .field{margin-bottom:14px}
+#authErr{color:#ff8b8b;font-size:13px;min-height:18px;margin:0 0 10px;text-align:center}
+.auth-card button{width:100%;padding:12px;font-size:15px}
+</style></head><body><div class="wrap auth-wrap">
+<div class="card auth-card">
+  <h1>${title}</h1>
+  <p class="sub">${sub}</p>
+  <p id="authErr"></p>
+  <div class="field"><label for="p1">密码</label><input id="p1" type="password" placeholder="至少 6 位" autocomplete="current-password"/></div>
+  ${isSetup ? '<div class="field"><label for="p2">确认密码</label><input id="p2" type="password" placeholder="再输一次" autocomplete="new-password"/></div>' : ''}
+  <button class="primary" onclick="submit()">${btn}</button>
+</div></div>
+<script>
+async function submit(){
+  var p=document.getElementById('p1').value;
+  var err=document.getElementById('authErr');
+  if(!p){err.textContent='请输入密码';return;}
+  var p2=document.getElementById('p2');
+  if(p2 && p!==p2.value){err.textContent='两次输入的密码不一致';return;}
+  var r;
+  try{ r=await fetch('/api/admin/${api}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:p})}); }
+  catch(e){ err.textContent='网络错误：'+(e.message||e); return; }
+  var j;
+  try{ j=await r.json(); }catch(e){ err.textContent='接口异常（HTTP '+r.status+'）：'+(e.message||e); return; }
+  if(j.ok){ location.href='/admin'; }
+  else{ err.textContent=j.error||('失败（HTTP '+r.status+'）'); }
+  }
+document.getElementById('p1').addEventListener('keydown',function(e){ if(e.key==='Enter') submit(); });
+</script></body></html>`;
 }

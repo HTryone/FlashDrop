@@ -1,9 +1,7 @@
 // 站长后台：内嵌 HTML 控制页 + 每桶配额/健康度/开关/自服务加桶接口。
 // 全部挂在 Worker 上，控制台零外部依赖、零构建步骤。
-// 凭据默认走仓库写法（见 storage-router），KV bucket_cfg 仅作覆盖层。
-//
-// ⚠️ 调试模式：已移除密码鉴权（用户要求）。上线前必须重新加回 X-Admin-Password 鉴权 +
-//    quota:admin_password_hash 校验，否则任何人都能改桶配置/清零。
+// 认证（2026-08-20）：首次访问设置密码（PBKDF2 哈希存 KV admin:password_hash），
+//   之后 HttpOnly session cookie 登录（admin:session:<token>，7 天）。
 //
 // 布局约定（2026-08-20 用户拍板）：
 //   - 800px 一条界线：<800 手机（无外层卡片容器、按钮 3+2 换行、表单单列），≥800 电脑（玻璃卡片、按钮一行、表单两列）。
@@ -14,7 +12,17 @@ import type { IndexBackend } from '../../src/transfer/tus/types';
 import { corsHeaders } from '../../src/transfer/tus/tus-protocol';
 import type { QuotaGuard } from './quota';
 import type { BucketSelector, StorageResolver } from './storage-router';
-import { adminHtml } from './admin-ui';
+import { adminHtml, authHtml } from './admin-ui';
+import {
+  hasPassword,
+  setPassword,
+  verifyPassword,
+  createSession,
+  destroySession,
+  isAuthed,
+  sessionCookie,
+  clearCookie,
+} from './admin-auth';
 
 export interface AdminCtx {
   env: Record<string, unknown>;
@@ -152,10 +160,22 @@ async function checkBucket(ctx: AdminCtx, accountId: string): Promise<unknown> {
   return result;
 }
 
-function json(data: unknown, origin: string | null, status = 200): Response {
+function json(
+  data: unknown,
+  origin: string | null,
+  status = 200,
+  extraHeaders?: Record<string, string>,
+): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { ...corsHeaders(origin), 'Content-Type': 'application/json' },
+    headers: { ...corsHeaders(origin), 'Content-Type': 'application/json', ...extraHeaders },
+  });
+}
+
+/** 页面响应（HTML）。 */
+function html(data: string, extraHeaders?: Record<string, string>): Response {
+  return new Response(data, {
+    headers: { 'Content-Type': 'text/html; charset=utf-8', ...extraHeaders },
   });
 }
 
@@ -165,13 +185,48 @@ export async function handleAdmin(request: Request, ctx: AdminCtx): Promise<Resp
   const path = url.pathname;
 
   if (path === '/admin') {
-    if (request.method === 'GET')
-      return new Response(adminHtml(), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+    if (request.method === 'GET') {
+      // 首次访问（未设置密码）→ 设置页；有密码无有效会话 → 登录页；已认证 → 面板
+      const needSetup = !(await hasPassword(ctx.kv));
+      if (needSetup) return html(authHtml('setup'));
+      if (!(await isAuthed(ctx.kv, request))) return html(authHtml('login'));
+      return html(adminHtml());
+    }
     return new Response('Method Not Allowed', { status: 405 });
   }
 
   if (path.startsWith('/api/admin/')) {
     const api = path.slice('/api/admin/'.length);
+
+    // ---- 认证相关：设置密码 / 登录 / 登出（放行，其余接口一律先过鉴权）----
+    if (api === 'setup' && request.method === 'POST') {
+      const body = (await request.json().catch(() => ({}))) as { password?: string };
+      const res = await setPassword(ctx.kv, body.password ?? '');
+      if (!res.ok) return json(res, origin, 400);
+      // 设置成功即自动登录：直接建会话发 cookie，用户"设置完直接进"
+      const token = await createSession(ctx.kv);
+      if (!token) return json({ ok: false, error: '会话创建失败' }, origin, 500);
+      return json({ ok: true }, origin, 200, { 'Set-Cookie': sessionCookie(token) });
+    }
+
+    if (api === 'login' && request.method === 'POST') {
+      const body = (await request.json().catch(() => ({}))) as { password?: string };
+      const ok = await verifyPassword(ctx.kv, body.password ?? '');
+      if (!ok) return json({ ok: false, error: '密码错误' }, origin, 401);
+      const token = await createSession(ctx.kv);
+      if (!token) return json({ ok: false, error: '会话创建失败' }, origin, 500);
+      return json({ ok: true }, origin, 200, { 'Set-Cookie': sessionCookie(token) });
+    }
+
+    if (api === 'logout' && request.method === 'POST') {
+      await destroySession(ctx.kv, request);
+      return json({ ok: true }, origin, 200, { 'Set-Cookie': clearCookie() });
+    }
+
+    // ---- 其余接口：必须已认证 ----
+    if (!(await isAuthed(ctx.kv, request))) {
+      return json({ error: '未登录' }, origin, 401);
+    }
 
     if (api === 'status' && (request.method === 'POST' || request.method === 'GET'))
       return json(await ctx.quota.status(), origin);
