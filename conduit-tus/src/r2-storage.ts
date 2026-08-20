@@ -156,4 +156,19 @@ export class R2StorageBackend implements StorageBackend {
     } while (token);
     return out;
   }
+
+  /** 生命周期规则检测：GET /?lifecycle 看是否配置了删除规则（Expiration）。
+   *  未配置时 S3 返回 404（NoSuchLifecycleConfiguration）→ false；
+   *  配置了且含 Expiration → true。异常统一视为未配置（false），不阻断健康检查。 */
+  async checkLifecycle(): Promise<boolean> {
+    try {
+      const res = await this.aws.fetch(`${this.s3Url('')}?lifecycle`, { method: 'GET' });
+      if (res.status === 404) return false;
+      if (!res.ok) return false;
+      const xml = await res.text();
+      return /<Expiration>/.test(xml);
+    } catch {
+      return false;
+    }
+  }
 }

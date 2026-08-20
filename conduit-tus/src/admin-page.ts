@@ -253,6 +253,7 @@ function adminHtml(): string {
     if(r.ok){
       // 接入成功后清空表单，方便连续接入多个桶
       ['a_id','cf_code','b_name','ak','sk','lim'].forEach(function(id){document.getElementById(id).value=''});
+      alert('✅ 接入成功！\n\n⚠️ 记得去 R2 控制台给桶「'+body.account_id+'」配置生命周期规则（文件过期 1 天自动删除），否则文件体会永久累积、存储费持续增长。');
       load();
     }else{var e=await r.json();alert('接入失败：'+(e.error||r.status));}
   }
@@ -351,7 +352,12 @@ async function checkBucket(ctx: AdminCtx, accountId: string): Promise<unknown> {
     await backend.list('');
     result.status = 'normal';
     result.creds_valid = true;
-    result.lifecycle_ok = true;
+    // 真实检测生命周期规则：未配置 Expiration 删除规则 → lifecycle_ok=false（面板红点）
+    result.lifecycle_ok = backend.checkLifecycle ? await backend.checkLifecycle() : true;
+    if (!result.lifecycle_ok) {
+      result.status = 'error';
+      result.error = '未配置生命周期规则：文件体不会自动过期删除，存储费会持续累积';
+    }
   } catch (e) {
     result.error = e instanceof Error ? e.message : String(e);
   }
