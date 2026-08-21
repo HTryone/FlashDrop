@@ -362,6 +362,7 @@ export class LocalReceiver {
     if (frame.length < FRAME_HDR) { this.cb.onStatus('收到过短的数据帧'); return; }
     const { fi, ci, plainLen, body } = decodeFrame(frame);
     if (fi >= this.writers.length) {
+      warn('https', 'receiver', `文件索引越界 fi=${fi} max=${this.writers.length - 1}`);
       console.warn(`[recv] 文件索引越界: fi=${fi}, max=${this.writers.length - 1}`);
       return;
     }
@@ -375,6 +376,7 @@ export class LocalReceiver {
         void this.drainWrites();
       })
       .catch((e: any) => {
+        error('https', 'receiver', `解密失败 fi=${fi} ci=${ci}`, { fi, ci, error: String(e) });
         console.error('[recv] 解密失败:', e);
         this.cb.onStatus(`数据帧错误: ${e?.message || e}`);
       });

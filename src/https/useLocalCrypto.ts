@@ -2,6 +2,7 @@
 // 自己只等 Promise 返回，主线程零阻塞（UI 不卡、发送/接收不被解密拖死）。
 // 使用 Worker 池（多个并发 Worker）并行解密，根治「接收端单 Worker 串行解密」的性能瓶颈。
 import LocalCryptoWorker from '@/workers/localCrypto.worker?worker';
+import { error } from '@/diagnostics/logger';
 
 type Pending = { resolve: (b: ArrayBuffer) => void; reject: (e: any) => void };
 
@@ -28,7 +29,10 @@ function ensureWorkers(): Worker[] {
       if (ok) p.resolve(out as ArrayBuffer);
       else p.reject(new Error(error || 'crypto worker error'));
     };
-    w.onerror = (e) => console.error('[localCrypto] worker 异常:', e);
+    w.onerror = (e) => {
+      error('worker', 'localCrypto', 'Worker 异常', { error: String(e) });
+      console.error('[localCrypto] worker 异常:', e);
+    };
     workers.push(w);
     workerBusy.set(w, 0);
   }

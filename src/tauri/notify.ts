@@ -28,10 +28,7 @@ export async function requestNotificationAtLaunch(): Promise<void> {
   if (!isPhone()) return;
   if (localStorage.getItem(NOTIF_ASKED_KEY)) return;
   try {
-    await invoke('plugin:arkpulse-android-fs|show_save_dialog', {
-      title: '开启通知',
-      message: 'ArkPulse 需要通知权限，以便文件下载完成时在通知栏提醒你保存位置。',
-    });
+    await invoke('plugin:arkpulse-android-fs|show_save_dialog', { title: '开启通知', message: 'ArkPulse 需要通知权限，以便文件下载完成时在通知栏提醒你保存位置。' });
   } catch {
     /* 说明框不可用：直接走系统授权 */
   }

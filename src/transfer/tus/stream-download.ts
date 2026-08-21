@@ -11,6 +11,7 @@
 
 import { makeSinks, pickSaveDir } from '@/composables/filesink';
 import { importRelayKeys, hmacEqual, decryptFrame, HEADER_LEN, IV_LEN, TAG_LEN } from '@/crypto/tus-crypto';
+import { error, warn, info } from '@/diagnostics/logger';
 
 export interface PartInfo { key: string; offset: number; size: number; url: string }
 export interface DownloadManifest { parts: PartInfo[]; total: number; filename: string }
@@ -102,10 +103,10 @@ async function fetchPart(
       // 权威长度校验：以 manifest part.size 为准，不靠 Content-Length（代理可能缺失/篡改）
       // 实收 ≠ 声明 → 本次取数失败，退避后整 part 重取（带 cache-bust 防缓存错响应）
       if (received !== part.size) {
-        console.warn('[tus-download] part', part.offset, '长度不符 声明', part.size, '实收', received);
+        warn('tus', 'stream-download', `part ${part.offset} 长度不符 声明${part.size} 实收${received}`, { offset: part.offset, declared: part.size, received });
         throw new Error('part 长度不符(声明 ' + part.size + ' 实收 ' + received + ')');
       }
-      console.log('[tus-download] part', part.offset, '取数 OK 字节', received, '/', part.size);
+      info('tus', 'stream-download', `part ${part.offset} 取数OK 字节${received}/${part.size}`, { offset: part.offset, size: received });
       return received === out.length ? out : out.slice(0, received);
     } catch (e) {
       if (signal?.aborted) throw new Error('下载已取消');
@@ -181,6 +182,7 @@ export async function streamDownloadToSink(opts: StreamDownloadOpts): Promise<{ 
   // 严格按 offset 升序：解码必须喂连续全局密文，part 边界与帧边界无关（帧可跨 part，pending 缓冲自动衔接）
   const parts = [...manifest.parts].sort((a, b) => a.offset - b.offset);
   console.log('[tus-download] 开始下载 文件', manifest.filename, '总大小', manifest.total, '分块数', parts.length, '移动端', isMobile(), 'e2ee', !!e2eeKey);
+  info('tus', 'stream-download', `开始下载 ${manifest.filename} 总大小${manifest.total} 分块${parts.length} 移动端${isMobile()} e2ee${!!e2eeKey}`, { filename: manifest.filename, total: manifest.total, partCount: parts.length, isMobile: isMobile(), hasE2ee: !!e2eeKey });
   const dirHandle = await pickSaveDir();
   const { writers, permissionFallback } = await makeSinks([{ name: manifest.filename, size: manifest.total }], dirHandle);
   const sink = writers[0];
@@ -243,7 +245,10 @@ export async function streamDownloadToSink(opts: StreamDownloadOpts): Promise<{ 
       const dec = new FrameDecoder(
         key,
         (p) => sink.write(p),
-        (msg) => console.warn('[tus-download]', msg, '| 失败发生在 part 序号', lastPushedPi, '/', partCount - 1, 'offset', parts[lastPushedPi]?.offset, 'pending字节', dec.pendingLen),
+        (msg) => {
+          warn('tus', 'stream-download', msg, { failedPartIndex: lastPushedPi, totalParts: partCount, lastOffset: parts[lastPushedPi]?.offset, pendingBytes: dec.pendingLen });
+          console.warn('[tus-download]', msg, '| 失败发生在 part 序号', lastPushedPi, '/', partCount - 1, 'offset', parts[lastPushedPi]?.offset, 'pending字节', dec.pendingLen);
+        },
       );
       let pi = 0;
       while (pi < partCount) {
@@ -261,6 +266,12 @@ export async function streamDownloadToSink(opts: StreamDownloadOpts): Promise<{ 
             try {
               const retry = await fetchPart(parts[lastPushedPi], () => {}, signal);
               const d = xorDiff(lastPushedBuf!, retry);
+              error('tus', 'stream-download', `失败part二次重取对比 pi=${lastPushedPi}`, {
+                pi: lastPushedPi, offset: parts[lastPushedPi].offset, size: parts[lastPushedPi].size,
+                retryLen: retry.length,
+                firstHex: toHex(lastPushedBuf!), retryHex: toHex(retry),
+                equal: d.equal, firstDiff: d.firstDiff, diffCount: d.diffCount,
+              });
               console.error('[tus-download] 失败part二次重取对比', {
                 pi: lastPushedPi, offset: parts[lastPushedPi].offset, size: parts[lastPushedPi].size,
                 retryLen: retry.length,
@@ -268,6 +279,7 @@ export async function streamDownloadToSink(opts: StreamDownloadOpts): Promise<{ 
                 equal: d.equal, firstDiff: d.firstDiff, diffCount: d.diffCount,
               });
             } catch (e2) {
+              error('tus', 'stream-download', `失败part二次重取异常 pi=${lastPushedPi}`, { pi: lastPushedPi, error: String(e2) });
               console.error('[tus-download] 失败part二次重取异常', e2);
             }
             break;
@@ -298,5 +310,6 @@ export async function streamDownloadToSink(opts: StreamDownloadOpts): Promise<{ 
   // ║ 两端都真正落盘，中转才算 100% 成功。任何「提前完成 / 提前关闭」都禁止。     ║
   // ╚══════════════════════════════════════════════════════════════════════════╝
   await scheduler; // 等调度器收尾（捕获潜在未决错误）
+  info('tus', 'stream-download', `下载完成 ${manifest.filename} 权限回退${permissionFallback ?? false}`, { filename: manifest.filename, permissionFallback, success });
   return { permissionFallback };
 }

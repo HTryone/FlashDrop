@@ -67,7 +67,7 @@ function bytesToBase64(bytes: Uint8Array): string {
 // 安卓不支持 Raw（Tauri 官方限制），退到 base64（膨胀 1.33x），是该平台最优解。
 async function flushChunk(handle: string, data: Uint8Array): Promise<void> {
   if (isAndroid()) {
-    await invoke('write_chunk_b64', { handle, data: bytesToBase64(data) });
+    await invoke('write_chunk_b64', [handle, bytesToBase64(data)] as any);
     return;
   }
   await invoke('write_chunk', data, { headers: { 'x-fd-handle': handle } });
@@ -113,15 +113,20 @@ async function androidBaseDir(): Promise<string> {
 // 调用方据此走 SAF 兜底（旧版命令永不失败，导致兜底分支形同虚设）。
 async function tryResolveFs(name: string): Promise<string> {
   const dir = await androidBaseDir();
-  return invoke<string>('resolve_save_path', { dir, name });
+  return invoke<string>('resolve_save_path', [dir, name] as any);
 }
 
 // 中转：桌面弹系统保存对话框；安卓优先落系统下载目录（需 MANAGE 权限），失败走 SAF 每次选文件。
 export async function tauriPickSavePath(name: string): Promise<SaveTarget | null> {
   if (isAndroid()) {
     // L1 MediaStore：固定 Download/ArkPulse，零权限零弹框（现代设备一锤定音）。
+    // ⚠️ Kotlin 插件返回 JSObject {uri: "content://..."}，不可用 invoke<string>：
+    //   invoke<string> 期望纯字符串，收到 JSObject 后会当 path 喂给 open_file →
+    //   'invalid type: map, expected a string' 报错，下载秒挂。
+    //   正确写法：invoke<{uri: string}>().then(r => r.uri)。
     try {
-      const uri = await invoke<string>('plugin:arkpulse-android-fs|mediastore_insert', { name });
+      const res = await invoke<{ uri: string }>('plugin:arkpulse-android-fs|mediastore_insert', { name });
+      const uri = res.uri;
       beginDownload();
       return { kind: 'mediastore', uri };
     } catch {
@@ -148,7 +153,7 @@ export async function tauriPickSavePath(name: string): Promise<SaveTarget | null
   const dir = (await getDefaultSaveDir()) || (await downloadDir().catch(() => '' as string));
   if (dir) {
     try {
-      const finalPath = await invoke<string>('resolve_save_path', { dir, name });
+      const finalPath = await invoke<string>('resolve_save_path', [dir, name] as any);
       setDefaultSaveDir(dir);
       return { kind: 'fs', path: finalPath };
     } catch {
@@ -173,7 +178,7 @@ export async function tauriPickSaveDir(): Promise<string | null> {
     try {
       const dir = await androidBaseDir();
       // 探测真实可写（Rust 侧 create_dir_all + 写探针）：无「全部文件访问」权限时抛错走 SAF。
-      await invoke<string>('resolve_save_path', { dir, name: '.probe' });
+      await invoke<string>('resolve_save_path', [dir, '.probe'] as any);
       setDefaultSaveDir(dir);
       return dir;
     } catch {
@@ -186,7 +191,7 @@ export async function tauriPickSaveDir(): Promise<string | null> {
   const dir = saved || (await downloadDir().catch(() => '' as string));
   if (dir) {
     try {
-      await invoke<string>('resolve_save_path', { dir, name: '.probe' });
+      await invoke<string>('resolve_save_path', [dir, '.probe'] as any);
       setDefaultSaveDir(dir);
       return dir;
     } catch {
@@ -216,7 +221,7 @@ export async function tauriBuildWriters(
     if (!dir) throw new Error('未选择保存目录');
     const targets = await Promise.all(
       files.map(async (f) => {
-        const finalPath = await invoke<string>('resolve_save_path', { dir, name: sanitize(f.name) });
+        const finalPath = await invoke<string>('resolve_save_path', [dir, sanitize(f.name)] as any);
         return { kind: 'fs', path: finalPath } as SaveTarget;
       }),
     );
@@ -234,8 +239,8 @@ export async function tauriBuildWriters(
   try {
     const targets = await Promise.all(
       files.map(async (f) => {
-        const uri = await invoke<string>('plugin:arkpulse-android-fs|mediastore_insert', { name: sanitize(f.name) });
-        return { kind: 'mediastore', uri } as SaveTarget;
+        const res = await invoke<{ uri: string }>('plugin:arkpulse-android-fs|mediastore_insert', { name: sanitize(f.name) });
+        return { kind: 'mediastore', uri: res.uri } as SaveTarget;
       }),
     );
     const writers = targets.map((t) => new TauriSafWriter((t as { uri: string }).uri));
@@ -248,7 +253,7 @@ export async function tauriBuildWriters(
       if (dir) {
         const targets = await Promise.all(
           files.map(async (f) => {
-            const finalPath = await invoke<string>('resolve_save_path', { dir, name: sanitize(f.name) });
+            const finalPath = await invoke<string>('resolve_save_path', [dir, sanitize(f.name)] as any);
             return { kind: 'fs', path: finalPath } as SaveTarget;
           }),
         );
@@ -271,8 +276,10 @@ export async function tauriBuildWriters(
       if (treeUri) {
         const targets = await Promise.all(
           files.map(async (f) => {
-            const uri = await invoke<string>('plugin:arkpulse-android-fs|saf_create_child', { tree_uri: treeUri, name: sanitize(f.name) });
-            return { kind: 'saf', uri } as SaveTarget;
+            // ⚠️ Kotlin 插件返回 JSObject {uri: "content://..."}，同 L1 坑，不可 invoke<string>。
+            //   此处若用 invoke<string>，SAF 路径会触发相同 'invalid type: map' 错误。
+            const res = await invoke<{ uri: string }>('plugin:arkpulse-android-fs|saf_create_child', { tree_uri: treeUri, name: sanitize(f.name) });
+            return { kind: 'saf', uri: res.uri } as SaveTarget;
           }),
         );
         const writers = targets.map((t) => new TauriSafWriter((t as { uri: string }).uri));
@@ -337,7 +344,7 @@ export class TauriFileWriter {
     if (!this.openPromise) {
       // 错误加「落盘失败：」前缀：上层据此把它归为落盘/权限问题，
       // 不再套用「多为网络不稳定」的网络文案（那会把确定性故障说成网络波动，误导排查）。
-      this.openPromise = invoke<string>('open_file', { path: this.resolvedPath })
+      this.openPromise = invoke<string>('open_file', [this.resolvedPath] as any)
         .then((h) => {
           this.handle = h;
         })
@@ -376,7 +383,7 @@ export class TauriFileWriter {
   async close(): Promise<void> {
     await this.flush();
     if (this.handle) {
-      await invoke('close_file', { handle: this.handle });
+      await invoke('close_file', [this.handle] as any);
       this.handle = null;
     }
   }
@@ -384,7 +391,7 @@ export class TauriFileWriter {
   async abort(): Promise<void> {
     await this.flush().catch(() => {});
     if (this.handle) {
-      await invoke('abort_file', { handle: this.handle }).catch(() => {});
+      await invoke('abort_file', [this.handle] as any).catch(() => {});
       this.handle = null;
     }
   }

@@ -1,6 +1,7 @@
 // DataChannel 层：子帧重组（接收端）、在途窗口（发送端 ack 流控）、分片发送 + DC 缓冲背压。
 import { SUB_HDR, RTC_LOW } from './types';
 import { subFrameIter } from './framing';
+import { warn } from '@/diagnostics/logger';
 
 // 接收端：把二进制子帧重组成完整逻辑帧（DC 本身有序，这里兜底稳健）。
 export class Reassembler {
@@ -74,6 +75,7 @@ export async function sendSubFrames(dc: RTCDataChannel, frame: Uint8Array): Prom
     return true;
   } catch (e) {
     console.warn('[p2p] 子帧发送失败:', e);
+    warn('p2p', 'channel', `子帧发送失败`, { error: String(e) });
     return false;
   }
 }

@@ -60,11 +60,11 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
     ]);
 
     builder
-        .setup(|_app, api| {
+        .setup(|_app, _api| {
             // 注册 Kotlin 插件类，使 PluginManager 能路由 IPC 到 @Command 方法。
             // 包名 + 类名必须与 ArkPulseAndroidFsPlugin.kt 的 package/class 完全一致。
             #[cfg(target_os = "android")]
-            api.register_android_plugin(
+            _api.register_android_plugin(
                 "com.arkpulse.arkpulseandroidfs",
                 "ArkPulseAndroidFsPlugin",
             )?;

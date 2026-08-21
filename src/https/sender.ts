@@ -8,7 +8,7 @@ import { segRoom, SEGMENT_TIME_MS, SEGMENT_MIN_BYTES } from './segment';
 import { RelayControl } from './control';
 import { encryptChunkAsync } from '@/https/useLocalCrypto';
 import { deriveKey, LOCAL_SALT, LOCAL_CHUNK_SIZE, randomPassphrase } from '@/crypto/e2ee';
-import { info, error } from '@/diagnostics/logger';
+import { info, error, warn } from '@/diagnostics/logger';
 
 export interface SenderCallbacks {
   onStatus: (s: string) => void;
@@ -173,6 +173,7 @@ export class LocalSender {
       });
     } catch (e: any) {
       if (this.abort?.signal.aborted) return;
+      warn('https', 'sender', `关闭流提示失败`, { error: String(e) });
       console.warn(`关闭流提示失败（数据已送达，relay 会超时回收）: ${e?.message || e}`);
     }
   }
@@ -604,7 +605,7 @@ export class LocalSender {
 
     const realIsLast = !segTimeUp;
     try { await postSegendFrame(realIsLast); }
-    catch (e: any) { console.warn(`第 ${seg + 1} 段 segend 发送失败（接收端将按 EOF 判定）: ${e?.message || e}`); }
+    catch (e: any) { warn('https', 'sender', `第${seg + 1}段 segend 发送失败`, { seg: seg + 1, error: String(e) }); console.warn(`第 ${seg + 1} 段 segend 发送失败（接收端将按 EOF 判定）: ${e?.message || e}`); }
     if (!realIsLast) {
       // 中间段：发完即关流（EOF 推进段号），与原逻辑一致
       await this.closeStream();

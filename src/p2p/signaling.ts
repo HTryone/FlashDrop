@@ -1,6 +1,7 @@
 // 信令客户端：复用现有 relay WS（后端加 rtc-signal 双向透传分支），把 SDP/ICE 用 { type:'rtc-signal' } 透传给对端。
 // 信令房间命名空间 `::p2p`，避免与同房间码的 HTTP 控制通道互相串扰。
 import type { P2PRole } from './types';
+import { warn } from '@/diagnostics/logger';
 
 export class SignalingClient {
   private ws: WebSocket | null = null;
@@ -61,13 +62,17 @@ export class SignalingClient {
         else if (msg?.type === 'peer-joined') this.onPeerConnected?.(msg.role);
       } catch (e) {
         console.warn('[p2p] 信令解析失败:', e);
+        warn('p2p', 'signaling', `信令解析失败`, { error: String(e) });
       }
     };
     ws.onclose = () => {
       if (this.shouldClose) { this.onClose?.(); return; }
       this.scheduleReconnect(); // 意外断开 → 指数退避自动重连，不拆 P2P 数据通道
     };
-    ws.onerror = (e) => console.warn('[p2p] 信令 WS 错误:', e);
+    ws.onerror = (e) => {
+      console.warn('[p2p] 信令 WS 错误:', e);
+      warn('p2p', 'signaling', `信令 WS 错误`, { error: String(e) });
+    };
   }
 
   // 指数退避重连（1s→2s→4s…封顶 10s）。达到上限仍失败则放弃并通知上层。

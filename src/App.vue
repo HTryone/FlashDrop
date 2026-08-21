@@ -25,7 +25,7 @@ watch(
     const code = route.query.code as string;
     const t = route.query.tab as string;
     if (code) activeTab.value = 'receive';
-    else if (t === 'local') activeTab.value = 'receive';
+    else if (t === 'local' || t === 'receive') activeTab.value = 'receive';
   },
   { immediate: true },
 );

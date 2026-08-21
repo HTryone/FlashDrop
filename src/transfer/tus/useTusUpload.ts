@@ -135,6 +135,7 @@ function uploadSliceXHR(
       if (watchdogCalled) return;
       watchdogCalled = true;
       console.warn(`[upload] 单块已超 ${WATCHDOG}s 看门狗，触发降档（后续块用更小尺寸）`);
+      warn('tus', 'upload', `看门狗超时 单块${WATCHDOG}s 触发降档`, { watchdog: WATCHDOG });
       const abortNow = onWatchdog?.() === true;
       if (abortNow) {
         try { xhr.abort(); } catch { /* 已结束 */ }
