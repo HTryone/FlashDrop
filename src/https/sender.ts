@@ -48,9 +48,7 @@ export class LocalSender {
   private dataStarted = false; // 是否已真正开始推数据，用于精确驱动「传输中」状态（区别于 setSending 的流程级标记）
   private abort: AbortController | null = null;
   private ctrl: RelayControl | null = null;
-  // 在场侦听 WS：genRoom 即开，早于「开始传输」。仅用于接收端加入时点亮 peerOnline 灯，
-  // 不承载数据传输门控（门控由 transferSegment 内的 this.ctrl 负责）。
-  // 修复「接收端先点连接接收，发送端灯要等到点开始传输才亮」——那时才建连导致早先的 ready/peer-joined 通知无人接收。
+  // presenceCtrl：早于 startSend 连接，仅用于点亮 peerOnline 灯；startSend 内关闭让出 wsSender 单槽。
   private presenceCtrl: RelayControl | null = null;
   private remoteAborted = false; // 对方（接收端）取消，区别于本地取消
   private remoteFailed = false;  // 对方（接收端）接收失败，区别于取消
@@ -99,15 +97,8 @@ export class LocalSender {
     this.armPresence(); // 提前开在场侦听 WS，接收端一加入即点亮「对方在线」灯
   }
 
-  // 提前开在场侦听 WS（genRoom 时调用）：只监听 ready/peer-joined/recv-ready 以点亮 peerOnline，
-  // 不处理进度/recv-done（那些由 transferSegment 的 this.ctrl 负责）。
-  // 关键：必须连「段房间 segRoom(this.room,0)」——接收端 recvSegment 连的正是这个房间
-  // （receiver.ts:174 = segRoom(this.room,0)），relay 的 peer-joined/recv-ready 按房间隔离转发
-  // （relay.js:281-318）。此前错连基础房间 this.room，与接收端不在同一房间，永远收不到对方加入，
-  // 导致「生成房间即亮灯」失效、灯要等到点开始传输（this.ctrl 连段房间）才亮。
-  // relay 的 wsSender 单槽：本 WS 先连即占用段房间 wsSender；startSend 一开始传输即关闭本 WS
-  // （见 startSend 内 presenceCtrl.close()），把 wsSender 单槽让给 this.ctrl，避免两者争夺导致
-  // 进度/recv-done 被误转给闲连而卡死。
+  // 【坑】必须连 segRoom(this.room,0)，与 receiver.ts:174 同房间；错连基础房间则永远收不到对方加入。
+  // wsSender 单槽：startSend 内 presenceCtrl.close() 让出此槽给 this.ctrl，避免消息被误转。
   private armPresence() {
     if (this.presenceCtrl) return;
     const base = resolveRelayBase();
@@ -151,17 +142,13 @@ export class LocalSender {
   }
 
   close() {
-    // 注意：不在此处置空/abort this.abort。置空会使 pump 的 this.abort?.signal.aborted 检测失效、
-    // 在途 fetch 因 this.abort!.signal 空引用抛错被误判为「网络抖动」重试，并覆盖取消状态。
-    // 中止由调用方（handleCtrlMsg 的 cancel 分支 / cancel()）显式触发。
+    // 【坑】禁止置空/abort this.abort，否则 pump 的空引用检查失效导致网络抖动重试覆盖取消状态。
     if (this.ctrl) { this.ctrl.close(); this.ctrl = null; }
     if (this.presenceCtrl) { this.presenceCtrl.close(); this.presenceCtrl = null; }
   }
 
   // 关闭当前段在 relay 上的可读流（POST /close）。
-  // 关键：最后段不在发完数据后立刻调用，而是等接收端回 recv-done 后再调，
-  // 避免 relay 在尾帧尚未被 GET 消费时即 controller.close() 截断，导致接收端差一帧卡 99%。
-  // 幂等：streamClosed 守卫，重复调用（recv-done + 超时兜底）只关一次。
+  // 【坑】最后段等 recv-done 后再调，避免 relay 截断尾帧导致差一帧卡 99%。
   private async closeStream(): Promise<void> {
     if (this.streamClosed) return;
     this.streamClosed = true;
@@ -216,9 +203,7 @@ export class LocalSender {
     const { list: chunkListAll, total } = this.buildChunkList(files);
     this.setSending(true);
     info('https', 'sender', `开始本地直传: 文件数=${files.length}, 总字节=${total}`, { total });
-    // 在场侦听 WS 已完成使命：接收端若已在 genRoom 阶段加入，灯已点亮；若尚未加入，
-    // 后续由 transferSegment 的 this.ctrl 在收到 peer-joined 时点亮（handleCtrlMsg 已认 peer-joined）。
-    // 此处关闭，把段房间 wsSender 单槽让给 this.ctrl，避免两 WS 争夺导致进度/recv-done 被误转。
+    // presenceCtrl 已完成使命，让出 wsSender 单槽；后续 by this.ctrl 在收到 peer-joined 时亮灯。
     if (this.presenceCtrl) { this.presenceCtrl.close(); this.presenceCtrl = null; }
     this.cb.onProgress(0);
     this.setDone(false);
@@ -278,7 +263,7 @@ export class LocalSender {
     this.cb.onStatus(`正在传输第 ${seg + 1} 段…`);
     info('https', 'sender', `开始传输第 ${seg + 1} 段 (${room})`, { seg, room });
 
-    // 每段独立滑动窗口 + 接收端就绪闸门（防上一段残留导致闸门误判）
+    // 每段独立窗口 + 闸门（防上一段残留误判）
     this.ackBytes = 0; this.sentBytes = 0; this.ackWaiters = [];
     this.recvReady = false;
     this.armRecvReady();
@@ -340,15 +325,7 @@ export class LocalSender {
       ? '等待对方点「连接接收」…（链接已生成，可先发给对方）'
       : `第 ${seg + 1} 段：等待对方就绪…`);
 
-    // 就绪闸门：
-    //  · 第 1 段必须真等 —— 接收端要人工点「连接接收」，可能等很久。保留 15s×8 活性重试
-    //    （relay 偶发未补发 pull → 断开 ctrl 重连让 relay 重补）。
-    //  · 第 2 段起不等任何信号 —— pull 是边沿信号，切段瞬间 WS 与 GET 的建立时序错开就会
-    //    永久丢失，实测因此死锁 58s。而 relay 允许「先推后拉」：POST 时房间不存在会自动
-    //    createRoom（relay.js:197），房间自带 8MB 缓冲（relay.js:372），GET 首次连上时
-    //    readable 未 locked 故复用同一房间、缓冲数据一字节不丢（relay.js:139）。缓冲满则
-    //    POST 挂 pullWaiters 等 GET 唤醒（STALL_MS 70s 容忍窗，实测接收端 1~2s 即到）。
-    //    所以这里只给 3s 让接收端从容跟上，超时照样开推，不再依赖信号必达。
+    // 【规范】第 1 段真等（接收端需人工点「连接接收」，15s×8 重试）；第 2 段起 pull 是边沿信号，3s 超时后照样开推（relay 允许「先推后拉」）。
     if (seg === 0) {
       let attempts = 0;
       const RECV_RETRY = 8;

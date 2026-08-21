@@ -1,11 +1,6 @@
-// Tauri 接入层（核心逻辑，类比前端 .ts）：Rust 后端接管落盘，绕过浏览器 FSA 不兼容。
-// 对外暴露两个 Sink 实现（中转 TauriRelaySink / P2P TauriP2PSink）对接现有 Sink 抽象，
-// 以及路径选择 + 默认下载目录持久化（App 内可改，存 WebView 本地）。
-//
-// 安卓落盘级联（v3）：L1 MediaStore(下载/ArkPulse) → L2 std::fs 探针 → L3 持久 SAF → 绝对兜底逐文件 SAF。
-//   仅 L2 走 file_writer.rs 的 std::fs（原样保留作兜底），L1/L3 由独立插件 arkpulse-android-fs 接管。
-//   下载完成：仅成功弹原生「确定」确认框 + 系统通知（位置文案），失败不提示；下载期间亮屏保活。
-// 核心 Rust std::fs 落盘逻辑一行未改，符合架构铁律。
+// Tauri 接入层：Rust 后端接管落盘，绕过 FSA 不兼容。
+// 安卓三级级联：L1 MediaStore → L2 std::fs 探针 → L3 持久 SAF → 绝对兜底逐文件 SAF。
+// 桌面端直写 std::fs，用户可在 App 内修改默认下载目录。
 import { invoke } from '@tauri-apps/api/core';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { downloadDir, homeDir, join } from '@tauri-apps/api/path';
@@ -24,30 +19,25 @@ export type SaveTarget =
   | { kind: 'saf'; uri: string };
 export type AnyTauriWriter = TauriFileWriter | TauriSafWriter;
 
-// 安卓判断：用壳在页面运行前同步注入的设备标识（window.__FLASHDROP_CLIENT__），零 IPC、零异步、不可能失败。
-//
-// 【不可退化】旧版用 @tauri-apps/plugin-os 的 platform() 判断，而 Rust 端从未注册该插件、
-// capabilities 也无 os 权限 → invoke 必然抛错 → catch 恒返回 false → 安卓被当成桌面：
-// 弹系统保存框（用户看到的「明明授权了还让我选文件夹」），且拿到的 content:// URI 被当文件路径
-// 喂给 Rust std::fs → 打开必失败 → 下载秒挂、速度 0。判端一律走本函数，不要再引入平台探测插件。
+// 安卓判断：用壳同步注入的设备标识，零 IPC、零异步。
+// 【不可退化】旧版用 @tauri-apps/plugin-os 的 platform()，但 Rust 端未注册 → invoke 抛错
+// → 安卓被当桌面 → 弹保存框 + content:// URI 喂给 Rust std::fs 必失败，下载秒挂。
 function isAndroid(): boolean {
   return isPhone();
 }
 
 const DEFAULT_DIR_KEY = 'arkpulse.defaultSaveDir';
-// 批量 invoke 阈值：降 IPC 往返（修 D5）。手机端取更小值——安卓 IPC 只能传文本（见 flushChunk），
-// 单次载荷越大主线程编码/解析卡顿越明显，2MB 在吞吐与流畅度之间最稳。
+// 批量 invoke 阈值：降 IPC 往返（修 D5）。手机端取更小值——安卓 IPC 只能传文本，2MB 最稳。
 function flushBytes(): number {
   return isAndroid() ? 2 * 1024 * 1024 : 4 * 1024 * 1024;
 }
 
-// content:// 是安卓 SAF 的文件标识，不是文件系统路径，绝不能交给 Rust std::fs。
+// content:// 是 SAF 标识，不是文件路径，绝不能交给 Rust std::fs。
 function isContentUri(p: string): boolean {
   return /^content:\/\//i.test(p) || /^file:\/\//i.test(p);
 }
 
-// 二进制转 base64（分块处理，避免 4MB 一次 apply 爆调用栈）。
-// 仅安卓路径使用：安卓 WebView 的 IPC 只能传字符串，Tauri 的二进制 Raw 载荷在该平台不可用。
+// 二进制转 base64（分块处理，避免 4MB 一次 apply 爆调用栈）。仅安卓使用：Tauri Raw 载荷在该平台不可用。
 function bytesToBase64(bytes: Uint8Array): string {
   const CHUNK = 0x8000; // 32KB/次，兼顾栈安全与拼接次数
   let s = '';
@@ -57,14 +47,8 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(s);
 }
 
-// 统一的「写一块数据到已打开句柄」：按平台选 IPC 载荷形态。
-//
-// 【性能铁律·不可退化】桌面必须把数据作为 invoke 的整个 args 传（走二进制 Raw，零膨胀），
-// 句柄放请求头；一旦写成 invoke('write_chunk', { handle, data }) 这种对象形态，
-// Tauri 的 processIpcMessage 会 JSON.stringify + Array.from(Uint8Array)，
-// 4MB 二进制膨胀成 12~16MB 数字数组文本（桌面白烧 3~4 倍带宽与 CPU，
-// 手机端直接打死 WebView 主线程 → 进度不动、速度显示 0、55s 看门狗超时 → 误报「网络波动」）。
-// 安卓不支持 Raw（Tauri 官方限制），退到 base64（膨胀 1.33x），是该平台最优解。
+// 【性能铁律·不可退化】桌面必须走 invoke Raw 二进制 args（零膨胀）；写成对象形态会膨胀 3~4 倍，手机端直接打死 WebView 主线程。
+// 安卓不支持 Raw，退到 base64（膨胀 1.33x）。
 async function flushChunk(handle: string, data: Uint8Array): Promise<void> {
   if (isAndroid()) {
     await invoke('write_chunk_b64', [handle, bytesToBase64(data)] as any);
@@ -92,13 +76,8 @@ function parentDir(p: string): string {
   return i > 0 ? p.slice(0, i) : p;
 }
 
-// 安卓基目录：真正的公共下载目录 /storage/emulated/0/Download/ArkPulse。
-//
-// 【不可退化】不要用 downloadDir()——Tauri 安卓实现是 getExternalFilesDir(DIRECTORY_DOWNLOADS)，
-// 指向 app 私有沙盒 /Android/data/<包名>/files/Download：不需要任何权限，但用户在文件管理器的
-// 「下载」里根本看不到文件，「全部文件访问」权限等于白授。homeDir() 在安卓是
-// Environment.getExternalStorageDirectory() = /storage/emulated/0，join Download/ArkPulse
-// 才是用户认知里的下载目录。取不到时才退回私有目录（至少能落地）。
+// 安卓公共下载目录：/storage/emulated/0/Download/ArkPulse。
+// 【不可退化】不要用 downloadDir()——它指向 app 私有沙盒，用户根本看不到文件，权限白授。
 async function androidBaseDir(): Promise<string> {
   try {
     const home = await homeDir();
@@ -108,9 +87,7 @@ async function androidBaseDir(): Promise<string> {
     return join(dl, 'ArkPulse').catch(() => dl);
   }
 }
-// 尝试用 Rust std::fs 在公共下载目录解析不重名路径。
-// Rust 侧会 create_dir_all + 落写探针验证真实可写：未取得「全部文件访问」权限时抛错，
-// 调用方据此走 SAF 兜底（旧版命令永不失败，导致兜底分支形同虚设）。
+// 探测真实可写：Rust 侧 create_dir_all + 写探针，无「全部文件访问」权限时抛错。
 async function tryResolveFs(name: string): Promise<string> {
   const dir = await androidBaseDir();
   return invoke<string>('resolve_save_path', [dir, name] as any);
@@ -303,8 +280,7 @@ export async function tauriBuildWriters(
   }
 }
 
-// L3 持久化 SAF 目录授权：首次弹系统目录选择器选一次，takePersistableUriPermission 存系统，
-// tree URI 存 localStorage 跨重启复用；之后直写子树零弹框。授权失效（被撤销/清空）则重新选。
+// L3 持久化 SAF：首次选一次文件夹，之后零弹框。tree URI 存 localStorage 跨重启复用。
 const SAF_TREE_KEY = 'arkpulse.safTreeUri';
 async function tauriResolveSafDir(): Promise<string | null> {
   const saved = localStorage.getItem(SAF_TREE_KEY);
@@ -397,9 +373,8 @@ export class TauriFileWriter {
   }
 }
 
-// SAF 兜底写入器：流式分块写入 SAF 返回的文件 URI（经 fs 插件 open→write）。
-// 关键点：传输分块到达即写入，仅用 4MB 批量缓冲降 IPC 往返，峰值内存恒定，大文件不会爆内存。
-// 仅在「未取得全部文件访问权限（MANAGE_EXTERNAL_STORAGE）」时才走此路径——即 MANAGE 授权失败后的最后兜底。
+// SAF 兜底写入器：流式分块写入 SAF URI，仅 MANAGE 授权失败后兜底。
+// 关键点：4MB 批量缓冲降 IPC 往返，峰值内存恒定。
 export class TauriSafWriter {
   private handle: any = null; // FileHandle
   private openPromise: Promise<void> | null = null;
@@ -410,8 +385,7 @@ export class TauriSafWriter {
 
   private ensureOpen(): Promise<void> {
     if (!this.openPromise) {
-      // SAF 返回的 content:// URI，fs 插件在安卓经 ContentResolver 取得可写文件描述符；
-      // append:true 从文件尾写入，配合顺序 write 即为流式落盘（已核对 tauri-plugin-fs 2.5.1 安卓实现）。
+      // SAF: ContentResolver 取可写描述符，append:true 即流式落盘（已核对 tauri-plugin-fs 2.5.1）。
       this.openPromise = fsOpen(this.uri, { write: true, append: true }).then((h) => {
         this.handle = h;
       });
@@ -453,7 +427,7 @@ export class TauriSafWriter {
   }
 
   async abort(): Promise<void> {
-    // 兜底路径下已落盘的文件无法简单回滚（用户手动选的位置），关闭句柄即可，丢弃未写入缓冲。
+    // 兜底路径：已落盘文件无法回滚，关闭句柄丢弃未写入缓冲即可。
     if (this.handle) {
       await this.handle.close().catch(() => {});
       this.handle = null;

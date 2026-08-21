@@ -37,8 +37,8 @@ export async function fetchDocs(moduleId: string): Promise<DocItem[]> {
   }
 }
 
-// markdown → HTML 的轻量渲染（纯函数，先转义再格式化，防 XSS；覆盖常用子集：标题/图片/链接/列表/表格/引用/代码/分隔线/行内格式）。
-// 额外支持在文档中直接写白名单 HTML（img/a/br/center/div/span），用于图片设大小、居中、链接图片等（属性经白名单+安全过滤）。
+// markdown → HTML 轻量渲染（纯函数，先转义再格式化，防 XSS；覆盖标题/图片/链接/列表/表格/引用/代码/分隔线/行内格式）。
+// 额外支持白名单 HTML（img/a/br/center/div/span），属性经白名单+安全过滤。
 // 标题 → 锚点 id（与 renderMarkdown 保持一致）
 export function slugify(title: string, used = new Set<string>()): string {
   let id = title
@@ -48,6 +48,7 @@ export function slugify(title: string, used = new Set<string>()): string {
     .replace(/\s+/g, '-')
     .replace(/[^\w一-龥-]/g, '');
   if (!id) id = 'section';
+  // 【规范】同标题 → 同 id，允许 #标题 注释跳转；CJK 与 ASCII 混合时追加 -1/-2 后缀去重
   let uniq = id;
   let c = 1;
   while (used.has(uniq)) uniq = `${id}-${c++}`;
@@ -128,13 +129,15 @@ function inline(s: string): string {
   const store: string[] = [];
   const stash = (html: string) => {
     store.push(html);
+    // 【XSS防护】私有区字符包裹占位，避免正文中意外匹配
     return `${store.length - 1}`;
   };
   // 1) 先保护行内代码，避免 HTML 解析器把 `<img>` 等也当标签解析
   let s2 = s.replace(/`([^`]+)`/g, (_m, code: string) =>
     stash(`<code>${escapeHtml(code)}</code>`),
   );
-  // 2) 再保护白名单裸 HTML
+  // 2) 再保护白名单裸 HTML（img/br 为自闭合；a/div/span/mark/kbd 为有闭合标签）
+  // 【顺序关键】必须先 regex 行内代码（占位符），再处理 HTML 块，防止代码块中的尖括号被误解析
   s2 = s2.replace(/<\s*(img|br)\b([^>]*?)\/?>/gi, (_m, tag: string, attrs: string) =>
     stash(`<${tag}${filterAttrs(tag, attrs)} />`),
   );
@@ -260,6 +263,8 @@ export function renderMarkdown(src: string): string {
     const line = lines[i];
 
     // 代码块（围栏 ```，支持语言标识 → 语言标签 + 复制按钮）
+    // 【XSS防护】代码块内部原始文本先 escapeHtml，防用户注入 HTML
+    // 【设计】使用专属 CSS class（code-block/code-head/code-lang/code-copy）由外部样式表定义
     if (/^```/.test(line.trim())) {
       const lang = (line.trim().match(/^```(\w*)/) || [])[1] || '';
       const buf: string[] = [];
