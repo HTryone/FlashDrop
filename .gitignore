@@ -21,6 +21,11 @@ toolbox/nsis/
 
 # ===== 图标源图 / 测试 / 临时（绝不入库）=====
 src-tauri/icons/source.png
+src-tauri/icons/android/mipmap-mdpi/
+src-tauri/icons/android/mipmap-hdpi/
+src-tauri/icons/android/mipmap-xhdpi/
+src-tauri/icons/android/mipmap-xxhdpi/
+src-tauri/icons/android/mipmap-xxxhdpi/
 test_*.bin
 *.bin
 /test-assets/
