@@ -63,13 +63,66 @@ pub fn append(entry: &LogEntry) {
         .append(true)
         .open(&file)
     {
-        let line = serde_json::to_string(entry).unwrap_or_default();
-        if writeln!(f, "{line}").is_err() || f.flush().is_err() {
+        let block = format_entry(entry);
+        if f.write_all(block.as_bytes()).is_err() || f.flush().is_err() {
             state().lock().unwrap().dropped += 1;
         }
     } else {
         state().lock().unwrap().dropped += 1;
     }
+}
+
+// 把一条 LogEntry 格式化成「人类可读」文本块（与 UI 实时日志流格式一致，§日志导出）。
+// 行 1：`YYYY-MM-DD HH:MM:SS.mmm LEVEL [channel] msg`
+// 行 2+（按需）：traceId / data / scope / platform 等缩进补行，便于直接 cat 阅读、不丢结构化信息。
+fn format_entry(e: &LogEntry) -> String {
+    let dt = format_ts(e.ts);
+    let level = format!("{:<5}", e.level.to_uppercase());
+    let channel = format!("{:<9}", format!("[{}]", e.channel));
+    let mut header = format!("{dt} {level} {channel} {}", e.msg);
+    header.push('\n');
+
+    let indent = " ".repeat(dt.len() + 1 + level.len() + 1 + channel.len() + 1);
+    let mut extra = String::new();
+    if !e.scope.is_empty() {
+        extra.push_str(&format!("{indent}scope: {}\n", e.scope));
+    }
+    if let Some(t) = &e.trace_id {
+        if !t.is_empty() {
+            extra.push_str(&format!("{indent}trace: {t}\n"));
+        }
+    }
+    if let Some(d) = &e.data {
+        if !d.is_empty() {
+            extra.push_str(&format!("{indent}data:  {d}\n"));
+        }
+    }
+    if let Some(p) = &e.platform {
+        if !p.is_empty() {
+            extra.push_str(&format!("{indent}plat:  {p}\n"));
+        }
+    }
+    let mut out = header;
+    out.push_str(&extra);
+    out
+}
+
+// UTC 毫秒时间戳 → `YYYY-MM-DD HH:MM:SS.mmm`。
+fn format_ts(ms: u64) -> String {
+    let (y, m, d, h, mi, s) = ts_breakdown(ms);
+    format!(
+        "{y:04}-{m:02}-{d:02} {h:02}:{mi:02}:{s:02}.{:03}",
+        ms % 1000
+    )
+}
+
+fn ts_breakdown(ms: u64) -> (i32, u32, u32, u32, u32, u32) {
+    let secs = ms / 1000;
+    let (y, m, d) = days_to_ymd(secs as i64 / 86400);
+    let h = ((secs / 3600) % 24) as u32;
+    let mi = ((secs / 60) % 60) as u32;
+    let s = (secs % 60) as u32;
+    (y, m, d, h, mi, s)
 }
 
 // 7 天滚动覆盖：删除修改时间超过 7 天的 arkpulse-*.log（§3.1）。

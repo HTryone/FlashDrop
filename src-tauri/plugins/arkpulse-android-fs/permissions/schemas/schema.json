@@ -295,10 +295,10 @@
       "type": "string",
       "oneOf": [
         {
-          "description": "ArkPulse 安卓落盘桥默认权限集合：允许 L1 MediaStore 落盘、SAF 持久授权、\n完成确认弹窗与亮屏保活。\n\n#### This default permission set includes:\n\n- `allow-mediastore-insert`\n- `allow-saf-create-child`\n- `allow-saf-take-permission`\n- `allow-show-save-dialog`\n- `allow-set-keep-screen-on`",
+          "description": "ArkPulse 安卓落盘桥默认权限集合：允许 L1 MediaStore 落盘、L3 SAF 持久授权、\nX3 流式写（saf_stream_open/append/close）、完成确认弹窗与亮屏保活。\n\n#### This default permission set includes:\n\n- `allow-mediastore-insert`\n- `allow-saf-create-child`\n- `allow-saf-take-permission`\n- `allow-saf-stream-open`\n- `allow-saf-stream-append`\n- `allow-saf-stream-close`\n- `allow-show-save-dialog`\n- `allow-set-keep-screen-on`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "ArkPulse 安卓落盘桥默认权限集合：允许 L1 MediaStore 落盘、SAF 持久授权、\n完成确认弹窗与亮屏保活。\n\n#### This default permission set includes:\n\n- `allow-mediastore-insert`\n- `allow-saf-create-child`\n- `allow-saf-take-permission`\n- `allow-show-save-dialog`\n- `allow-set-keep-screen-on`"
+          "markdownDescription": "ArkPulse 安卓落盘桥默认权限集合：允许 L1 MediaStore 落盘、L3 SAF 持久授权、\nX3 流式写（saf_stream_open/append/close）、完成确认弹窗与亮屏保活。\n\n#### This default permission set includes:\n\n- `allow-mediastore-insert`\n- `allow-saf-create-child`\n- `allow-saf-take-permission`\n- `allow-saf-stream-open`\n- `allow-saf-stream-append`\n- `allow-saf-stream-close`\n- `allow-show-save-dialog`\n- `allow-set-keep-screen-on`"
         },
         {
           "description": "Enables the mediastore_insert command without any pre-configured scope.",
@@ -323,6 +323,42 @@
           "type": "string",
           "const": "deny-saf-create-child",
           "markdownDescription": "Denies the saf_create_child command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the saf_stream_append command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-saf-stream-append",
+          "markdownDescription": "Enables the saf_stream_append command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the saf_stream_append command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-saf-stream-append",
+          "markdownDescription": "Denies the saf_stream_append command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the saf_stream_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-saf-stream-close",
+          "markdownDescription": "Enables the saf_stream_close command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the saf_stream_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-saf-stream-close",
+          "markdownDescription": "Denies the saf_stream_close command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the saf_stream_open command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-saf-stream-open",
+          "markdownDescription": "Enables the saf_stream_open command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the saf_stream_open command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-saf-stream-open",
+          "markdownDescription": "Denies the saf_stream_open command without any pre-configured scope."
         },
         {
           "description": "Enables the saf_take_permission command without any pre-configured scope.",

@@ -219,7 +219,8 @@ export function createP2PSender(opts: SenderOpts): P2PSender {
         onPeerJoined: () => opts.onPeerJoined?.(),
         onDcClose: () => {
           // DC 被关闭（对方取消/断线）→ 立即中止，避免 infinite reconnect loop
-          if (!aborted) abort();
+          // 注意：完成后的定时销毁也会触发此回调，但 finished=true 说明传输已结束，跳过 abort 防误标"已取消"
+          if (!aborted && !finished) abort();
         },
       });
       peer.connect(ice);

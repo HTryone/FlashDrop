@@ -7,21 +7,51 @@ import { error, setNativeCapture } from './logger';
 import { isTauriEnv } from '../tauri/env';
 import { isPhone, isWindows } from '../tauri/client';
 import { installObservers } from './observe';
+import type { LogEntry } from './types';
+import { invoke } from '@tauri-apps/api/core';
 
 // 原生侧（windows | phone）启用诊断；web 浏览器排除（用户定：Web 不需要日志）。
 function diagnosticsEnabled(): boolean {
   return isWindows() || isPhone();
 }
 
+// 「动态 import 完成前」的早期缓存：避免 registerNativeCapture 还没装上时早期 log() 被丢失（导致导出文件只有「近期新增」的那一段）。
+// 所有 entry 先入 earlyBuf；registerNativeCapture 接管时把 pre 整批 invoke 灌入 Rust，之后 setNativeCapture 的钩子替换由 registerNativeCapture 内部完成。
+const earlyBuf: LogEntry[] = [];
+function captureEarly(e: LogEntry): void {
+  earlyBuf.push(e);
+  // 防止内存爆炸：上限 5000 条，超过按时间顺序丢最早的（与 RingBuffer 同思路）
+  if (earlyBuf.length > 5000) earlyBuf.splice(0, earlyBuf.length - 5000);
+}
+
 export function installGlobalCapture(): void {
   if (!diagnosticsEnabled()) return;
 
-  // 原生桥接：Tauri 壳内才接，Web 端 no-op（§3.3 应用层专属）。
+  // ① 同步接管 nativeCapture：早于任何业务代码被调用。entry 先入 earlyBuf。
+  setNativeCapture(captureEarly);
+
+  // ② 异步：等 Tauri 模块加载完，调 registerNativeCapture 接管（新钩子直接走 invoke queue）。
+  //    在 registerNativeCapture 覆盖 setNativeCapture 之前，主动把 earlyBuf 一批送入 Rust，确保早期日志不丢。
   if (isTauriEnv()) {
-    import('../tauri/diagnostics').then((m) => m.registerNativeCapture()).catch(() => {});
+    import('../tauri/diagnostics')
+      .then(async (m) => {
+        // 顺序固定：先 registerNativeCapture 接管 setNativeCapture 钩子（同步），splice 之后的新 entry 走 invoke queue，不再入 earlyBuf。
+        m.registerNativeCapture();
+        const pre = earlyBuf.splice(0, earlyBuf.length);
+        if (pre.length) {
+          try {
+            await invoke('diagnostics_capture', { entries: pre });
+          } catch {
+            // 桥接失败不得影响业务（§1.8）：若 pre 这批丢了，diagStore 内存中还存着，UI 仍能看到。
+          }
+        }
+      })
+      .catch(() => {
+        // 若 ../tauri/diagnostics 模块加载失败，earlyBuf 仍持有，未来被 logger.ts 调 setNativeCapture(null) 后也无所谓：UI 上还能看到（diagStore 已存）。
+      });
   }
 
-  // 全量请求埋点（§1.6）：fetch/WebSocket/WebRTC 全局包裹，覆盖三链路每一笔请求。
+  // ③ 全量请求埋点（§1.6）：fetch/WebSocket/WebRTC 全局包裹，覆盖三链路每一笔请求。
   installObservers();
 
   if (typeof window !== 'undefined') {

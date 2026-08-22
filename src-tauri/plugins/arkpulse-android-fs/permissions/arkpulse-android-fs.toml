@@ -1,14 +1,24 @@
 "$schema" = "schemas/schema.json"
 
+# 【纪律】修改此文件的 permissions 列表时，必须同步更新 permissions/schemas/schema.json：
+#   1. 在 [default].description 中添加新命令的说明
+#   2. 在 allow-* / deny-* 枚举中各加一条新条目（type="string", const="allow/xxx", type="deny"/type="allow"）
+#   3. 提交两个文件（.toml + schema.json），缺一不可
+#
+# 未同步 schema.json 的后果：权限系统不识别新命令，安卓 ACL 拒绝调用 → 功能失效。
+
 [default]
 description = """
-ArkPulse 安卓落盘桥默认权限集合：允许 L1 MediaStore 落盘、SAF 持久授权、
-完成确认弹窗与亮屏保活。
+ArkPulse 安卓落盘桥默认权限集合：允许 L1 MediaStore 落盘、L3 SAF 持久授权、
+X3 流式写（saf_stream_open/append/close）、完成确认弹窗与亮屏保活。
 """
 permissions = [
   "allow-mediastore-insert",
   "allow-saf-create-child",
   "allow-saf-take-permission",
+  "allow-saf-stream-open",
+  "allow-saf-stream-append",
+  "allow-saf-stream-close",
   "allow-show-save-dialog",
   "allow-set-keep-screen-on"
 ]

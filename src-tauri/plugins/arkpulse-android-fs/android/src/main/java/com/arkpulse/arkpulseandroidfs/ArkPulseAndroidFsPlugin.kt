@@ -7,6 +7,7 @@ import android.content.DialogInterface
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.view.WindowManager
@@ -15,6 +16,9 @@ import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
+import java.io.FileOutputStream
+import java.nio.ByteBuffer
+import java.util.concurrent.ConcurrentHashMap
 
 // 安卓原生桥接：MediaStore 落盘 / SAF 持久目录 / 完成确认弹窗 / 亮屏保活。
 // Kotlin 方法名用 camelCase：Tauri 运行时把 snake_case 命令名转为 camelCase 后按 method.name 查找。
@@ -148,6 +152,72 @@ class ArkPulseAndroidFsPlugin(private val activity: Activity) : Plugin(activity)
             } else {
                 window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             }
+        }
+        invoke.resolve()
+    }
+
+    // ── X3（P2P 专用，新增）──
+    // 路径与 L1 完全相同：uri 即 mediastore_insert 返回的 MediaStore content URI。
+    // 仅写盘处理方式不同：openFileDescriptor("wa").detachFd() 拿 PFD → FileOutputStream(fd).channel，
+    // 直接 FileChannel.write(ByteBuffer)，绕开 ContentProvider 每次 openOutputStream 的事务 + 媒体索引放大。
+    // 三个命令组成一次传输的生命周期：open（建句柄）→ 多次 append（流式写）→ close（force + 释放 PFD）。
+
+    // handle → (ParcelFileDescriptor, FileChannel) 缓存，避免每次 append 重开 PFD。
+    private val streamHandles = ConcurrentHashMap<String, Pair<ParcelFileDescriptor, java.nio.channels.FileChannel>>()
+    private var streamSeq = 0
+
+    @Command
+    fun safStreamOpen(invoke: Invoke) {
+        val uri = Uri.parse(invoke.getArgs().getString("uri"))
+        try {
+            val pfd = activity.contentResolver.openFileDescriptor(uri, "wa")
+            if (pfd == null) {
+                invoke.reject("无法打开文件描述符")
+                return
+            }
+            val channel = FileOutputStream(pfd.fileDescriptor).channel
+            val handle = "x3_${++streamSeq}"
+            streamHandles[handle] = Pair(pfd, channel)
+            val ret = JSObject()
+            ret.put("handle", handle)
+            invoke.resolve(ret)
+        } catch (e: Exception) {
+            invoke.reject("X3 打开流式句柄失败：${e.message}")
+        }
+    }
+
+    @Command
+    fun safStreamAppend(invoke: Invoke) {
+        val handle = invoke.getArgs().getString("handle")
+        val entry = streamHandles[handle]
+        if (entry == null) {
+            invoke.reject("X3 句柄不存在或已关闭：$handle")
+            return
+        }
+        val b64 = invoke.getArgs().getString("bytes")
+        try {
+            val data = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+            entry.second.write(ByteBuffer.wrap(data))
+            invoke.resolve()
+        } catch (e: Exception) {
+            invoke.reject("X3 流式写入失败：${e.message}")
+        }
+    }
+
+    @Command
+    fun safStreamClose(invoke: Invoke) {
+        val handle = invoke.getArgs().getString("handle")
+        val entry = streamHandles.remove(handle)
+        if (entry == null) {
+            invoke.resolve()
+            return
+        }
+        try {
+            entry.second.force(true)
+            entry.second.close()
+            entry.first.close()
+        } catch (_: Exception) {
+            // 关闭失败不影响主流程，句柄已从缓存移除
         }
         invoke.resolve()
     }

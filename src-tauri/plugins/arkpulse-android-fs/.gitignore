@@ -1,0 +1,5 @@
+# 构建产物
+/target/
+
+# cargo 自动生成的锁文件（插件独立 crate，不纳入版本控制）
+Cargo.lock

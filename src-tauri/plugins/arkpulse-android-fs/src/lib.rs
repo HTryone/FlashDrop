@@ -46,6 +46,26 @@ fn set_keep_screen_on(_enabled: bool) -> Result<(), String> {
     Err("仅支持 Android".into())
 }
 
+// X3（P2P 专用，新增）：MediaStore content URI 走 PFD FileChannel 流式 append，绕开 ContentProvider 索引放大。
+// 路径与 L1 完全相同（mediastore_insert 返回的 uri），仅写盘处理方式不同。桌面为 stub。
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+fn saf_stream_open(_uri: String) -> Result<String, String> {
+    Err("仅支持 Android".into())
+}
+
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+fn saf_stream_append(_handle: String, _bytes: String) -> Result<(), String> {
+    Err("仅支持 Android".into())
+}
+
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+fn saf_stream_close(_handle: String) -> Result<(), String> {
+    Err("仅支持 Android".into())
+}
+
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     let builder = Builder::new("arkpulse-android-fs");
 
@@ -56,7 +76,10 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
         saf_create_child,
         saf_take_permission,
         show_save_dialog,
-        set_keep_screen_on
+        set_keep_screen_on,
+        saf_stream_open,
+        saf_stream_append,
+        saf_stream_close
     ]);
 
     builder

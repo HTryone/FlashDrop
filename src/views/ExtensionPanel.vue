@@ -72,6 +72,8 @@ function back() {
    内容自然向下增长，唯一滚动容器由外层 .ext-panel 负责。注册新扩展无需再单独处理滚动。 */
 .module-page { display: block; min-height: 0; }
 .back {
+  /* 返回栏固定：不随模块内容滚动（sticky 相对 .ext-panel 滚动容器）。 */
+  position: sticky; top: 0; z-index: 20;
   display: inline-block; background: var(--panel-2); border: 1px solid var(--border);
   color: var(--text); padding: 6px 12px; border-radius: 8px; font-size: 13px; margin-bottom: 8px;
 }

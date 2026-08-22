@@ -26,6 +26,8 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
   let totalChunks = 0;
   let recvBytes = 0;
   let lastAcked = -1;
+  let finalized = false; // 收尾（close + done 帧）是否已执行，保证恰好一次
+  let doneSent = false;  // 接收端 done 帧是否已发，避免重复
   let finished = false;
   let senderDone = false; // 发送端已显式广播传输结束（收到 type:'done'）
   let aborted = false;
@@ -57,16 +59,34 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
     setTimeout(() => { peer?.destroy(); sig?.close(); }, 150);
   };
 
-  // 收尾判定：发送端已广播结束 且 本地已收齐全部字节 → 完成。
-  // 不依赖「最后一块 seq 恰好到达」的单点触发，recvBytes 到顶即兜底完成，
-  // 避免最后一块在息屏重连边界丢失时两端状态不一致（发送端 done、接收端卡中间态）。
+  // 收尾判定：发送端已广播结束 且 本地已收齐全部字节 → 触发收尾。
+  // 不再在此处直接标 done：双缓冲下必须等后台落盘 drain 才标完成（见 finalizeTransfer），
+  // 否则 recvBytes 到顶≠磁盘写完，文件会被截断。
   const checkComplete = () => {
-    if (senderDone && !finished && recvBytes >= totalBytes) {
-      finished = true;
-      setState('done');
-      scheduleCleanup();
+    if (senderDone && !finalized && recvBytes >= totalBytes) {
+      void finalizeTransfer();
     }
   };
+
+  // 收尾：等后台落盘 drain（sink.close 内部 await flushDone）→ 标完成 + 回 done 帧。
+  // finalized 守卫保证恰好执行一次；可从 checkComplete / 写循环收尾两处触发。
+  async function finalizeTransfer() {
+    if (finalized || aborted) return;
+    finalized = true;
+    try {
+      // 关键：双缓冲下 writeChunk 仅交付写入器，必须等 close 把后台缓冲全部落盘，否则文件截断
+      if (sink) await sink.close();
+    } catch {
+      /* 落盘错误已在上层 toast，这里仅防止收尾异常阻断 done 态 */
+    }
+    if (!finished) finished = true;
+    if (!doneSent && dc && dc.readyState === 'open') {
+      doneSent = true;
+      dc.send(JSON.stringify({ type: 'done' }));
+    }
+    setState('done');
+    scheduleCleanup();
+  }
 
   const seqOf = (fi: number, ci: number) => {
     let s = 0;
@@ -117,14 +137,11 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
             sinceAck = 0;
             sendAck();
           }
-          if (job.seq >= totalChunks - 1 && !finished) {
-            finished = true;
-            await sink.close();
-            if (dc && dc.readyState === 'open') dc.send(JSON.stringify({ type: 'done' }));
-            setState('done');
-            scheduleCleanup();
-          }
         }
+      }
+      // ── 收尾：解密完成且全部字节已交付写入器 → 等落盘 drain 再标完成 ──
+      if (!aborted && !finalized && decryptDone && recvBytes >= totalBytes) {
+        await finalizeTransfer();
       }
     } finally {
       writeLoopRunning = false;
