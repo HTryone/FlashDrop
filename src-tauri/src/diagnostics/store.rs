@@ -39,10 +39,9 @@ fn resolve_log_dir(app: &AppHandle, platform: &str) -> Option<PathBuf> {
         // Android 应用私有存储：Android/data/<包名>/files/logs（免权限；崩溃恢复 + 经 App 内导出取回）
         app.path().app_data_dir().ok().map(|p| p.join("logs"))
     } else {
-        // Windows：统一用应用数据目录（与 Android 对称，铁定可写），不再用 exe 同级目录。
+        // Windows：应用数据目录（与 Android 对称，铁定可写），不再用 exe 同级目录。
         // 旧实现用 current_exe().parent()/log：NSIS 安装版 exe 位于受保护路径（Program Files /
-        // app-x.x 目录），append 静默失败 → 日志从不落盘、导出永远为空。这是电脑端导出为空的
-        // 根本根因，改用 app_data_dir 从根本解决（§3.3 采集器按端分支，路径同理）。
+        // app-x.x 目录），append 静默失败 → 日志从不落盘、导出永远为空。改用 app_data_dir 从根本解决。
         app.path().app_data_dir().ok().map(|p| p.join("log"))
     }
 }
@@ -108,9 +107,9 @@ fn format_entry(e: &LogEntry) -> String {
     out
 }
 
-// UTC 毫秒时间戳 → `YYYY-MM-DD HH:MM:SS.mmm`。
+// 毫秒时间戳 → `YYYY-MM-DD HH:MM:SS.mmm`（北京时间 UTC+8，仅偏移、格式不变）。
 fn format_ts(ms: u64) -> String {
-    let (y, m, d, h, mi, s) = ts_breakdown(ms);
+    let (y, m, d, h, mi, s) = ts_breakdown(ms + 8 * 3600 * 1000);
     format!(
         "{y:04}-{m:02}-{d:02} {h:02}:{mi:02}:{s:02}.{:03}",
         ms % 1000
@@ -309,14 +308,14 @@ fn to_secs(t: SystemTime) -> u64 {
 }
 
 fn utc_date(secs: u64) -> String {
-    let (y, m, d) = days_to_ymd(secs as i64 / 86400);
+    let (y, m, d) = days_to_ymd((secs + 8 * 3600) as i64 / 86400);
     format!("{y:04}-{m:02}-{d:02}")
 }
 
 fn utc_stamp(secs: u64) -> String {
-    let (y, m, d) = days_to_ymd(secs as i64 / 86400);
-    let hh = (secs / 3600) % 24;
-    let mm = (secs / 60) % 60;
+    let (y, m, d) = days_to_ymd((secs + 8 * 3600) as i64 / 86400);
+    let hh = ((secs + 8 * 3600) / 3600) % 24;
+    let mm = ((secs + 8 * 3600) / 60) % 60;
     format!("{y:04}{m:02}{d:02}-{hh:02}{mm:02}")
 }
 
