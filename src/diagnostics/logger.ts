@@ -37,7 +37,7 @@ export function log(
     channel,
     scope,
     msg,
-    data,
+    data: data !== undefined ? safeStringify(data) : undefined,
     traceId: traceId ?? getTrace(),
     platform: readPlatform(),
   };
