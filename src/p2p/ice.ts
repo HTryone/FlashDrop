@@ -1,10 +1,10 @@
 // ICE 服务器获取与清洗（从原 useWebRTC.ts 吸收，逻辑不变）。
-// 信令 WS 协议是 wss/ws，但 /rtc-config 是普通 HTTP GET，需把 wss→https、ws→http。
+// 信令 WS 协议是 wss/ws，但 /rtc-config 是普通 HTTP GET；relayBase 带 https:// 前缀，需一并剥离。
 
 export async function fetchIceServers(host: string, proto: string): Promise<RTCIceServer[]> {
   try {
     const httpProto = proto === 'wss' ? 'https' : 'http';
-    const cleanHost = host.replace(/^wss?:\/\//, '');
+    const cleanHost = host.replace(/^https?:\/\//, '');
     const r = await fetch(`${httpProto}://${cleanHost}/rtc-config`);
     const j = await r.json();
     if (Array.isArray(j.iceServers) && j.iceServers.length) {

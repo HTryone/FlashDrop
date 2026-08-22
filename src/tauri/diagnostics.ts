@@ -13,11 +13,13 @@ export async function diagnosticsQuery(filter: Record<string, unknown> = {}): Pr
 // 导出当前日志为 ZIP。Windows 落系统下载目录；Android 复用 mediastore_insert 权限落 Download/ArkPulse/log，返回该路径串。
 export async function diagnosticsExport(share = false): Promise<string> {
   if (isPhone()) {
-    const res = await invoke<{ name: string; bytes: string }>('diagnostics_export_android', [share] as any);
+    // ⚠️ diagnostics_export_android 是命名参数命令，必须用对象格式，不能用数组
+    const res = await invoke<{ name: string; bytes: string }>('diagnostics_export_android', { share });
     await invoke('plugin:arkpulse-android-fs|mediastore_insert', { name: res.name, relative_path: 'Download/ArkPulse/log', bytes: res.bytes });
     return `Download/ArkPulse/log/${res.name}`;
   }
-  return invoke<string>('diagnostics_export', [share] as any);
+  // ⚠️ diagnostics_export 是命名参数命令，必须用对象格式
+  return invoke<string>('diagnostics_export', { share });
 }
 
 export async function diagnosticsClear(): Promise<void> {
@@ -35,7 +37,8 @@ export function registerNativeCapture(): void {
     while (queue.length) {
       const batch = queue.splice(0, 50);
       try {
-        await invoke('diagnostics_capture', [batch] as any);
+        // ⚠️ diagnostics_capture 是命名参数命令，必须用对象格式
+        await invoke('diagnostics_capture', { entries: batch });
       } catch {
         // 桥接失败不得影响业务（§1.8）
       }

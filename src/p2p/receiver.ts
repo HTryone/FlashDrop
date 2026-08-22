@@ -255,6 +255,10 @@ export function createP2PReceiver(opts: ReceiverOpts): P2PReceiver {
           if (c) setState('connecting');
         },
         onPeerJoined: () => opts.onPeerJoined?.(),
+        onDcClose: () => {
+          // DC 被关闭（对方取消/断线）→ 立即中止，避免 infinite reconnect loop
+          if (!aborted) remoteAbort('对端连接已断开');
+        },
       });
       sig.connect();
       peer.connect(ice);

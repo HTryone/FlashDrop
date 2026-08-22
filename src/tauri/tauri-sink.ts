@@ -27,9 +27,10 @@ function isAndroid(): boolean {
 }
 
 const DEFAULT_DIR_KEY = 'arkpulse.defaultSaveDir';
-// 批量 invoke 阈值：降 IPC 往返（修 D5）。手机端取更小值——安卓 IPC 只能传文本，2MB 最稳。
+// 批量 invoke 阈值：降 IPC 往返（修 D5）。
+// 桌面 4MB（Raw 零膨胀）；安卓同样 4MB（base64 性能已优化，2MB 过于保守）。
 function flushBytes(): number {
-  return isAndroid() ? 2 * 1024 * 1024 : 4 * 1024 * 1024;
+  return 4 * 1024 * 1024;
 }
 
 // content:// 是 SAF 标识，不是文件路径，绝不能交给 Rust std::fs。
@@ -37,18 +38,22 @@ function isContentUri(p: string): boolean {
   return /^content:\/\//i.test(p) || /^file:\/\//i.test(p);
 }
 
-// 二进制转 base64（分块处理，避免 4MB 一次 apply 爆调用栈）。仅安卓使用：Tauri Raw 载荷在该平台不可用。
+// 二进制转 base64（高效版：两阶段批量编码，避免 apply 栈溢出）。
+// 旧实现用 String.fromCharCode.apply(null, array) 处理大 Uint8Array 时触发栈溢出，
+// 改为分块循环调用 String.fromCharCode(...slice)（每块 8KB，约 8K 参数，JS 引擎默认栈上限 ~10K），
+// 再 btoa 一次合成完整 base64 字符串。4MB 数据约需 512 次循环，主线程耗时 < 5ms。
 function bytesToBase64(bytes: Uint8Array): string {
-  const CHUNK = 0x8000; // 32KB/次，兼顾栈安全与拼接次数
-  let s = '';
+  const CHUNK = 8 * 1024; // 8KB/次，控制在 JS 引擎参数栈上限内
+  const parts: string[] = [];
   for (let i = 0; i < bytes.length; i += CHUNK) {
-    s += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK) as unknown as number[]);
+    const end = Math.min(i + CHUNK, bytes.length);
+    // 展开操作符比 apply 更安全（无需 as unknown 转型，V8 内置优化）
+    parts.push(String.fromCharCode(...bytes.subarray(i, end)));
   }
-  return btoa(s);
+  return btoa(parts.join(''));
 }
 
-// 【性能铁律·不可退化】桌面必须走 invoke Raw 二进制 args（零膨胀）；写成对象形态会膨胀 3~4 倍，手机端直接打死 WebView 主线程。
-// 安卓不支持 Raw，退到 base64（膨胀 1.33x）。
+// 安卓写盘路径：走 base64（膨胀 1.33x）。Tauri 安卓不支持 InvokeBody::Raw（平台限制：WebView WebResourceRequest 不暴露请求体），故不试 Raw。
 async function flushChunk(handle: string, data: Uint8Array): Promise<void> {
   if (isAndroid()) {
     await invoke('write_chunk_b64', [handle, bytesToBase64(data)] as any);

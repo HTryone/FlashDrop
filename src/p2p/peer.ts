@@ -9,6 +9,7 @@ type DcHandler = (dc: RTCDataChannel) => void;
 type MsgHandler = (data: string | ArrayBuffer) => void;
 type StateHandler = (connected: boolean) => void;
 type ReconnectHandler = () => void;
+type DcCloseHandler = () => void;
 
 export class PeerLink {
   role: P2PRole;
@@ -17,6 +18,7 @@ export class PeerLink {
   private onDcMsgCb: MsgHandler | null = null;
   private onStateCb: StateHandler | null = null;
   private onReconnectCb: ReconnectHandler | null = null;
+  private onDcCloseCb: DcCloseHandler | null = null;
   private onPeerJoinedCb: (() => void) | null = null;
   private pendingSignals: any[] = []; // pc 就绪前到达的信令（relay 回放可能早于 pc），就绪后按序冲刷
   private peerJoinedNotified = false;
@@ -36,6 +38,7 @@ export class PeerLink {
     onState?: StateHandler;
     onReconnect?: ReconnectHandler;
     onPeerJoined?: () => void;
+    onDcClose?: DcCloseHandler;
   }) {
     this.role = opts.role;
     this.sendSignal = opts.sendSignal;
@@ -44,6 +47,7 @@ export class PeerLink {
     this.onStateCb = opts.onState || null;
     this.onReconnectCb = opts.onReconnect || null;
     this.onPeerJoinedCb = opts.onPeerJoined || null;
+    this.onDcCloseCb = opts.onDcClose || null;
   }
 
   private wireDc(dc: RTCDataChannel) {
@@ -53,12 +57,16 @@ export class PeerLink {
       this.onStateCb?.(true);
       this.onDcOpenCb?.(dc);
     };
-    dc.onclose = () => this.onStateCb?.(false);
+    dc.onclose = () => {
+      this.onStateCb?.(false);
+      this.onDcCloseCb?.();
+    };
     dc.onmessage = (ev: MessageEvent) => this.onDcMsgCb?.(ev.data as string | ArrayBuffer);
     dc.onerror = (e: any) => console.warn('[p2p] dc error:', e);
   }
 
   private ensurePc(): RTCPeerConnection {
+    if (this.destroyed) return this.pc!;
     if (this.pc) return this.pc;
     try {
       this.pc = new RTCPeerConnection({ iceServers: this.iceServers });
@@ -225,6 +233,7 @@ export class PeerLink {
       this.sendOffer();
     }
     // receiver 等待新 offer
+    // 注意：destroyed 在 ensurePc 之前已检查；ensurePc 创建新 pc 后若已被 destroy()，后续 sendOffer 也会自检返回
   }
 
   get channel() {
