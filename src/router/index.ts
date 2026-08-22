@@ -1,8 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import HomeView from '@/views/HomeView.vue';
-
-// 扩展模块懒加载：用户点"更多"时才下载，首屏不捆绑
-const ExtensionPanel = () => import('@/views/ExtensionPanel.vue');
+import ExtensionPanel from '@/views/ExtensionPanel.vue';
 
 const router = createRouter({
   history: createWebHistory(),
