@@ -7,7 +7,7 @@ import type { LogEntry } from '../diagnostics/types';
 
 // 把 Web 侧过滤后的日志查回来（UI 需要时调用，日常靠内存 RingBuffer）。
 export async function diagnosticsQuery(filter: Record<string, unknown> = {}): Promise<LogEntry[]> {
-  return invoke<LogEntry[]>('diagnostics_query', [filter] as any);
+  return invoke<LogEntry[]>('diagnostics_query', { filter });
 }
 
 // 导出当前日志为 ZIP。Windows 落系统下载目录；Android 复用 mediastore_insert 权限落 Download/ArkPulse/log，返回该路径串。
