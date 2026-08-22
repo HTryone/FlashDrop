@@ -3,8 +3,10 @@ import { ref, provide, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { isPhone } from './tauri/client';
 import { requestNotificationAtLaunch } from './tauri/notify';
-import ExtensionPanel from './views/ExtensionPanel.vue';
 import TabBar from './components/diagnostics/TabBar.vue';
+
+// 扩展模块懒加载：用户点"更多"时才下载，首屏不捆绑
+const ExtensionPanel = () => import('./views/ExtensionPanel.vue');
 
 type TabType = 'send' | 'receive' | 'manage';
 const activeTab = ref<TabType>('send');
