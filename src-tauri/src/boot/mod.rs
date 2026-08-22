@@ -11,12 +11,10 @@
 pub const REMOTE_URL: &str = "https://flashdrop.pages.dev";
 
 /// 解析 WebView 启动加载的源。
-/// - dev（debug）：走本地 dev server（桌面 / 安卓 dev 经 adb reverse 转发，localhost 可达），保留热重载。
+/// - dev（debug）：也走远程 flashdrop.pages.dev（后端服务全在线上，本地无 server.mjs）。
 /// - release：加载远程域名（热更新前端）。
+/// 注：前端代码调试用 vite dev（3002/3003），但壳始终加载线上版本；
+/// 热重载仅在前端源码改动后重新部署到 CF 才生效。
 pub fn resolve_remote_url() -> String {
-    if cfg!(debug_assertions) {
-        "http://localhost:3001".to_string()
-    } else {
-        REMOTE_URL.to_string()
-    }
+    REMOTE_URL.to_string()
 }

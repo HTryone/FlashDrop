@@ -190,7 +190,10 @@ fn parse_log_line(header: &str, extra_lines: &mut std::str::Lines<'_>) -> Result
     // channel: 从 '[' 到 ']'，9 字符（含两端括号 + 左右补空格）
     let ch = rest.get(5..).ok_or(())?;
     let ch_end = ch.find(']').ok_or(())?;
-    let channel = ch[..=ch_end].trim_matches('[').trim_matches(']').to_string();
+    let channel = ch[..=ch_end]
+        .trim_matches('[')
+        .trim_matches(']')
+        .to_string();
     // msg: channel 后的剩余部分
     let msg = ch[ch_end + 1..].trim().to_string();
 
@@ -228,7 +231,11 @@ fn parse_log_line(header: &str, extra_lines: &mut std::str::Lines<'_>) -> Result
         scope,
         msg,
         data,
-        trace_id: if trace_id.is_empty() { None } else { Some(trace_id) },
+        trace_id: if trace_id.is_empty() {
+            None
+        } else {
+            Some(trace_id)
+        },
         platform,
     })
 }
@@ -236,15 +243,22 @@ fn parse_log_line(header: &str, extra_lines: &mut std::str::Lines<'_>) -> Result
 // `YYYY-MM-DD HH:MM:SS.mmm`（北京时间，已 +8h 偏移）→ UTC 毫秒时间戳。
 // 仅用于崩溃恢复（时序精度要求不高），不做完整日历计算。
 fn beijing_to_utc_ms(s: &str) -> Option<u64> {
-    let parts: Vec<&str> = s.split(|c: char| c == '-' || c == ' ' || c == ':' || c == '.').collect();
-    if parts.len() < 6 { return None; }
+    let parts: Vec<&str> = s
+        .split(|c: char| c == '-' || c == ' ' || c == ':' || c == '.')
+        .collect();
+    if parts.len() < 6 {
+        return None;
+    }
     let year = parts[0].parse::<i64>().ok()?;
     let month = parts[1].parse::<u32>().ok()?;
     let day = parts[2].parse::<u32>().ok()?;
     let hour = parts[3].parse::<i64>().ok()?;
     let min = parts[4].parse::<i64>().ok()?;
     let sec = parts[5].parse::<i64>().ok()?;
-    let ms = parts.get(6).and_then(|m| m.parse::<u32>().ok()).unwrap_or(0);
+    let ms = parts
+        .get(6)
+        .and_then(|m| m.parse::<u32>().ok())
+        .unwrap_or(0);
 
     // 北京时间 → UTC：减 8 小时（处理借位）
     let mut h = hour - 8;
@@ -257,11 +271,20 @@ fn beijing_to_utc_ms(s: &str) -> Option<u64> {
     }
     if d < 1 {
         mon -= 1;
-        if mon < 1 { mon = 12; y -= 1; }
+        if mon < 1 {
+            mon = 12;
+            y -= 1;
+        }
         let days_in_prev = match mon {
             1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
             4 | 6 | 9 | 11 => 30,
-            2 => { if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 29 } else { 28 } }
+            2 => {
+                if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+                    29
+                } else {
+                    28
+                }
+            }
             _ => 30,
         };
         d = days_in_prev as i64;
@@ -271,7 +294,11 @@ fn beijing_to_utc_ms(s: &str) -> Option<u64> {
     let ref_y = 2000i64;
     let mut total_days = 0i64;
     for yr in ref_y..y {
-        total_days += if (yr % 4 == 0 && yr % 100 != 0) || yr % 400 == 0 { 366 } else { 365 };
+        total_days += if (yr % 4 == 0 && yr % 100 != 0) || yr % 400 == 0 {
+            366
+        } else {
+            365
+        };
     }
     let md = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
     total_days += md[(mon - 1) as usize] + d - 1;

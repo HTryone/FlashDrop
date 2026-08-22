@@ -130,7 +130,7 @@ export default {
         return await new TransferHandler(index, delStorage, ttl).deleteTransferFiles(tid, origin, request.method);
       }
 
-      if (pathname === '/api/transfers' || pathname.startsWith('/api/transfer/')) {
+      if (pathname === '/api/transfers' || pathname.startsWith('/api/transfers/') || pathname.startsWith('/api/transfer/')) {
         // 传输元数据操作不落文件体，storage 传 undefined（内部删除路径已按桶解析）
         return await new TransferHandler(index, undefined, ttl).handle(request);
       }

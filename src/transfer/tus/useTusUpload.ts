@@ -149,7 +149,6 @@ function uploadSliceXHR(
     }
     xhr.open('PUT', url);
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-    xhr.setRequestHeader('Content-Length', String(blob.size));
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) {
         sent = e.loaded;

@@ -39,3 +39,4 @@ test_*.bin
 Thumbs.db
 *.lnk
 screen_latest.png
+nul

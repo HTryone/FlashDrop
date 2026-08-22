@@ -57,6 +57,12 @@ export class TransferHandler {
         const code = decodeURIComponent(url.pathname.slice('/api/transfer/'.length));
         return await this.getTransferByCode(code, origin);
       }
+      // DELETE /api/transfers/{id}：清空整个传输（文件+索引+分享码+登录码）
+      const mDel = /^\/api\/transfers\/([^/]+)$/.exec(url.pathname);
+      if (mDel && request.method === 'DELETE') {
+        const id = decodeURIComponent(mDel[1]);
+        return await this.deleteTransfer(id, origin);
+      }
       return new Response('Not Found', { status: 404, headers: corsHeaders(origin) });
     } catch (e) {
       return this.errorFrom(e, origin);
@@ -157,6 +163,16 @@ export class TransferHandler {
       200,
       origin,
     );
+  }
+
+  /** 清空某个传输的全部数据（文件 + 索引 + 分享码 + 登录码） */
+  private async deleteTransfer(id: string, origin: string | null): Promise<Response> {
+    try {
+      await this.index.deleteTransfer(id);
+      return json({ ok: true }, 200, origin);
+    } catch (e) {
+      return this.errorFrom(e, origin);
+    }
   }
 
   /** 清空某传输下的文件（D1 文件行 + R2 分片），保留传输记录与分享码/登录码。用于重传前清掉失效旧文件。 */
