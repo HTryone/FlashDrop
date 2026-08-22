@@ -41,13 +41,13 @@ export function installGlobalCapture(): void {
         if (pre.length) {
           try {
             await invoke('diagnostics_capture', { entries: pre });
-          } catch {
-            // 桥接失败不得影响业务（§1.8）：若 pre 这批丢了，diagStore 内存中还存着，UI 仍能看到。
+          } catch (err) {
+            console.error('[diagnostics] earlyBuf flush failed:', err);
           }
         }
       })
-      .catch(() => {
-        // 若 ../tauri/diagnostics 模块加载失败，earlyBuf 仍持有，未来被 logger.ts 调 setNativeCapture(null) 后也无所谓：UI 上还能看到（diagStore 已存）。
+      .catch((err) => {
+        console.error('[diagnostics] failed to load diagnostics module:', err);
       });
   }
 

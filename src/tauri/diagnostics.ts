@@ -45,8 +45,8 @@ export function registerNativeCapture(): void {
         try {
           // ⚠️ diagnostics_capture 是命名参数命令，必须用对象格式
           await invoke('diagnostics_capture', { entries: batch });
-        } catch {
-          // 桥接失败不得影响业务（§1.8）
+        } catch (err) {
+          console.error('[diagnostics] flush failed:', err);
         }
       }
     } finally {
