@@ -34,6 +34,13 @@ export function installObservers(): void {
   installWebRTC();
 }
 
+// 诊断系统自身的桥接通道（Tauri IPC over HTTP）不应被当作业务请求记录，
+// 否则「记录日志的 invoke」又产生「日志」→ 自我反射无限递归、刷屏 IPC。
+// 命中这些前缀的请求直接放行、不打日志（§1.8 不阻塞业务 + 不断自己后路）。
+function isSelfInfra(url: string): boolean {
+  return /^https?:\/\/ipc\.localhost\b/i.test(url) || /^https?:\/\/localhost\b/i.test(url);
+}
+
 function installFetch() {
   if (!(globalThis as any).fetch || (globalThis as any).__diagFetchWrapped) return;
   const orig = (globalThis as any).fetch.bind(globalThis);
@@ -41,6 +48,8 @@ function installFetch() {
   (globalThis as any).fetch = async (input: any, init?: any) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input?.url ?? '';
     const method = (init?.method ?? input?.method ?? 'GET').toUpperCase();
+    // 自身桥接请求：直接原样转发，跳过日志记录，杜绝递归自我喂养。
+    if (isSelfInfra(url)) return orig(input, init);
     const saUrl = sanitizeUrl(url);
     const attempt = init?.__attempt ?? 0;
     const t0 = performance.now();

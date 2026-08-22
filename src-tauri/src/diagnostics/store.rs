@@ -39,10 +39,11 @@ fn resolve_log_dir(app: &AppHandle, platform: &str) -> Option<PathBuf> {
         // Android 应用私有存储：Android/data/<包名>/files/logs（免权限；崩溃恢复 + 经 App 内导出取回）
         app.path().app_data_dir().ok().map(|p| p.join("logs"))
     } else {
-        // Windows：安装目录/log（按 current_exe 推导安装根，复用现有路径思路）
-        std::env::current_exe()
-            .ok()
-            .and_then(|e| e.parent().map(|p| p.join("log")))
+        // Windows：统一用应用数据目录（与 Android 对称，铁定可写），不再用 exe 同级目录。
+        // 旧实现用 current_exe().parent()/log：NSIS 安装版 exe 位于受保护路径（Program Files /
+        // app-x.x 目录），append 静默失败 → 日志从不落盘、导出永远为空。这是电脑端导出为空的
+        // 根本根因，改用 app_data_dir 从根本解决（§3.3 采集器按端分支，路径同理）。
+        app.path().app_data_dir().ok().map(|p| p.join("log"))
     }
 }
 
@@ -209,12 +210,33 @@ fn build_zip() -> Result<(String, Vec<u8>), String> {
 
 // 导出 ZIP：Windows 落系统下载目录（复用现有路径逻辑），返回绝对路径。
 pub fn export_zip(_share: bool) -> Result<String, String> {
+    let dir = { state().lock().unwrap().log_dir.clone() }
+        .ok_or_else(|| "日志目录未初始化".to_string())?;
+
+    // 先核对日志目录里到底有没有可导出文件，避免导出「空 ZIP」误导用户。
+    // 这也是电脑端历史 bug 的排查锚点：若目录为空，说明 append 从未成功落盘，
+    // 直接报明确错误而非静默产出一个 0 文件的 ZIP。
+    let log_count = std::fs::read_dir(&dir)
+        .map(|it| {
+            it.flatten()
+                .filter(|e| {
+                    let n = e.file_name().to_string_lossy().to_string();
+                    n.starts_with("arkpulse-") && n.ends_with(".log")
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    if log_count == 0 {
+        let dropped = state().lock().unwrap().dropped;
+        return Err(format!(
+            "日志目录无可用日志文件（dir={}），append 落盘失败计数 dropped={}。日志从未写入，请检查目录权限",
+            dir.display(),
+            dropped
+        ));
+    }
+
     let (zip_name, buf) = build_zip()?;
-    let (dir, app) = {
-        let s = state().lock().unwrap();
-        (s.log_dir.clone(), s.app.clone())
-    };
-    let dir = dir.ok_or_else(|| "日志目录未初始化".to_string())?;
+    let app = { state().lock().unwrap().app.clone() };
 
     // 候选落盘目录：优先系统下载目录，失败回退到应用私有 log 目录。
     let mut candidates: Vec<PathBuf> = Vec::new();

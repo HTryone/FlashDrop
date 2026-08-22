@@ -29,25 +29,42 @@ export async function diagnosticsClear(): Promise<void> {
 // 注册原生捕获：Web 日志 → Rust 持久化（批量、异步、不阻塞业务线程，§1.8）。
 export function registerNativeCapture(): void {
   const queue: LogEntry[] = [];
+  let timer: ReturnType<typeof setTimeout> | null = null;
   let flushing = false;
+
+  const FLUSH_INTERVAL = 100; // ms：合并窗口，把高频日志压成 ≤10 批/秒
+  const MAX_QUEUE = 500; // 队列上限，超出丢最旧，防内存膨胀
 
   const flush = async () => {
     if (flushing) return;
     flushing = true;
-    while (queue.length) {
-      const batch = queue.splice(0, 50);
-      try {
-        // ⚠️ diagnostics_capture 是命名参数命令，必须用对象格式
-        await invoke('diagnostics_capture', { entries: batch });
-      } catch {
-        // 桥接失败不得影响业务（§1.8）
+    try {
+      // 一次性把当前队列全部取走，避免与入队竞争；分 50 条一批串行提交。
+      while (queue.length) {
+        const batch = queue.splice(0, 50);
+        try {
+          // ⚠️ diagnostics_capture 是命名参数命令，必须用对象格式
+          await invoke('diagnostics_capture', { entries: batch });
+        } catch {
+          // 桥接失败不得影响业务（§1.8）
+        }
       }
+    } finally {
+      flushing = false;
     }
-    flushing = false;
   };
 
   setNativeCapture((e: LogEntry) => {
+    // 队列限长：超出时丢最旧，保留最近 MAX_QUEUE-50 条上下文（不降采样，全量留存于窗口内）。
+    if (queue.length >= MAX_QUEUE) queue.splice(0, queue.length - MAX_QUEUE + 50);
     queue.push(e);
-    if (!flushing) queueMicrotask(flush);
+    // 用 setTimeout 替代 queueMicrotask：微任务会在 await IPC 期间被反复重排、
+    // 队列永不空导致循环钉死（日志量≈IPC 次数）。定时器合并提交，从根本断掉裂变。
+    if (!timer) {
+      timer = setTimeout(() => {
+        timer = null;
+        void flush();
+      }, FLUSH_INTERVAL);
+    }
   });
 }
