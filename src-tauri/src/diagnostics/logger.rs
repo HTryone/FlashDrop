@@ -1,7 +1,9 @@
 // 结构化日志条目（Web/Rust 字段对齐 §types.ts）。同步写、带 platform/traceId。
+// 使用 camelCase 命名与前端 LogEntry 字段名一致，避免 Tauri 序列化 mismatch。
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LogEntry {
     pub ts: u64,
     pub level: String, // debug/info/warn/error
@@ -11,7 +13,6 @@ pub struct LogEntry {
     pub msg: String,
     #[serde(default)]
     pub data: Option<String>,
-    #[serde(default, rename = "trace_id")]
     pub trace_id: Option<String>,
     #[serde(default)]
     pub platform: Option<String>,
