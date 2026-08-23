@@ -1,0 +1,70 @@
+闪云 ArkPulse 常用命令（复制粘贴用）
+====================================
+
+打开方式：Win 键搜索 "Git Bash" 回车打开，黑框里粘贴下面命令。
+注意：路径用正斜杠 /，别用 Windows 的反斜杠 \。
+
+【进项目目录】
+cd D:/arkpulse
+
+【装依赖（首次或拉新代码后）】
+npm install
+
+========================================
+一、本地开发（前端热更新，:3001）
+========================================
+npm run dev -- --host --port 3001
+# 浏览器打开 http://localhost:3001 即可使用
+# 纯前端 SPA，无需单独起后端；P2P/本地直传的中继默认走线上 Worker
+
+【Windows 桌面开发模式】
+双击 toolbox/start-win-dev.bat
+# 或手动：npm run tauri dev（Vite :3002，Tauri 加载线上 flashdrop.pages.dev）
+
+【安卓开发模式】
+双击 toolbox/start-android-dev.bat
+# 或手动：npm run tauri android dev（Vite :3003）
+
+【本地中继联调（可选）】
+cd conduit
+npm install
+npm run dev        # 即 wrangler dev，起本地中继
+cd ..
+
+========================================
+二、打包（唯一入口：build-all.mjs）
+========================================
+【双端打包（Windows + 安卓）】
+node toolbox/build-all.mjs
+
+【指定版本号】
+node toolbox/build-all.mjs --version 0.1.11
+
+【只打 Windows】
+node toolbox/build-all.mjs --windows
+
+【只打安卓】
+node toolbox/build-all.mjs --android
+
+【如果你已经在 toolbox 目录里，省略 toolbox/ 前缀】
+node build-all.mjs
+
+【中途按提示输入】
+- 问版本号：输入 0.1.11 回车
+- 问 Y/N：输入 y 或 n 回车
+
+========================================
+三、部署（可选）
+========================================
+【前端】构建 dist/ 后部署到 Cloudflare Pages 或任意静态托管
+npm run build
+
+【中继】conduit/ 是 Cloudflare Worker 中继，本地联调见上方"本地中继联调"
+cd conduit && npm run deploy    # wrangler deploy
+
+========================================
+说明
+========================================
+- 打包脚本自动探测 ANDROID_HOME / NDK_VERSION / JAVA_HOME / BUILD_TOOLS_REVISION
+- 安卓仅 64 位（arm64-v8a + x86_64），禁直调 tauri / gradle / cargo build
+- start-dev.bat 已优化：移除 >nul 重定向，在 Git Bash 下不再生成根目录 nul 垃圾文件
