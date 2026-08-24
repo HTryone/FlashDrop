@@ -44,10 +44,10 @@
  * 产物验证：安卓 APK 解包查 lib/ 只含 arm64-v8a + x86_64（无 32 位）；apksigner verify --print-certs releases/app-universal-release.apk → VERIFY PASSED。
  */
 
-import { isWin, isMac, sh, green, yellow, red } from './buildjs/common.mjs';
-import { setVersion } from './buildjs/version.mjs';
-import { buildWindows, buildMacOS } from './buildjs/windows.mjs';
-import { buildAndroid, signAndroidApks } from './buildjs/android.mjs';
+import { isWin, isMac, sh, green, yellow, red } from './common.mjs';
+import { setVersion } from './version.mjs';
+import { buildWindows, buildMacOS } from './windows.mjs';
+import { buildAndroid, signAndroidApks } from './android.mjs';
 
 // ---------- 参数解析 ----------
 const argv = process.argv.slice(2);

@@ -12,6 +12,22 @@ export function buildWindows(localNsis) {
     process.env.NSIS_PATH = join(projectRoot, 'toolbox', 'nsis');
     console.log(yellow('使用本地 NSIS：' + process.env.NSIS_PATH));
   }
+  // 自动注入 Windows SDK 路径到环境，确保 vcvarsall 能拼出 kernel32.lib 等系统库 LIB 路径。
+  // Git Bash 启动链不继承 User/Machine 环境变量，故在此显式注入（已存在则不覆盖）。
+  if (!process.env.WindowsSdkDir) {
+    const sdkCandidates = [
+      'D:/Windows Kits/10',
+      'C:/Program Files (x86)/Windows Kits/10',
+      'C:/Program Files/Windows Kits/10',
+    ];
+    const sdk = sdkCandidates.find((p) => existsSync(join(p, 'Lib')));
+    if (sdk) {
+      process.env.WindowsSdkDir = sdk;
+      console.log(green(`Windows SDK: 注入 WindowsSdkDir=${sdk}（供 vcvarsall 定位系统库）`));
+    } else {
+      console.log(yellow('[警告] 未发现 Windows SDK（Windows Kits\\10\\Lib），kernel32.lib 将找不到，链接会失败。'));
+    }
+  }
   // 自动注入 VS 编译环境（vswhere 定位，免手动开 Dev Prompt）
   const vcvars = resolveVsDevCmd();
   if (vcvars) {

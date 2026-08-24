@@ -1,6 +1,6 @@
 {
   "name": "arkpulse",
-  "version": "0.1.11",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "闪云 ArkPulse · 大文件分片续传与端到端加密传输（Vue3 + TS + Vite + tus）",
